@@ -1,6 +1,7 @@
 {
-    'leak_check_list': ['github', 'pass', 'SSH', 'IP', 'domain', 'md5'] # words around you target, which tou whant check in code
-    'url_DB': '-'
-    'token_DB': '-'
+    'target_list': {'tarhet1': ['word1', 'word1']},
+    'leak_check_list': ['github', 'pass', 'SSH', 'IP', 'domain', 'md5'], # words around you target, which tou whant check in code
+    'url_DB': '-',
+    'token_DB': '-',
     'token_list': [] # set your tokens hear
 }

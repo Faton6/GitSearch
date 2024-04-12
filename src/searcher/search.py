@@ -147,16 +147,6 @@ def rep_scan(token: str, dork, organization):
         return rep_obj_list
 
 
-# TODO: NOT WORK YET
-def pull_scan(token: str):
-    response = requests.get('https://api.github.com/search/repositories',
-                            params={'q': "VTB", 'sort': 'updated'},
-                            headers={'Authorization': f'Token {token}'}, timeout=1000)
-    with open("pull_res.html", 'wb') as fd:
-        for chunk in response.iter_content(chunk_size=128):
-            fd.write(chunk)
-
-
 def commits_scan(token: str, dork, organization):
     cur_dir = os.getcwd()
     page_counter = 1

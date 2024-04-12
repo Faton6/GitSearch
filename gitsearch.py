@@ -32,11 +32,12 @@ if __name__ == "__main__":
     filters.dumping_data()
 
     # Deepscan - repeat deep scan of found leaks
+    # TODO Not it work only for DB version
+    '''
     logger.info('Start Deepscan scan')
     constants.RESULT_MASS = constants.AutoVivification()
     deepscan.deep_scan()
-
     Connector.update_result_filed_in_DB()
-
+    '''
     os.chdir(old_dir)
     print(f'Back to directory: {old_dir}')

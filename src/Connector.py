@@ -103,7 +103,8 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
         json.dump({'scan': res_backup}, file, ensure_ascii=False, indent=8)
     print(
         f'Result report: {constants.MAIN_FOLDER_PATH}/reports/result_res-{time.strftime("%Y-%m-%d-%H-%M")}.json')
-    dump_to_DB_req(report_filename, mode=mode)
+    if constants.url_DB != '-':
+        dump_to_DB_req(report_filename, mode=mode)
 
 
 def dump_from_DB(mode=0):

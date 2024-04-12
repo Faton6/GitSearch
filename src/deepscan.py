@@ -9,11 +9,11 @@ from src import filters
 
 checked_list = {}
 
-
+# TODO need fix
 def deep_scan():
     url_to_deepscan = constants.AutoVivification()
     mode_for_dump_from_DB = 1  # type of returned dump_from_DB data
-    url_dump = Connector.dump_from_DB(mode_for_dump_from_DB)  # list with dict: {url:final_resul}
+    url_dump = constants.dork_dict  # list with dict: {url:final_resul}
     for url_from_DB in url_dump.keys():
         if type(url_dump[url_from_DB][0]) is str and int(url_dump[url_from_DB][0]) == constants.RESULT_CODE_TO_DEEPSCAN:
             url_to_deepscan[url_from_DB] = [url_dump[url_from_DB][1], None]

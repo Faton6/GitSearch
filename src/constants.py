@@ -45,8 +45,7 @@ class AutoVivification(dict):
 
 RESULT_MASS = AutoVivification()  # array with results of scans
 
-url_from_DB = Connector.dump_from_DB()
-filters.exclude_list_update()
+
 
 with open(f'{MAIN_FOLDER_PATH}/src/config') as config_file:
     config = json.load(config_file)
@@ -54,8 +53,13 @@ leak_check_list = config['leak_check_list']
 url_DB = config['url_DB']
 token_DB = config['token_DB']
 token_list = config['token_list']
+if url_DB != '-':
+    url_from_DB = Connector.dump_from_DB()
+    filters.exclude_list_update()
+    dork_dict = Connector.dump_target_from_DB()
+else:
+    dork_dict = config['target_list']
 all_dork_counter = 0  # quantity of all dorks
-dork_dict = Connector.dump_target_from_DB()
 with open(f'{MAIN_FOLDER_PATH}/src/dorks.txt') as dorks_file:
     dorks = [line.rstrip() for line in dorks_file]
     for company in dork_dict:
