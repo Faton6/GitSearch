@@ -47,7 +47,7 @@ RESULT_MASS = AutoVivification()  # array with results of scans
 
 
 
-with open(f'{MAIN_FOLDER_PATH}/src/config') as config_file:
+with open(f'{MAIN_FOLDER_PATH}/config.json') as config_file:
     config = json.load(config_file)
 leak_check_list = config['leak_check_list']
 url_DB = config['url_DB']

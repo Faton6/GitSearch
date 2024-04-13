@@ -1,0 +1,23 @@
+services:
+    gitsearch:
+        image: gitsearch:1.0.3
+        container_name: gitsearch
+        restart: always
+        volumes:
+            - "./app:/app"
+        deploy:
+          resources:
+            limits:
+              cpus: "1.0"
+              memory: 8G
+        networks:
+          gitsearch_network:
+            ipv4_address: 172.32.0.99
+
+networks:
+  gitsearch_network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.32.0.0/16

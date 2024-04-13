@@ -1,0 +1,10 @@
+{
+    "_comment_target_list": "target - target organization name. word1.. - target words to search in github:",
+    "target_list": {"target1": ["word1", "word2"]},
+    "_comment_leak_check_list": "words around you target, which tou whant check in code:",
+    "leak_check_list": ["github", "pass", "SSH", "IP", "domain", "md5"],
+    "url_DB": "-",
+    "token_DB": "-",
+    "_comment_token_list": "set your tokens hear:",
+    "token_list": []
+}

@@ -2,7 +2,7 @@ import logging
 import time
 
 '''
-    Logging config file
+    Logging config.json file
 '''
 
 CLR = {

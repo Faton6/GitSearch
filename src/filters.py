@@ -5,7 +5,6 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from pydriller import Repository
 import re
 import base64
 import time
@@ -268,7 +267,8 @@ class CheckRepo:
                 cls._clean_repo_dirs()
             return {'Error': 'Exception in git clonning'}
 
-    @classmethod
+        ''' 
+   @classmethod
     def _pydriller_scan(cls):
         foundSet = set()  # нужен был для поиска base64 строк в коде ниже
 
@@ -300,6 +300,7 @@ class CheckRepo:
             logger.info('Commiters and base64 strings added')
         except Exception as ex:
             logger.error(f'Error in PyDriller:\n{ex}\n')
+        '''
 
     @classmethod
     def _grep_scan(cls):
