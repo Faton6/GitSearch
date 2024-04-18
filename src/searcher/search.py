@@ -9,6 +9,7 @@ from src.searcher.CodeObj import CodeObj
 from src.searcher.CommitObj import CommitObj
 from src.searcher.RepoObj import RepoObj
 from src.filters import *
+from src.logger import logger, CLR
 
 # TODO Need to translate
 # TODO command file description
@@ -37,18 +38,25 @@ def code_scan(token: str, dork, organization):
     while page_counter <= max_page:
         try:
             # TODO: проверка наличия в БД 30го "кода" , если нет - меняем страницу
-            time.sleep(4)
+            time.sleep(2)
+            if token != '-':
+                header = {
+                    'Authorization': f'Token {token}'}
+            else:
+                time.sleep(2)
+                header = {}
             response_code_search = requests.get(
                 f'https://api.github.com/search/code',
                 params={'q': dork, 'sort': 'indexed', 'order': 'desc', 'per_page': 30, 'page': page_counter},
-                headers={'Authorization': f'Token {token}'}, timeout=1000)
+                headers=header, timeout=1000)
             constants.dork_search_counter += 1
         except Exception as ex:
             logger.info(f'Request Error in code_scan:\n{ex}')
             return [{'Error': f'{ex}'}]
         else:
             if response_code_search.status_code == 401:
-                logger.error('Token has expired!')
+                logger.error('Token may was expired!')
+                return
             time.sleep(1)
             total_count = response_code_search.json()['total_count']
             if total_count > 1000:
@@ -96,16 +104,25 @@ def rep_scan(token: str, dork, organization):
     max_page = 1
     while page_counter <= max_page:
         try:
-            time.sleep(3)
+            time.sleep(2)
+            if token != '-':
+                header = {
+                    'Authorization': f'Token {token}'}
+            else:
+                time.sleep(2)
+                header = {}
             response_repo_search = requests.get('https://api.github.com/search/repositories',
                                                 params={'q': dork, 'sort': 'updated', 'order': 'desc',
                                                         'per_page': 30, 'page': page_counter},
-                                                headers={'Authorization': f'Token {token}'}, timeout=1000)
+                                                headers=header, timeout=1000)
             constants.dork_search_counter += 1
         except Exception as ex:
             logger.error(f'Request Error in rep_scan:\n{ex}')
             return [{'Error': f'{ex}'}]
         else:
+            if response_repo_search.status_code == 401:
+                logger.error('Token may was expired!')
+                return
             time.sleep(1)
             total_count = response_repo_search.json()['total_count']
             if total_count > 1000:
@@ -155,17 +172,27 @@ def commits_scan(token: str, dork, organization):
     commit_url_list = []
     while page_counter <= max_page:
         try:
-            time.sleep(4)
+            time.sleep(2)
+            if token != '-':
+                header = {
+                    'Authorization': f'Token {token}'}
+            else:
+                time.sleep(2)
+                header = {}
             response_commit_search = requests.get('https://api.github.com/search/commits',
                                                   params={'q': dork, 'sort': 'committer-date', 'order': 'desc',
                                                           'per_page': 30, 'page': page_counter},
-                                                  headers={'Authorization': f'Token {token}'}, timeout=1000)
+                                                  headers=header, timeout=1000)
             time.sleep(4)
             constants.dork_search_counter += 1
         except Exception as ex:
             logger.error(f'Request Error in commits_scan:\n{ex}')
             return [{'Error': f'{ex}'}]
         else:
+
+            if response_commit_search.status_code == 401:
+                logger.error('Token may was expired!')
+                return
             time.sleep(1)
             total_count = response_commit_search.json()['total_count']
             if total_count > 1000:
@@ -239,8 +266,10 @@ def gitscan(organization):
                 logger.info(
                     f'Current dork: {CLR["BOLD"]}{unquote(constants.dork_dict[organization][i])}{CLR["RESET"]} {constants.all_dork_search_counter}/{constants.all_dork_counter}')
 
+                # TODO change to generator it
                 var = code_scan(constants.token_list[i % len(
-                    constants.token_list)], constants.dork_dict[organization][i], organization)
+                        constants.token_list)], constants.dork_dict[organization][i], organization)
+
 
                 if type(var) is list:
                     for j in var:

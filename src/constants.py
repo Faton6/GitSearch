@@ -7,6 +7,7 @@ import tracemalloc
 # Project lib's import
 from src import Connector
 from src import filters
+from src.logger import logger, CLR
 
 __NAME__ = "GitSearch"
 # TODO: need to move in yaml format of filters
@@ -17,6 +18,7 @@ SEARCH_FOLDER_PATH = f"{Path(__file__).parent}/searcher"
 MAIN_FOLDER_PATH = Path(Path(__file__).parent).parent
 COMMAND_FILE = str(SEARCH_FOLDER_PATH) + '/command_file'
 LOGS_PATH = str(MAIN_FOLDER_PATH) + '/logs'
+LIBS_PATH = str(MAIN_FOLDER_PATH) + '/lib'
 if not os.path.exists(LOGS_PATH):
     os.makedirs(LOGS_PATH)
 TEMP = str(MAIN_FOLDER_PATH) + '/temp'
@@ -53,11 +55,14 @@ leak_check_list = config['leak_check_list']
 url_DB = config['url_DB']
 token_DB = config['token_DB']
 token_list = config['token_list']
+if token_list[0] == '-':
+    logger.warning('Warning: Token not set. Open config.json and put token to token_list')
 if url_DB != '-':
     url_from_DB = Connector.dump_from_DB()
     filters.exclude_list_update()
     dork_dict = Connector.dump_target_from_DB()
 else:
+    url_from_DB = '-'
     dork_dict = config['target_list']
 all_dork_counter = 0  # quantity of all dorks
 with open(f'{MAIN_FOLDER_PATH}/src/dorks.txt') as dorks_file:
@@ -78,7 +83,7 @@ all_dork_search_counter = 0  # stable quantity of searches in gihtub
 MAX_SEARCH_BEFORE_DUMP = 10
 
 quantity_obj_before_send = 0
-MAX_OBJ_BEFORE_SEND = 50
+MAX_OBJ_BEFORE_SEND = 5  # TODO change to 50
 
 LOW_LVL_THRESHOLD = 5  # low lvl of leaks - from 0 to LVL_LOW_THRESHOLD - 1
 # medium lvl of leaks - from LVL_LOW_THRESHOLD to LVL_LOW_THRESHOLD - 1

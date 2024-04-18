@@ -28,7 +28,7 @@ if __name__ == "__main__":
 
     # Github scan
     logger.info('Start Github scan')
-    gitscan(constants.dork_dict)
+    #sgitscan(constants.dork_dict)
     filters.dumping_data()
 
     # Deepscan - repeat deep scan of found leaks

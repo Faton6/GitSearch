@@ -52,11 +52,11 @@ def dumping_data():
             break
     if result_unempty:
         Connector.dump_to_DB()
-
-    for scan_key in constants.RESULT_MASS.keys():
-        for scanObj in constants.RESULT_MASS[scan_key].keys():
-            constants.url_from_DB[constants.RESULT_MASS[scan_key][scanObj].repo_url] = str(
-                constants.RESULT_CODE_TO_SEND)
+    if constants.url_from_DB != '-':
+        for scan_key in constants.RESULT_MASS.keys():
+            for scanObj in constants.RESULT_MASS[scan_key].keys():
+                constants.url_from_DB[constants.RESULT_MASS[scan_key][scanObj].repo_url] = str(
+                    constants.RESULT_CODE_TO_SEND)
     constants.dork_search_counter = 0
     constants.RESULT_MASS = constants.AutoVivification()
     constants.quantity_obj_before_send = 0
@@ -179,7 +179,8 @@ def convert_to_regex_pattern(input_string):
 def filter_url_by_DB(url_list):
     filtered_urls = []
     url_dump_from_DB = constants.url_from_DB  # list with dict: {url:final_resul}
-
+    if url_dump_from_DB == '-':
+        return url_list
     for url_leak in url_list:
         is_need_to_add = True
         for url_from_DB in url_dump_from_DB.keys():
@@ -231,11 +232,13 @@ class CheckRepo:
     @classmethod
     def _clone(cls):
         try:
+            # TODO check repository size to skip big repositories
             cls._clean_repo_dirs()
             os.makedirs(f"{constants.TEMP}/{cls.repo_dir}---reports")
 
             gitclone_proc = subprocess.Popen(['git', 'clone', f'{cls.url}', f'/{constants.TEMP}/{cls.repo_dir}'],
                                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # TODO add Timeout error and repository size check
             while gitclone_proc.poll() is None:
                 if os.path.exists(constants.COMMAND_FILE):
                     fd = open(constants.COMMAND_FILE, 'r')
@@ -249,7 +252,7 @@ class CheckRepo:
                         print(
                             f'Canceling git clonning repo: {cls.url.split("/")[-2] + "/" + cls.url.split("/")[-1]}')
                         cls._clean_repo_dirs()
-                        return {'Skipped': 'git clonning'}
+                        return 3
                     elif command_line == 'stop' or command_line == 'stop\n':
                         fd.close()
                         open(constants.COMMAND_FILE, 'w').close()
@@ -260,12 +263,13 @@ class CheckRepo:
                         return 1
                     else:
                         fd.close()
+            return 0
         except Exception as ex:
             logger.error(f'\nERROR in cloning repository: {ex}')
             if os.path.exists(f"{constants.TEMP}/{cls.repo_dir}"):
                 os.chdir(cls.old_dir)
                 cls._clean_repo_dirs()
-            return {'Error': 'Exception in git clonning'}
+            return -1
 
         ''' 
    @classmethod
@@ -396,7 +400,7 @@ class CheckRepo:
             num_of_deep_methods = len(deep_scans)
             with ThreadPoolExecutor(max_workers=num_of_deep_methods) as executor:
                 futures = {executor.submit(method): name for name, method in deep_scans.items()}
-
+                # TODO command_file not work because ThreadPool
                 for future in as_completed(futures):
                     res, method = future.result(), futures[future]
                     if res == 1:
@@ -426,7 +430,7 @@ class CheckRepo:
         try:
             tr = time.perf_counter()
 
-            gitleaks_proc = subprocess.Popen(['gitleaks', 'detect', '--no-banner', '--no-color',
+            gitleaks_proc = subprocess.Popen([constants.LIBS_PATH + '/gitleaks', 'detect', '--no-banner', '--no-color',
                                               '--report-format', 'json', '-r', './gitleaks_rep.json'],
                                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             while gitleaks_proc.poll() is None:
@@ -651,7 +655,7 @@ class CheckRepo:
     def _trufflehog_scan(cls):
         tr = time.perf_counter()
 
-        trufflehog = subprocess.Popen(['trufflehog', 'git', '--json', '--no-update', 'file://.'],
+        trufflehog = subprocess.Popen([constants.LIBS_PATH + '/trufflehog', 'git', '--json', '--no-update', 'file://.'],
                                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         while trufflehog.poll() is None:
             if time.perf_counter() - tr > constants.MAX_TIME_TO_SCAN_BY_UTIL:
@@ -919,10 +923,10 @@ class CheckRepo:
 
         cls.repo_dir = url.split('/')[-2] + '---' + url.split('/')[-1]
         res = {'Result': 'Not founded'}
-        cls._clone()
-        if mode == 1:
-            # cls._pydriller_scan()
-            res = cls._scan()
-        elif mode == 2 or mode == 3:
-            res = cls._scan(mode)
+        if cls._clone() == 0:
+            if mode == 1:
+                # cls._pydriller_scan() TODO repair dependities
+                res = cls._scan()
+            elif mode == 2 or mode == 3:
+                res = cls._scan(mode)
         return res

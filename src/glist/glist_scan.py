@@ -1,11 +1,11 @@
 # Standart libs import
 import requests
-from src.logger import logger, CLR
 from bs4 import BeautifulSoup
 import time
 from urllib.parse import unquote
 
 # Project lib's import
+from src.logger import logger, CLR
 from src import constants
 from src.glist import GlistObj
 from src import filters
@@ -76,7 +76,6 @@ class GlistScan:
                 constants.all_dork_search_counter += 1
                 logger.info(
                     f'Current dork: {CLR["BOLD"]}{unquote(dork)}{CLR["RESET"]} {constants.all_dork_search_counter}/{constants.all_dork_counter}')
-                #time.sleep(1)
                 token = constants.token_list[i % len(constants.token_list)]
                 constants.dork_search_counter += 1
                 last_page_links = quantity % 10
@@ -97,14 +96,22 @@ class GlistScan:
                     for _ in range(len(glists_links)):
                         time.sleep(2)
                         # Get date of gist creation
-                        get_date_gist_creation = requests.get(glists_links[_], headers={
-                            'Authorization': f'Token {token}'})
+                        if token != '-':
+                            header = {
+                                'Authorization': f'Token {token}'}
+                        else:
+                            time.sleep(2)
+                            header = {}
+                        get_date_gist_creation = requests.get(glists_links[_], headers=header)
                         # Create Gist obj
                         if glists_links[_] not in checked_list.keys():
                             checked_list[glists_links[_]] = GlistObj.GlistObj(glists_links[_], dork,
-                                                                              cls._scan(glists_links[_], dork), organization)
-                            checked_list[glists_links[_]].created_date = cls._datetim_exfiltr(get_date_gist_creation.text)
-                            checked_list[glists_links[_]].updated_date = cls._datetim_exfiltr(get_date_gist_creation.text)
+                                                                              cls._scan(glists_links[_], dork),
+                                                                              organization)
+                            checked_list[glists_links[_]].created_date = cls._datetim_exfiltr(
+                                get_date_gist_creation.text)
+                            checked_list[glists_links[_]].updated_date = cls._datetim_exfiltr(
+                                get_date_gist_creation.text)
                             constants.RESULT_MASS['Glist_scan'][checked_list[glists_links[_]].repo_name] = checked_list[
                                 glists_links[_]]
                         else:

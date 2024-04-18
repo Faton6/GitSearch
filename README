@@ -1,3 +1,5 @@
 GitSearch - github leaks multiscanner
 
 TODO README
+
+This project use some opens source scanners: Trufflehog, Gitleaks, Git-secrets
