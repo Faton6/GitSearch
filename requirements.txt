@@ -47,3 +47,4 @@ whispers==2.2.0
 pywhat==5.1.0
 deepsecrets==1.1.4
 certifi
+mariadb

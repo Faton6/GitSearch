@@ -5,7 +5,7 @@ services:
         container_name: gitsearch
         restart: always
         volumes:
-            - "./app:/app"
+            - ".:/app"
         deploy:
           resources:
             limits:

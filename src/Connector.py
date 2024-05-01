@@ -5,7 +5,7 @@ import json
 import time
 
 import requests
-
+import mariadb
 # Project lib's import
 from src import constants
 from src.logger import logger
@@ -181,6 +181,21 @@ def dump_target_from_DB():
     return dork_dict
 
 
+def connect_to_database():
+    try:
+        conn = mariadb.connect(
+            user="your_username",
+            password="your_password",
+            host="localhost",
+            port=3306,
+            database="Gitsearch"
+        )
+        cursor = conn.cursor()
+        return conn, cursor
+    except mariadb.Error as e:
+        print(f"Error connecting to MariaDB Platform: {e}")
+
+
 def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add only report in DB
     with open(filename, 'r') as file:
         backup_rep = json.load(file)
@@ -188,8 +203,32 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
     # mode
     for i in backup_rep['scan'].keys():
         if mode == 0:
-            data_leak = backup_rep['scan'][i][0]
-            headers = {'token': constants.token_DB}
+            content = backup_rep['scan'][i][0]
+            leak_id = None
+            try:
+                conn, cursor = connect_to_database()
+                cursor.execute(
+                    "INSERT INTO leak (url, level, author_info, found_at, created_at, updated_at, approval, leak_type, result, company_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (content['url'], content['level'], content['author_info'], content['found_at'],
+                     content['created_at'], content['updated_at'], content['approval'], content['leak_type'],
+                     content['result'], content['company_id']))
+                conn.commit()
+                leak_id = cursor.lastrowid
+                data_row_report = backup_rep['scan'][i][1]
+                cursor.execute("INSERT INTO row_report (leak_id, report_name, row_data) VALUES (?, ?, ?)",
+                               (leak_id, data_row_report['report_name'], data_row_report['row_data']))
+                conn.commit()
+            except mariadb.Error as e:
+                return logger.error(f"Error: {e}")
+            finally:
+                if conn:
+                    conn.close()
+
+    logger.info(f'\nEnd dump data to DB\n---------------------------------------')
+
+
+'''         
+            headers = {'token': constants.token_DB}   
             responce_obj_add = requests.post(url=constants.url_DB, headers=headers, json=data_leak, verify=False,
                                              timeout=1000)
 
@@ -206,8 +245,7 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
             responce_secrets_add = requests.post(url=constants.url_DB, headers=headers, json=data_row_report,
                                                  verify=False, timeout=1000)
             logger.info(f'\nResponce dump data to DB.row_report: {responce_secrets_add.text}')
-
-    logger.info(f'\nEnd dump data to DB\n---------------------------------------')
+'''
 
 
 def dump_raw_data_from_DB(leak_id):
