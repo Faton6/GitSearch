@@ -1,6 +1,7 @@
+---
 services:
     gitsearch:
-        image: gitsearch:1.0.3
+        image: gitsearch
         container_name: gitsearch
         restart: always
         volumes:
@@ -13,6 +14,31 @@ services:
         networks:
           gitsearch_network:
             ipv4_address: 172.32.0.99
+
+    db:
+      image: mariadb:10.3
+      restart: always
+      environment:
+        MYSQL_ROOT_PASSWORD: changeme
+      ports:
+        - "3306:3306"
+      networks:
+        gitsearch_network:
+          ipv4_address: 172.32.0.97
+
+    phpmyadmin:
+      image: phpmyadmin
+      restart: always
+      ports:
+        - 8080:80
+      environment:
+        PMA_ARBITRARY: "1"
+        PMA_HOST: "172.32.0.97"
+        PMA_PORT: "3306"
+      networks:
+        gitsearch_network:
+          ipv4_address: 172.32.0.98
+
 
 networks:
   gitsearch_network:
