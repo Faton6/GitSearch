@@ -9,19 +9,25 @@ services:
         deploy:
           resources:
             limits:
-              cpus: "1.0"
+              cpus: "2.0"
               memory: 8G
         networks:
           gitsearch_network:
             ipv4_address: 172.32.0.99
 
+        depends_on:
+          - db
+
     db:
       image: mariadb:10.3
       restart: always
       environment:
+        MYSQL_DATABASE: Gitsearch
         MYSQL_ROOT_PASSWORD: changeme
       ports:
         - "3306:3306"
+      volumes:
+        - "./Gitsearch_DB.sql:/docker-entrypoint-initdb.d/Gitsearch_DB.sql"
       networks:
         gitsearch_network:
           ipv4_address: 172.32.0.97
@@ -35,6 +41,8 @@ services:
         PMA_ARBITRARY: "1"
         PMA_HOST: "172.32.0.97"
         PMA_PORT: "3306"
+        MYSQL_ROOT_PASSWORD: changeme
+        UPLOAD_LIMIT: 100000000
       networks:
         gitsearch_network:
           ipv4_address: 172.32.0.98

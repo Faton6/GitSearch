@@ -23,12 +23,12 @@ if __name__ == "__main__":
 
     # Github Gist scan
     logger.info('Start Gist scan')
-    GlistScan.run(filter_='updated', quantity=30)
+    #GlistScan.run(filter_='updated', quantity=30)
     filters.dumping_data()
 
     # Github scan
     logger.info('Start Github scan')
-    #sgitscan(constants.dork_dict)
+    gitscan(constants.dork_dict)
     filters.dumping_data()
 
     # Deepscan - repeat deep scan of found leaks
@@ -37,7 +37,6 @@ if __name__ == "__main__":
     logger.info('Start Deepscan scan')
     constants.RESULT_MASS = constants.AutoVivification()
     deepscan.deep_scan()
-    Connector.update_result_filed_in_DB()
     '''
     os.chdir(old_dir)
     print(f'Back to directory: {old_dir}')

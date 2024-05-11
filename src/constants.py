@@ -1,4 +1,5 @@
 # Standart libs import
+import sys
 from pathlib import Path
 import os
 import json
@@ -59,8 +60,9 @@ if token_list[0] == '-':
     logger.warning('Warning: Token not set. Open config.json and put token to token_list')
 if url_DB != '-':
     url_from_DB = Connector.dump_from_DB()
-    filters.exclude_list_update()
+    #filters.exclude_list_update()
     dork_dict = Connector.dump_target_from_DB()
+    #sys.exit(0)
 else:
     url_from_DB = '-'
     dork_dict = config['target_list']
@@ -80,7 +82,7 @@ all_dork_counter *= 2
 dork_search_counter = 0  # quantity of searches in gihtub
 all_dork_search_counter = 0  # stable quantity of searches in gihtub
 # quantity of MAX searches in gihtub before neccessary dump to DB
-MAX_SEARCH_BEFORE_DUMP = 10
+MAX_SEARCH_BEFORE_DUMP = 2  # TODO change to 10-20
 
 quantity_obj_before_send = 0
 MAX_OBJ_BEFORE_SEND = 5  # TODO change to 50

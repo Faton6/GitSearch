@@ -107,6 +107,137 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
         dump_to_DB_req(report_filename, mode=mode)
 
 
+def connect_to_database():
+    try:
+        conn = mariadb.connect(
+            user="root",
+            password="changeme",
+            host=constants.url_DB,
+            port=3306,
+            database="Gitsearch"
+        )
+        cursor = conn.cursor()
+        return conn, cursor
+    except mariadb.Error as e:
+        print(f"Error connecting to MariaDB Platform: {e}")
+
+
+def dump_target_from_DB():
+    logger.info(f'Dumping target words from DB...')
+    dork_dict = {}
+    conn, cursor = connect_to_database()
+    try:
+        cursor.execute("SELECT dork, company_id FROM dorks")
+        dumped_data = cursor.fetchall()
+        conn.commit()
+        for i in dumped_data:
+            dork_dict[i[1]] = base64.b64decode(i[0][1:-1]).decode('utf-8').split(', ')
+
+        return dork_dict
+    except mariadb.Error as e:
+        return logger.error(f"Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def dump_from_DB(mode=0):
+    # mode=0 - return [..{'url':'result'}..]
+    # mode=1 - return [..{'url':['result', 'id', 'leak_id']}..]
+    checked_repos = {}
+    logger.info(f'Dumping data from DB...')
+
+    conn, cursor = connect_to_database()
+    try:
+        cursor.execute("SELECT id, url, result FROM leak")
+        dumped_data = cursor.fetchall()
+        conn.commit()
+
+        if mode == 1:
+            for i in dumped_data:
+                checked_repos[i[1]] = [i[2], i[0]]  # checked_repos[i['url']] = [i['result'], i['id']]
+        else:
+            for i in dumped_data:
+                checked_repos[i[1]] = i[2]  # checked_repos[i['url']] = i['result']
+        return checked_repos
+    except mariadb.Error as e:
+        return logger.error(f"Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+
+def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add only report in DB
+    with open(filename, 'r') as file:
+        backup_rep = json.load(file)
+        # print(backup_rep)
+    # mode
+    for i in backup_rep['scan'].keys():
+        if mode == 0:
+            content = backup_rep['scan'][i][0]['content']
+            leak_id = None
+            try:
+                conn, cursor = connect_to_database()
+                cursor.execute(
+                    "INSERT INTO leak (url, level, author_info, found_at, created_at, updated_at, approval, leak_type, result, company_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (content['url'], content['level'], content['author_info'], content['found_at'],
+                     content['created_at'], content['updated_at'], content['approval'], content['leak_type'],
+                     content['result'], content['company_id']))
+                conn.commit()
+                leak_id = cursor.lastrowid
+                data_row_report = backup_rep['scan'][i][1]['content']
+                cursor.execute("INSERT INTO row_report (leak_id, report_name, row_data) VALUES (?, ?, ?)",
+                               (leak_id, data_row_report['report_name'], data_row_report['row_data']))
+                conn.commit()
+
+            except mariadb.Error as e:
+                return logger.error(f"Error: {e}")
+            finally:
+                if conn:
+                    conn.close()
+
+    logger.info(f'\nEnd dump data to DB\n---------------------------------------')
+
+
+def dump_row_data_from_DB(target_leak_id):
+    logger.info(f'Dumping leak {target_leak_id} from DB...')
+
+    conn, cursor = connect_to_database()
+    try:
+        cursor.execute("SELECT row_data FROM row_report WHERE leak_id=target_leak_id")
+        conn.commit()
+        dumped_data = str(json.loads(bz2.decompress(base64.b64decode(cursor.fetchall()))))
+        return dumped_data
+    except mariadb.Error as e:
+        return logger.error(f"Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+
+'''         
+            headers = {'token': constants.token_DB}   
+            responce_obj_add = requests.post(url=constants.url_DB, headers=headers, json=data_leak, verify=False,
+                                             timeout=1000)
+
+            logger.info(f'\nResponce dump data to DB.leak: {responce_obj_add.text}')
+            data_row_report = backup_rep['scan'][i][1]
+            data_row_report['content']['leak_id'] = responce_obj_add.json()['content']['id']
+
+            responce_secrets_add = requests.post(url=constants.url_DB, headers=headers, json=data_row_report,
+                                                 verify=False, timeout=1000)
+            logger.info(f'\nResponce dump data to DB.row_report: {responce_secrets_add.text}')
+        elif mode == 1:
+            headers = {'token': constants.token_DB}
+            data_row_report = backup_rep['scan'][i][1]
+            responce_secrets_add = requests.post(url=constants.url_DB, headers=headers, json=data_row_report,
+                                                 verify=False, timeout=1000)
+            logger.info(f'\nResponce dump data to DB.row_report: {responce_secrets_add.text}')
+'''
+
+'''
 def dump_from_DB(mode=0):
     # mode=0 - return [..{'url':'result'}..]
     # mode=1 - return [..{'url':['result', 'id', 'leak_id']}..]
@@ -227,7 +358,7 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
     logger.info(f'\nEnd dump data to DB\n---------------------------------------')
 
 
-'''         
+    
             headers = {'token': constants.token_DB}   
             responce_obj_add = requests.post(url=constants.url_DB, headers=headers, json=data_leak, verify=False,
                                              timeout=1000)
@@ -245,10 +376,10 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
             responce_secrets_add = requests.post(url=constants.url_DB, headers=headers, json=data_row_report,
                                                  verify=False, timeout=1000)
             logger.info(f'\nResponce dump data to DB.row_report: {responce_secrets_add.text}')
-'''
 
 
-def dump_raw_data_from_DB(leak_id):
+
+def dump_row_data_from_DB(leak_id):
     # plus
     checked_repos = {}
     logger.info(f'Dumping leak {leak_id} from DB...')
@@ -318,3 +449,4 @@ def update_result_filed_in_DB():
                                                     verify=False)
 
                 logger.info('Was change result')
+'''

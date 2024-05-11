@@ -56,7 +56,13 @@ def code_scan(token: str, dork, organization):
         else:
             if response_code_search.status_code == 401:
                 logger.error('Token may was expired!')
-                return
+                time.sleep(2)
+                continue
+            elif 'total_count' not in response_code_search.json():
+                logger.error('Responce does not contains \'total_count\'. Responce: ', str(response_code_search.json()))
+                time.sleep(2)
+                continue
+
             time.sleep(1)
             total_count = response_code_search.json()['total_count']
             if total_count > 1000:
@@ -122,7 +128,12 @@ def rep_scan(token: str, dork, organization):
         else:
             if response_repo_search.status_code == 401:
                 logger.error('Token may was expired!')
-                return
+                time.sleep(2)
+                continue
+            elif 'total_count' not in response_repo_search.json():
+                logger.error('Responce does not contains \'total_count\'. Responce: ', str(response_repo_search.json()))
+                time.sleep(2)
+                continue
             time.sleep(1)
             total_count = response_repo_search.json()['total_count']
             if total_count > 1000:
@@ -189,10 +200,14 @@ def commits_scan(token: str, dork, organization):
             logger.error(f'Request Error in commits_scan:\n{ex}')
             return [{'Error': f'{ex}'}]
         else:
-
             if response_commit_search.status_code == 401:
                 logger.error('Token may was expired!')
-                return
+                time.sleep(2)
+                continue
+            elif 'total_count' not in response_commit_search.json():
+                logger.error('Responce does not contains \'total_count\'. Responce: ', str(response_commit_search.json()))
+                time.sleep(2)
+                continue
             time.sleep(1)
             total_count = response_commit_search.json()['total_count']
             if total_count > 1000:

@@ -362,7 +362,7 @@ class CheckRepo:
             'gitleaks': cls._gitleaks_scan,
             'gitsecrets': cls._gitsecrets_scan,
             'whispers': cls._whispers_scan,
-            'trufflehog': cls._trufflehog_scan,
+            #'trufflehog': cls._trufflehog_scan, TODO some problems 'Filesystem'
             'grepscan': cls._grep_scan,
             'deepsecrets': cls._deepsecrets_scan
         }
@@ -370,7 +370,7 @@ class CheckRepo:
             'gitleaks': cls._gitleaks_scan,
             'gitsecrets': cls._gitsecrets_scan,
             'whispers': cls._whispers_scan,
-            'trufflehog': cls._trufflehog_scan,
+            #'trufflehog': cls._trufflehog_scan, TODO some problems 'Filesystem'
             'grepscan': cls._grep_scan,
             'deepsecrets': cls._deepsecrets_scan,
             'ioc_finder': cls._ioc_finder_scan

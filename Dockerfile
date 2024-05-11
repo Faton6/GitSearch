@@ -54,4 +54,6 @@ RUN chmod +x trufflehog git-secrets gitleaks && \
 # install pip requirements
 
 # and let's roll
+CMD ["pwd"]
+CMD ["ls -la"]
 CMD ["python3", "gitsearch.py"]

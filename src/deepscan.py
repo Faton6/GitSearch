@@ -26,7 +26,7 @@ def deep_scan():
     mode_for_dump_to_DB = 1
 
     for url in list(url_to_deepscan.keys()):
-        raw_report = Connector.dump_raw_data_from_DB(url_to_deepscan[url][0])
+        raw_report = Connector.dump_row_data_from_DB(url_to_deepscan[url][0])
         temp_data = url_to_deepscan[url][1]
         if (len(raw_report['grepscan']) == len(temp_data['grepscan'])
                 and len(raw_report['whispers']) == len(temp_data['whispers'])
