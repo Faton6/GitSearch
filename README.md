@@ -1,6 +1,6 @@
 # GitSearch
 
-
+![logo_gitsearch](https://github.com/Faton6/GitSearch/assets/76423174/a0e55c39-879c-4011-b67e-47e26d83a1d3)
 
 ## ⚪️ What is this?
 GitSearch is a universal corporate information and credentials leak scanner designed to monitor open-source code platforms. It helps prevent potential losses by detecting data breaches in a timely manner.
