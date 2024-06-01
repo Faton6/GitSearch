@@ -1,1 +1,1 @@
-from .search import gitscan
+from .scanner import Scanner

@@ -22,7 +22,7 @@ def deep_scan():
 
     for url in url_to_deepscan.keys():
         mode_for_scan = 3
-        url_to_deepscan[url][1] = filters.CheckRepo.run(url, 'None', mode_for_scan)
+        url_to_deepscan[url][1] = filters.Checker.run(url, 'None', mode_for_scan)
     mode_for_dump_to_DB = 1
 
     for url in list(url_to_deepscan.keys()):
@@ -95,7 +95,7 @@ def _list_scan(url_list):
         logger.info(f'Current repository: {i.repo_url}')
         if checked_list[i.repo_name] == '':
             mode_for_scan = 1
-            check_repo_res = filters.CheckRepo.run(i.repo_url, 'None', mode_for_scan)
+            check_repo_res = filters.Checker.run(i.repo_url, 'None', mode_for_scan)
             if type(check_repo_res) == int and check_repo_res == 1:
                 for j in rep_obj_list:
                     constants.RESULT_MASS['Repo_res'][j.repo_name] = j

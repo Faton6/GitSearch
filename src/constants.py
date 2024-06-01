@@ -1,14 +1,12 @@
 # Standart libs import
-import sys
 from pathlib import Path
 import os
 import json
 import tracemalloc
 
 # Project lib's import
-from src import Connector
-from src import filters
-from src.logger import logger, CLR
+# from src import filters
+# from src.logger import logger, CLR
 
 __NAME__ = "GitSearch"
 # TODO: need to move in yaml format of filters
@@ -32,11 +30,15 @@ RESULT_CODES = ['1', '2', '3']  # Field from DB that conatain status if founded 
 RESULT_CODE_TO_DEEPSCAN = 5
 RESULT_CODE_TO_SEND = 4
 
+dork_dict: dict = {}
+url_from_DB: dict = {}
 
 class AutoVivification(dict):
     """
         class AutoVivification - get easy to append dict
     """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
     def __getitem__(self, item):
         try:
@@ -56,27 +58,7 @@ leak_check_list = config['leak_check_list']
 url_DB = config['url_DB']
 token_DB = config['token_DB']
 token_list = config['token_list']
-if token_list[0] == '-':
-    logger.warning('Warning: Token not set. Open config.json and put token to token_list')
-if url_DB != '-':
-    url_from_DB = Connector.dump_from_DB()
-    #filters.exclude_list_update()
-    dork_dict = Connector.dump_target_from_DB()
-    #sys.exit(0)
-else:
-    url_from_DB = '-'
-    dork_dict = config['target_list']
-all_dork_counter = 0  # quantity of all dorks
-with open(f'{MAIN_FOLDER_PATH}/src/dorks.txt') as dorks_file:
-    dorks = [line.rstrip() for line in dorks_file]
-    for company in dork_dict:
-        for j in range(len(dork_dict[company])):
-            all_dork_counter += 1
-            for i in dorks:
-                all_dork_counter += 1
-                dork_dict[company].append(dork_dict[company][j] + ' ' + i)
-                leak_check_list.append(i)
-all_dork_counter *= 2
+
 
 # Dork counterts
 dork_search_counter = 0  # quantity of searches in gihtub

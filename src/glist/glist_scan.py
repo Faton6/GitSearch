@@ -61,7 +61,7 @@ class GlistScan:
 
     @classmethod
     def _scan(cls, url, dork):
-        SECRETS = filters.CheckRepo.run(url, dork, 2)
+        SECRETS = filters.Checker.run(url, dork, 2)
         return SECRETS
 
     @classmethod
@@ -87,7 +87,7 @@ class GlistScan:
 
                     glists_links = cls._links_exfiltr(html, quantity)
 
-                    glists_links = filters.filter_url_by_DB(glists_links)
+                    glists_links = filters.filter_url_by_db(glists_links)
                     if len(glists_links) == 0:
                         break
                     glists_links = filters.filter_url_by_repo(glists_links)
