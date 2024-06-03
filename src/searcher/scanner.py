@@ -3,7 +3,7 @@
 import time
 
 # from urllib.parse import unquote
-from concurrent.futures import ThreadPoolExecutor, Future, wait,FIRST_COMPLETED
+from concurrent.futures import ThreadPoolExecutor, Future, wait, FIRST_COMPLETED, ProcessPoolExecutor
 
 import src.constants as c
 
@@ -89,11 +89,10 @@ class Scanner():
                             logger.error("Failed to scan %s: %s", checker.url,
                                          exc)
                             continue
-                        del t[fs]
+                        finally:
+                            del t[fs]
 
-                        if checker.status == CLONED:
-                            t[scan_exec.submit(checker.run)] = checker
-                        elif checker.status == SCANNED:
+                        if checker.status & SCANNED > 0:
                             if result == 1:
                                 for j in obj_list:
                                     # HACK what is this
@@ -103,6 +102,8 @@ class Scanner():
                             if isinstance(result, c.AutoVivification):
                                 checker.obj.secrets = result
                                 self.checked[checker.obj.repo_name] = result
+                        elif checker.status & CLONED > 0:
+                            t[scan_exec.submit(checker.run)] = checker
 
                 if c.quantity_obj_before_send >= c.MAX_OBJ_BEFORE_SEND:
                     dumping_data()

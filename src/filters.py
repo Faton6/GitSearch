@@ -276,6 +276,7 @@ class Checker:
                 self.url, f'/{constants.TEMP}/{self.repo_dir}')
             self.clean_excluded_files()
             os.makedirs(f"{constants.TEMP}/{self.repo_dir}---reports")
+            self.get_dates()
         except Exception as exc:
             logger.error('Failed to clone repo %s: %s', self.url, exc)
             self._clean_repo_dirs()
@@ -308,9 +309,11 @@ class Checker:
             raise CheckerException(
                 "In get_dates(): repositiory must be clone()-ed")
 
-        self.secrets['created_at'] = self.repo.head.commit.authored_datetime
-        self.secrets['updated_at'] = \
-            tuple(self.repo.iter_commits())[-1].authored_datetime
+        first_commit = next(self.repo.iter_commits( '--all', reverse=True))
+        self.secrets['created_at'] = first_commit.authored_datetime
+
+        last_commit = next(self.repo.iter_commits('--all'))
+        self.secrets['updated_at'] = last_commit.authored_datetime
 
     def clean_excluded_files(self):
         repo_path: str = f"{constants.TEMP}/{self.repo_dir}"
@@ -881,7 +884,6 @@ class Checker:
                 "You forgot call checker.clone() before scan()!")
 
         # self._pydriller_scan() TODO repair dependities
-        self.get_dates()
         self.scan()
         self.status |= SCANNED
         self._clean_repo_dirs()
