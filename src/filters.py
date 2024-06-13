@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 import re
 import time
+import datetime
 import tracemalloc
 
 import git
@@ -17,6 +18,7 @@ from ioc_finder import find_iocs
 
 from src import Connector, constants
 from src.logger import logger, CLR
+from src.searcher.GitStats import GitParserStats
 
 exclusions: tuple[str]
 
@@ -80,7 +82,7 @@ def dumping_data():
 
 def pywhat_analyze(match, cwd):
     pipe_pywhat = subprocess.Popen(['pywhat', '--json', '--include', "Bug Bounty", match],
-                                   stdout=subprocess.PIPE, 
+                                   stdout=subprocess.PIPE,
                                    stderr=subprocess.DEVNULL,
                                    cwd=cwd)
     while pipe_pywhat.poll() is None:
@@ -140,7 +142,6 @@ def _add_repo_to_exclude(url):  # TODO: add check existing repo name
         logger.error('Error in adding excludes in exclude_list.txt (_add_repo_to_exclude): %s', ex)
 
 
-
 def filter_url_by_repo(urls: list[str] | tuple[str] | str):
     """
         This function excludes repos from exclude_list.txt
@@ -148,7 +149,7 @@ def filter_url_by_repo(urls: list[str] | tuple[str] | str):
     """
 
     if isinstance(urls, str):
-        urls = (urls, )
+        urls = (urls,)
     filtered_urls = []
 
     try:
@@ -168,11 +169,12 @@ def filter_url_by_repo(urls: list[str] | tuple[str] | str):
 
 
 def is_time_format(input_str):
-    try:
-        time.strptime(input_str, '%Y-%m-%d')
-        return True
-    except ValueError:
-        return False
+    if type(input_str) is str:
+        try:
+            time.strptime(input_str, '%Y-%m-%d')
+            return True
+        except ValueError:
+            return False
 
 
 def convert_to_regex_pattern(input_string):
@@ -184,7 +186,7 @@ def convert_to_regex_pattern(input_string):
 
 def filter_url_by_db(urls: list[str] | tuple[str] | str):
     if isinstance(urls, str):
-        urls = (urls, )
+        urls = (urls,)
     filtered_urls = []
 
     url_dump_from_db = constants.url_from_DB  # list with dict: {url:final_resul}
@@ -193,6 +195,8 @@ def filter_url_by_db(urls: list[str] | tuple[str] | str):
 
     for url in urls:
         to_add = True
+        temp_del = url.split('https://github.com/')[1]
+        url = 'https://github.com/' + temp_del.split('/')[0] + '/' + temp_del.split('/')[1]
 
         for url_from_db, value in url_dump_from_db.items():
             if url == url_from_db and not value in constants.RESULT_CODES:
@@ -216,25 +220,31 @@ def _exc_catcher(func):
 
     return wrapper
 
+
 class CheckerException(Exception):
     pass
 
-INITED =  0x0001
-CLONED =  0x0002
+
+INITED = 0x0001
+CLONED = 0x0002
 SCANNED = 0x0004
+NOT_CLONED = 0x0008
+
 
 class Checker:
     file_ignore = ('.ipynb', '.png', '.svg')
 
-    def __init__(self, url: str, dork: str, obj: any, mode: int = 1) -> None:
+    def __init__(self, url: str, dork: str, obj: any, mode: int = 1, token: str = '') -> None:
         self.url = url
         self.obj = obj
         self.dork = dork
         self.mode = mode
         self.repo_dir = url.split('/')[-2] + '---' + url.split('/')[-1]
         self.secrets = constants.AutoVivification()
+        self.secrets['status'] = []
         self.repo: git.Repo
         self.status = INITED
+        self.token: str = token
 
         self.scan_time_limit = 3000 if self.mode == 3 else 1000
 
@@ -242,7 +252,7 @@ class Checker:
             'gitleaks': self.gitleaks_scan,
             'gitsecrets': self.gitsecrets_scan,
             'whispers': self.whispers_scan,
-            #'trufflehog': Checker._trufflehog_scan, TODO some problems 'Filesystem'
+            # 'trufflehog': Checker._trufflehog_scan, TODO some problems 'Filesystem'
             'grepscan': self.grep_scan,
             'deepsecrets': self.deepsecrets_scan
         }
@@ -251,6 +261,7 @@ class Checker:
             'ioc_finder': self.ioc_finder_scan
             # ,'ioc_extractor': self._ioc_extractor
         }
+        self.obj.stats = GitParserStats(self.url, self.token).get_stats()
 
     def _clean_repo_dirs(self):
         if os.path.exists(f"{constants.TEMP}/{self.repo_dir}"):
@@ -268,18 +279,29 @@ class Checker:
         return all_names
 
     def clone(self):
-        logger.info('Clonning %s', self.url)
+        logger.info(f'Repository {self.url} size: {self.obj.stats['size']}')
+        if self.obj.stats['size'] > constants.REPO_MAX_SIZE:
+            logger.info('Repository %s oversize, code not analyze', self.url)
+            self.obj.secrets['status'].append(f'Repository {self.url} is oversize, code not analyze')
+            self._clean_repo_dirs()
+            self.status |= NOT_CLONED
+            logger.info('Clonning %s', self.url)
 
-        try:
-            self._clean_repo_dirs()
-            self.repo = git.Repo.clone_from(
-                self.url, f'/{constants.TEMP}/{self.repo_dir}')
-            self.clean_excluded_files()
-            os.makedirs(f"{constants.TEMP}/{self.repo_dir}---reports")
-            self.get_dates()
-        except Exception as exc:
-            logger.error('Failed to clone repo %s: %s', self.url, exc)
-            self._clean_repo_dirs()
+            for try_clone in range(3):
+                try:
+                    self._clean_repo_dirs()
+                    self.repo = git.Repo.clone_from(
+                        self.url, f'/{constants.TEMP}/{self.repo_dir}')
+                    self.clean_excluded_files()
+                    os.makedirs(f"{constants.TEMP}/{self.repo_dir}---reports")
+                    self.get_dates()
+                    break
+                except Exception as exc:
+                    time.sleep(1)
+                    pass
+            else:
+                logger.error('Failed to clone repo %s', self.url)
+                self._clean_repo_dirs()
         else:
             self.status |= CLONED
 
@@ -294,7 +316,7 @@ class Checker:
                             for leak in constants.leak_check_list:
                                 if self.dork in line or leak in line:
                                     self.secrets['grepscan'][f'Leak #{counter}']['Match'] = str(
-                                        line[0:120])
+                                        line[:120])
                                     self.secrets['grepscan'][f'Leak #{counter}']['File'] = str(
                                         fullpath)
                                 counter += 1
@@ -309,11 +331,11 @@ class Checker:
             raise CheckerException(
                 "In get_dates(): repositiory must be clone()-ed")
 
-        first_commit = next(self.repo.iter_commits( '--all', reverse=True))
-        self.secrets['created_at'] = first_commit.authored_datetime
+        first_commit = next(self.repo.iter_commits('--all', reverse=True))
+        self.secrets['created_at'] = first_commit.authored_datetime.timetuple()
 
         last_commit = next(self.repo.iter_commits('--all'))
-        self.secrets['updated_at'] = last_commit.authored_datetime
+        self.secrets['updated_at'] = last_commit.authored_datetime.timetuple()
 
     def clean_excluded_files(self):
         repo_path: str = f"{constants.TEMP}/{self.repo_dir}"
@@ -321,7 +343,7 @@ class Checker:
         for file_name in os.listdir(repo_path):
             for ext in self.file_ignore:
                 if file_name.endswith(ext):
-                    self.secrets['status'] = [f'File extension: {ext}']
+                    self.secrets['status'].append(f'File extension: {ext}')
                     os.remove(f'{repo_path}/{file_name}')
 
     def scan(self):
@@ -362,9 +384,9 @@ class Checker:
             gitleaks_proc = subprocess.Popen([
                 'gitleaks detect --no-banner --no-color --report-format json \
                     -r ./gitleaks_rep.json'],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    cwd=f'{constants.TEMP}/{self.repo_dir}')
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                cwd=f'{constants.TEMP}/{self.repo_dir}')
             while gitleaks_proc.poll() is None:
                 if time.perf_counter() - tr > self.scan_time_limit:
                     gitleaks_proc.kill()
@@ -448,10 +470,10 @@ class Checker:
                        timeout=1000)
         tr = time.perf_counter()
         gitsecret_proc = subprocess.Popen(['git', 'secrets', '--scan', '-r',
-                                           '.'], 
-                                           stderr=subprocess.STDOUT,
-                                           stdout=subprocess.PIPE,
-                                           cwd=f'{constants.TEMP}/{self.repo_dir}')
+                                           '.'],
+                                          stderr=subprocess.STDOUT,
+                                          stdout=subprocess.PIPE,
+                                          cwd=f'{constants.TEMP}/{self.repo_dir}')
 
         while gitsecret_proc.poll() is None:
             if time.perf_counter() - tr > self.scan_time_limit:
@@ -580,7 +602,7 @@ class Checker:
                     f'{i["key"] + " " + i["value"]}'[0:120])
                 self.secrets['whispers'][f'Leak #{counter}']['Names'] = \
                     self._pywhat_analyze_names(str(
-                    self.secrets['whispers'][f'Leak #{counter}']['Match']))
+                        self.secrets['whispers'][f'Leak #{counter}']['Match']))
                 self.secrets['whispers'][f'Leak #{counter}']['File'] = str(
                     i["file"])
                 counter += 1
@@ -663,7 +685,7 @@ class Checker:
                 self.secrets['trufflehog'][f'Leak #{counter}']['Name'] = \
                     self._pywhat_analyze_names(str(
                         self.secrets['trufflehog'][f'Leak #{counter}']['Match'])
-                        )
+                    )
                 self.secrets['trufflehog'][f'Leak #{counter}']['File'] = str(
                     i['SourceMetadata']['Data']['Filesystem'][
                         'file'])
@@ -731,17 +753,17 @@ class Checker:
                                 a = True
                         if a:
                             is_first = False
-                            self.secrets['deepsecrets'][f'Leak #{counter}']\
-                            ['Match'] = str(j['line'][:120])
+                            self.secrets['deepsecrets'][f'Leak #{counter}'] \
+                                ['Match'] = str(j['line'][:120])
 
-                            self.secrets['deepsecrets']\
-                                [f'Leak #{counter}']\
+                            self.secrets['deepsecrets'] \
+                                [f'Leak #{counter}'] \
                                 ['Name'] = self._pywhat_analyze_names(str(
-                                        self.secrets['deepsecrets']\
-                                        [f'Leak #{counter}']['Match'])
-                                    )
+                                self.secrets['deepsecrets'] \
+                                    [f'Leak #{counter}']['Match'])
+                            )
 
-                            self.secrets['deepsecrets']\
+                            self.secrets['deepsecrets'] \
                                 [f'Leak #{counter}']['File'] = str(i)
                             counter += 1
             if self.secrets['deepsecrets'] is None:
@@ -759,21 +781,21 @@ class Checker:
         try:
             all_iocs = {'urls': [], 'xmpp_addresses': [],
                         'email_addresses_complete': [], 'email_addresses': [],
-                        'ipv4_cidrs': [], 'imphashes': [], 'authentihashes': [], 
+                        'ipv4_cidrs': [], 'imphashes': [], 'authentihashes': [],
                         'domains': [], 'ipv4s': [], 'ipv6s': [], 'sha512s': [],
-                        'sha256s': [], 'sha1s': [], 'md5s': [], 'ssdeeps': [], 
+                        'sha256s': [], 'sha1s': [], 'md5s': [], 'ssdeeps': [],
                         'asns': [], 'cves': [], 'registry_key_paths': [],
-                        'google_adsense_publisher_ids': [], 
-                        'google_analytics_tracker_ids': [], 
-                        'bitcoin_addresses': [], 'monero_addresses': [], 
-                        'mac_addresses': [], 'user_agents': [], 
-                        'tlp_labels': [], 
+                        'google_adsense_publisher_ids': [],
+                        'google_analytics_tracker_ids': [],
+                        'bitcoin_addresses': [], 'monero_addresses': [],
+                        'mac_addresses': [], 'user_agents': [],
+                        'tlp_labels': [],
                         'attack_mitigations': {'enterprise': [], 'mobile': []},
-                        'attack_tactics': {'pre_attack': [], 'enterprise': [], 
+                        'attack_tactics': {'pre_attack': [], 'enterprise': [],
                                            'mobile': []},
-                        'attack_techniques': {'pre_attack': [], 
-                                              'enterprise': [], 'mobile': []}, 
-                                              'file_paths': []}
+                        'attack_techniques': {'pre_attack': [],
+                                              'enterprise': [], 'mobile': []},
+                        'file_paths': []}
 
             for folder, _, files in os.walk('./'):
                 for file in files:
@@ -858,9 +880,9 @@ class Checker:
             filter(lambda item: item != '127.0.0.1', all_iocs['ipv4s']))
         all_iocs['urls'] = list(
             filter(lambda item:
-                    '127.0.0.1' not in item
-                    and 'localhost' not in item,
-                    all_iocs['urls']))
+                   '127.0.0.1' not in item
+                   and 'localhost' not in item,
+                   all_iocs['urls']))
         all_iocs['ipv6s'] = list(
             filter(lambda item: item != '::', all_iocs['ipv6s']))
 
@@ -879,13 +901,15 @@ class Checker:
 
         # logger.info(': ' + str(datetime.now()) + '\n')
         # Commented because logger shows time and date as well
-        if self.status & CLONED == 0:
+        if self.status & NOT_CLONED:
+            self.status |= SCANNED
+        elif self.status & CLONED == 0:
             raise CheckerException(
                 "You forgot call checker.clone() before scan()!")
-
-        # self._pydriller_scan() TODO repair dependities
-        self.scan()
-        self.status |= SCANNED
-        self._clean_repo_dirs()
+        else:
+            # self._pydriller_scan() TODO repair dependities
+            self.scan()
+            self.status |= SCANNED
+            self._clean_repo_dirs()
 
         return self.secrets
