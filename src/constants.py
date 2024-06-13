@@ -67,8 +67,8 @@ all_dork_search_counter = 0  # stable quantity of searches in gihtub
 MAX_SEARCH_BEFORE_DUMP = 2  # TODO change to 10-20
 
 quantity_obj_before_send = 0
-MAX_OBJ_BEFORE_SEND = 5  # TODO change to 50
-
+MAX_OBJ_BEFORE_SEND = 50
+REPO_MAX_SIZE = 50000
 LOW_LVL_THRESHOLD = 5  # low lvl of leaks - from 0 to LVL_LOW_THRESHOLD - 1
 # medium lvl of leaks - from LVL_LOW_THRESHOLD to LVL_LOW_THRESHOLD - 1
 MEDIUM_LOW_THRESHOLD = 15

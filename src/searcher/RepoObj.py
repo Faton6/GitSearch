@@ -46,12 +46,13 @@ class RepoObj:
         self.found_time = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         self.created_date = 'Not checked'
         self.updated_date = 'Not checked'
-        self.secrets = {}
+        self.secrets = {'Not state': 'Not state'}
         self.status = []
+        self.stats = {}
         self.lvl = 'None'
         self.ready_to_send = False
         constants.quantity_obj_before_send += 1
-        logger.info(f'Object {constants.quantity_obj_before_send}/{constants.MAX_OBJ_BEFORE_SEND} before dump.')
+        #logger.info(f'Object {constants.quantity_obj_before_send}/{constants.MAX_OBJ_BEFORE_SEND} before dump.')
 
     def _check_status(self):
         self.status.append(f'Обнаружена утечка в разделе Repositories по поиску {self.dork}')

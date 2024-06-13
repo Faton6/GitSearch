@@ -39,14 +39,14 @@ requests.urllib3.disable_warnings()
 
 
 def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 - update obj in DB
-
     res_backup = constants.AutoVivification()
     counter = 1
+    dumped_repo_list = []
     if mode == 0:
         for scan_key in constants.RESULT_MASS.keys():
             for scanObj in constants.RESULT_MASS[scan_key].keys():
-                time.sleep(1)
-                if constants.RESULT_MASS[scan_key][scanObj].write_obj()['leak_type'] == 'None':
+                if (constants.RESULT_MASS[scan_key][scanObj].write_obj()['leak_type'] == 'None'
+                        or constants.RESULT_MASS[scan_key][scanObj].repo_url in dumped_repo_list):
                     continue
                 data_leak = {
                     'tname': 'leak',
@@ -54,7 +54,6 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
                     'action': 'add',
                     'content': constants.RESULT_MASS[scan_key][scanObj].write_obj()
                 }
-
                 data_row_report = {
                     'tname': 'row_report',
                     'dname': 'GitLeak',
@@ -64,11 +63,13 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
                         'report_name': constants.RESULT_MASS[scan_key][scanObj].repo_url,
                         'row_data':
                             str(base64.b64encode(bz2.compress(json.dumps(constants.RESULT_MASS[scan_key][scanObj].
-                                                                         secrets, indent=4).encode('utf-8'))))[2:-1]
+                                                                         secrets, indent=4).encode('utf-8'))))[2:-1],
+                        'stats_data': str(base64.b64encode(json.dumps(constants.RESULT_MASS[scan_key][scanObj].
+                                                                         stats, indent=4).encode('utf-8')))[2:-1]
                     }
                 }
+                dumped_repo_list.append(constants.RESULT_MASS[scan_key][scanObj].repo_url)
                 res_backup[counter] = [data_leak, data_row_report]
-
                 counter += 1
     elif mode == 1:
         for url in result_deepscan.keys():
@@ -97,11 +98,10 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
             res_backup[counter] = [{'DeepScan': 'DeepScan'}, data_row_report]
             counter += 1
 
-    logger.info(f'\nDumped backup data')
     report_filename = f'{constants.MAIN_FOLDER_PATH}/reports/result_res-{time.strftime("%Y-%m-%d-%H-%M")}.json'
     with open(report_filename, 'w') as file:
         json.dump({'scan': res_backup}, file, ensure_ascii=False, indent=8)
-    print(
+    logger.info(
         f'Result report: {constants.MAIN_FOLDER_PATH}/reports/result_res-{time.strftime("%Y-%m-%d-%H-%M")}.json')
     if constants.url_DB != '-':
         dump_to_DB_req(report_filename, mode=mode)
@@ -130,8 +130,9 @@ def dump_target_from_DB():
         cursor.execute("SELECT dork, company_id FROM dorks")
         dumped_data = cursor.fetchall()
         conn.commit()
+
         for i in dumped_data:
-            dork_dict[i[1]] = base64.b64decode(i[0][1:-1]).decode('utf-8').split(', ')
+            dork_dict[i[1]] = base64.b64decode(i[0].encode('utf-8')).decode('utf-8').split(', ')
 
         return dork_dict
     except mariadb.Error as e:
@@ -171,8 +172,7 @@ def dump_from_DB(mode=0):
 def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add only report in DB
     with open(filename, 'r') as file:
         backup_rep = json.load(file)
-        # print(backup_rep)
-    # mode
+
     for i in backup_rep['scan'].keys():
         if mode == 0:
             content = backup_rep['scan'][i][0]['content']
@@ -187,8 +187,8 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
                 conn.commit()
                 leak_id = cursor.lastrowid
                 data_row_report = backup_rep['scan'][i][1]['content']
-                cursor.execute("INSERT INTO row_report (leak_id, report_name, row_data) VALUES (?, ?, ?)",
-                               (leak_id, data_row_report['report_name'], data_row_report['row_data']))
+                cursor.execute("INSERT INTO row_report (leak_id, report_name, row_data, stats_data) VALUES (?, ?, ?, ?)",
+                               (leak_id, data_row_report['report_name'], data_row_report['row_data'], data_row_report['stats_data']))
                 conn.commit()
 
             except mariadb.Error as e:
@@ -197,7 +197,9 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
                 if conn:
                     conn.close()
 
-    logger.info(f'\nEnd dump data to DB\n---------------------------------------')
+    logger.info('End dump data to DB')
+    logger.info('#' * 80)
+
 
 
 def dump_row_data_from_DB(target_leak_id):
