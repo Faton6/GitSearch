@@ -1,10 +1,10 @@
 # Standart libs import
-
-# Project lib's import
 from abc import ABC, abstractmethod
-
 import time
 import requests
+from math import ceil
+
+# Project lib's import
 
 from src.filters import filter_url_by_db, filter_url_by_repo
 from src.logger import logger
@@ -15,9 +15,10 @@ from src.searcher.CommitObj import CommitObj
 
 from src import constants
 
+
 # TODO max pages
 
-class GitParser(ABC):
+class GitParserSearch(ABC):
     # attrs to override
     url: str
     T: callable
@@ -26,12 +27,12 @@ class GitParser(ABC):
     timeout: int = 1000
     cooldown: float = 60.0
     rate_limit: float = 10.0
-
+    repo_count_limit: int = 1000  # Github api restriction https://docs.github.com/rest/search/search#search-code
     per_page: int = 100
 
-    def __init__(self, dork: str, organization: str, token: str | None = None):
+    def __init__(self, dork: str, organization: int, token: str | None = None):
         self.dork: str = dork
-        self.organization: str = organization
+        self.organization: int = organization
         self.token: str = token
         self.pages: int = 1
         self.last_request: float = 0.0
@@ -54,21 +55,22 @@ class GitParser(ABC):
                             repo,
                             self.dork.encode().decode('utf-8'),
                             self.organization)
-                for repo in json_resp['items']
-                if len(filter_url_by_db(repo['html_url'])) == 1
-                    and len(filter_url_by_repo(repo['html_url'])) == 1)
+                     for repo in json_resp['items']
+                     if len(filter_url_by_db(repo['html_url'])) == 1 # debug if len(filter_url_by_db(repo['html_url']))
+                     and len(filter_url_by_repo(repo['html_url'])) == 1)
 
     def request_page(self) -> requests.Response:
         return requests.get(
             url=self.url,
             params=self.params,
             headers={'Authorization': f'Token {self.token}'}
-                    if self.token else {},
-                    timeout=self.timeout)
+            if self.token else {},
+            timeout=self.timeout)
 
-    def get_pages(self): #-> Generator[tuple[T]]:
+    def get_pages(self):  # -> Generator[tuple[T]]:
         # for page in range(1, self._pages + 1):
         page: int = 1
+
         while page <= self.pages:
             self.params['page'] = page
             # TODO: проверка наличия в БД 30го "кода", если нет - меняем страницу
@@ -89,51 +91,53 @@ class GitParser(ABC):
 
             if response.status_code != 200:
                 logger.error('Error status code: %d', response.status_code)
+                logger.error('Error info: %s', response.text)
                 logger.error('Trying to sleep it off... Cooldown %f sec.',
-                                self.cooldown)
+                             self.cooldown)
                 time.sleep(self.cooldown)
                 continue
 
-            self.pages = json_resp['total_count']
-
+            self.pages = ceil(min(json_resp['total_count'], self.repo_count_limit) / self.per_page)
             yield self.to_obj(json_resp)
 
             page += 1
-            constants.dork_search_counter += 1 # why, 1 dork can have many pages
+            constants.dork_search_counter += 1  # why, 1 dork can have many pages
 
 
-class GitCodeParser(GitParser):
+class GitCodeParser(GitParserSearch):
     url: str = 'https://api.github.com/search/code'
     T = CodeObj
 
-    def __init__(self, dork: str, organization: str, token: str | None = None):
+    def __init__(self, dork: str, organization: int, token: str | None = None):
         super().__init__(dork, organization, token)
         self.params['sort'] = 'indexed'
         self.params['order'] = 'desc'
 
     def __str__(self) -> str:
-        return "Code_res"
+        return "GitCodeParser"
 
-class GitRepoParser(GitParser):
+
+class GitRepoParser(GitParserSearch):
     url: str = 'https://api.github.com/search/repositories'
     T = RepoObj
 
-    def __init__(self, dork: str, organization: str, token: str | None = None):
+    def __init__(self, dork: str, organization: int, token: str | None = None):
         super().__init__(dork, organization, token)
         self.params['sort'] = 'updated'
         self.params['order'] = 'desc'
 
     def __str__(self) -> str:
-        return "Repo_res"
+        return "GitRepoParser"
 
-class GitCommitParser(GitParser):
+
+class GitCommitParser(GitParserSearch):
     url: str = 'https://api.github.com/search/commits'
     T = CommitObj
 
-    def __init__(self, dork: str, organization: str, token: str | None = None):
+    def __init__(self, dork: str, organization: int, token: str | None = None):
         super().__init__(dork, organization, token)
         self.params['sort'] = 'commiter-date'
         self.params['order'] = 'desc'
 
     def __str__(self) -> str:
-        return "Commit_res"
+        return "GitCommitParser"

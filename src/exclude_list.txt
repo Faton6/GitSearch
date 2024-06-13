@@ -25,3 +25,4 @@
 .*device.*
 .*msm\-4.*
 .*raccoons-bot.*
+.*pocketbase.*

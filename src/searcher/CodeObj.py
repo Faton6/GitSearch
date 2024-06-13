@@ -53,10 +53,11 @@ class CodeObj:
         self.updated_date = 'Not checked'
         self.secrets = {'Not state': 'Not state'}
         self.status = []
+        self.stats = {}
         self.lvl = 'None'
         self.ready_to_send = False
         constants.quantity_obj_before_send += 1
-        logger.info(f'Object {constants.quantity_obj_before_send}/{constants.MAX_OBJ_BEFORE_SEND} before dump.')
+        #logger.info(f'Object {constants.quantity_obj_before_send}/{constants.MAX_OBJ_BEFORE_SEND} before dump.')
 
     def _check_status(self):
         # TODO Translate it
@@ -172,6 +173,7 @@ class CodeObj:
         elif self.created_date == 'Not checked':
             self.created_date = self.found_time
             self.updated_date = self.found_time
+
         # Human chech:
         # 0 - not seen result of scan
         # 1 - leaks aprove

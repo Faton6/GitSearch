@@ -42,13 +42,13 @@ class CommitObj:
             def write_obj - get list of object fields for write in DB
     """
 
-    def __init__(self, url, responce_commit, dork, company_id=0):
+    def __init__(self, url, responce_commit, dork, company_id):
         self.raw_commit = responce_commit
         self.url = self.raw_commit['url']
         self.dork = dork
         self.company_id = company_id
         self.repo_name = self.url.split('/')[-2] + '/' + self.url.split('/')[-1]
-        self.repo_url = url
+        self.repo_url = self.raw_commit['repository']['html_url']
         self.author_name = self.raw_commit['commit']['author']['name']
         self.author_email = self.raw_commit['commit']['author']['email']
         self.commit = self.raw_commit['commit']['message']
@@ -57,12 +57,13 @@ class CommitObj:
         self.found_time = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         self.created_date = 'Not checked'
         self.updated_date = 'Not checked'
-        self.secrets = {}
+        self.secrets = {'Not state': 'Not state'}
+        self.stats = {}
         self.status = []
         self.lvl = 0
         self.ready_to_send = False
         constants.quantity_obj_before_send += 1
-        logger.info(f'Object {constants.quantity_obj_before_send}/{constants.MAX_OBJ_BEFORE_SEND} before dump.')
+        #logger.info(f'Object {constants.quantity_obj_before_send}/{constants.MAX_OBJ_BEFORE_SEND} before dump.')
 
     def _check_status(self):
 

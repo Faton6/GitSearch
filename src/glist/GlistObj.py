@@ -51,7 +51,7 @@ class GlistObj:
         self.lvl = 'None'
         self.ready_to_send = False
         constants.quantity_obj_before_send += 1
-        logger.info(f'Object {constants.quantity_obj_before_send}/{constants.MAX_OBJ_BEFORE_SEND} before dump.')
+        #logger.info(f'Object {constants.quantity_obj_before_send}/{constants.MAX_OBJ_BEFORE_SEND} before dump.')
 
         if secrets['whispers'] is not None:
             if secrets['whispers']['Leak #1']['Match'] == 'file whispers.log':
