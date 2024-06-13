@@ -279,7 +279,7 @@ class Checker:
         return all_names
 
     def clone(self):
-        logger.info(f'Repository {self.url} size: {self.obj.stats['size']}')
+        logger.info(f'Repository {self.url} size: {self.obj.stats["size"]}')
         if self.obj.stats['size'] > constants.REPO_MAX_SIZE:
             logger.info('Repository %s oversize, code not analyze', self.url)
             self.obj.secrets['status'].append(f'Repository {self.url} is oversize, code not analyze')
