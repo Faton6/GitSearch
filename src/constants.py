@@ -10,6 +10,7 @@ import tracemalloc
 
 __NAME__ = "GitSearch"
 # TODO: need to move in yaml format of filters
+# TODO: change to env?
 DEFAULT_CONFIG_FILE = f".{__NAME__}.yml"
 # path: (user_folder)/GitSearch/src/searcher
 SEARCH_FOLDER_PATH = f"{Path(__file__).parent}/searcher"
@@ -33,10 +34,12 @@ RESULT_CODE_TO_SEND = 4
 dork_dict: dict = {}
 url_from_DB: dict = {}
 
+
 class AutoVivification(dict):
     """
         class AutoVivification - get easy to append dict
     """
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -50,21 +53,18 @@ class AutoVivification(dict):
 
 RESULT_MASS = AutoVivification()  # array with results of scans
 
-
-
 with open(f'{MAIN_FOLDER_PATH}/config.json') as config_file:
     config = json.load(config_file)
 leak_check_list = config['leak_check_list']
 url_DB = config['url_DB']
 token_DB = config['token_DB']
-token_list = config['token_list']
-
+token_tuple = tuple(config['token_list'])
 
 # Dork counterts
 dork_search_counter = 0  # quantity of searches in gihtub
 all_dork_search_counter = 0  # stable quantity of searches in gihtub
 # quantity of MAX searches in gihtub before neccessary dump to DB
-MAX_SEARCH_BEFORE_DUMP = 2  # TODO change to 10-20
+MAX_SEARCH_BEFORE_DUMP = 15
 
 quantity_obj_before_send = 0
 MAX_OBJ_BEFORE_SEND = 50
@@ -76,3 +76,9 @@ MEDIUM_LOW_THRESHOLD = 15
 
 tracemalloc.start()
 snap_backup = tracemalloc.take_snapshot()
+
+
+def token_generator():
+    while True:
+        for token in token_tuple:
+            yield token

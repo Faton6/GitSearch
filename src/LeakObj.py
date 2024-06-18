@@ -1,23 +1,22 @@
 # Standart libs import
-import bz2
-import base64
-import datetime
-import json
-from src.logger import logger
+import time
+from abc import ABC, abstractmethod
 
 # Project lib's import
 from src import constants
 from src import filters
+from src.searcher.GitStats import GitParserStats
+from src.logger import logger
 
 
 # TODO Need to translate
-class RepoObj:
+class LeakObj(ABC):
     """
-        Class RepoObj:
+        Class LeakObj:
             TODO Need to update
             Fields:
             Url - link to repository
-            raw_repo - responce json
+            responce - responce json
             dork - used dork for search in gihub
             author_name - repository author
             repo_name - repository name: author/repo
@@ -34,28 +33,35 @@ class RepoObj:
             def write_obj_dict - get dict of object fields for write in json
             def write_obj - get list of object fields for write in DB
     """
+    obj_type = '-'
 
-    def __init__(self, url, responce_repo, dork, company_id=0):
-        self.repo_url = url
-        self.raw_repo = responce_repo
+
+    def __init__(self, url: str, responce: dict, dork: str, company_id: int = 0):
+
+        self.author_name = None
+        self.url = url
+
+        self.repo_url = url.split('github.com/')[1]
+        self.repo_url = 'https://github.com/' + self.repo_url.split('/')[0] + '/' + self.repo_url.split('/')[1]
+
+        self.responce = responce
         self.dork = dork
         self.company_id = company_id
-        self.repo_name = self.raw_repo['full_name']
-        self.author_name = self.raw_repo['owner']['login']
+        self.repo_name = self.repo_url.split('github.com/')[1]
 
-        self.found_time = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        self.created_date = 'Not checked'
-        self.updated_date = 'Not checked'
+        self.found_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+
+        self.stats = GitParserStats(self.repo_url)
+
         self.secrets = {'Not state': 'Not state'}
         self.status = []
-        self.stats = {}
-        self.lvl = 'None'
+        self.lvl = 0
         self.ready_to_send = False
         constants.quantity_obj_before_send += 1
-        #logger.info(f'Object {constants.quantity_obj_before_send}/{constants.MAX_OBJ_BEFORE_SEND} before dump.')
+        # logger.info(f'Object {constants.quantity_obj_before_send}/{constants.MAX_OBJ_BEFORE_SEND} before dump.')
 
     def _check_status(self):
-        self.status.append(f'Обнаружена утечка в разделе Repositories по поиску {self.dork}')
+        self.status.append(f'Обнаружена утечка в разделе {self.obj_type} по поиску {self.dork}')
 
         for leak_type in constants.leak_check_list:
             if leak_type in self.author_name:
@@ -144,29 +150,8 @@ class RepoObj:
         self.status = '\n'.join(self.status)
         self.ready_to_send = True
 
-    def write_obj_dict(self):  # for write to json
-        if not self.ready_to_send:
-            self._check_status()
-        if self.secrets['created_at'] == 'Not checked':
-            self.created_date = self.secrets['created_at']
-            self.updated_date = self.secrets['updated_at']
-        ret_dict = {'Dork': self.dork, 'Url': self.repo_url, 'Author_name': self.author_name,
-                    'Repo_name': self.repo_name, 'Created date': self.created_date,
-                    'Updated date': self.updated_date, 'Status': self.status,
-                    'Level': self.lvl, 'Founded secrets': base64.b64encode(bz2.compress(json.dumps(self.secrets,
-                                                                                                   indent=4).encode(
-                'utf-8')))}
-        return ret_dict
-
     def write_obj(self):  # for write to DB
-        if (self.created_date == 'Not checked' and 'created_at' in self.secrets.keys()
-                and filters.is_time_format(self.secrets['created_at']) and filters.is_time_format(
-                    self.secrets['updated_at'])):
-            self.created_date = self.secrets['created_at']
-            self.updated_date = self.secrets['updated_at']
-        elif self.created_date == 'Not checked':
-            self.created_date = self.found_time
-            self.updated_date = self.found_time
+
         # Human chech:
         # 0 - not seen result of scan
         # 1 - leaks aprove
@@ -193,14 +178,16 @@ class RepoObj:
             'level': self.lvl,
             'author_info': self.author_name,
             'found_at': self.found_time,
-            'created_at': self.created_date,
-            'updated_at': self.updated_date,
-            "approval": res_human_check,
-            "leak_type": founded_leak,
-            "result": res_check,
-            'company_id': self.company_id
+            'created_at': self.stats.created_at,
+            'updated_at': self.stats.updated_at,
+            'approval': res_human_check,
+            'leak_type': founded_leak,
+            'result': res_check,
+            'company_id': self.company_id,
+
         }
         return ret_mass
+
 
     def write_to_mail(self):
         if (self.created_date == 'Not checked' and 'created_at' in self.secrets.keys()
@@ -213,12 +200,12 @@ class RepoObj:
             self.updated_date = 'не обнаружена'
         if not self.ready_to_send:
             self._check_status()
-        if len(self.status) > 30:
-            status_list = self.status[:30] + '...'
+        if type(self.status) is str and len(self.status) > 300:
+            status_list = self.status[:300] + '...'
         else:
             status_list = self.status
         status_string = "\n\t".join(status_list)
-        result_str = (f'Обнаружена утечка в Github разделе Repositories по поиску {self.dork}:\n'
+        result_str = (f'Обнаружена утечка в Github разделе {self.obj_type} по поиску {self.dork}:\n'
                       f'Уровень утечки: {self.lvl}\n'
                       f'Ссылка на репозиторий: {self.repo_url}\n'
                       f'Автор/ы утечки: {self.author_name}\n'
@@ -228,3 +215,50 @@ class RepoObj:
                       f'Найдены упоминания следующих утечек:\n\t{status_string}\n'
                       f'Дополнительная информация в отчете об утечке.\n')
         return result_str
+
+
+    def get_stats(self):
+        if not self.stats.coll_stats_getted:
+            self.stats.get_contributors_stats()
+        if not self.stats.comm_stats_getted:
+            self.stats.get_commits_stats()
+        for contributor in self.stats.contributors_stats_accounts_table:
+            contributor['related_company_id'] = self.company_id
+        return (self.stats.repo_stats_leak_stats_table,
+                self.stats.contributors_stats_accounts_table, self.stats.commits_stats_commiters_table)
+
+
+class RepoObj(LeakObj):
+    obj_type: str = 'Repositories'
+
+    def __init__(self, url: str, responce: dict, dork: str, company_id: int = 0):
+        super().__init__(url, responce, dork, company_id)
+        self.author_name = self.responce['owner']['login']
+    def __str__(self) -> str:
+        return 'Repositories'
+
+
+class CommitObj(LeakObj):
+    obj_type: str = 'Commits'
+
+    def __init__(self, url: str, responce: dict, dork: str, company_id: int = 0):
+        super().__init__(url, responce, dork, company_id)
+        self.author_name = self.responce['commit']['author']['name']
+        self.author_email = self.responce['commit']['author']['email']
+        self.commit = self.responce['commit']['message']
+        self.commit_date = self.responce['commit']['author']['date']
+        self.commit_hash = self.responce['sha']
+        self.status.append(f'Описание коммита: {self.commit}')
+
+    def __str__(self) -> str:
+        return 'Commits'
+
+
+class CodeObj(LeakObj):
+    obj_type: str = 'Code'
+
+    def __init__(self, url: str, responce: dict, dork: str, company_id: int = 0):
+        super().__init__(url, responce, dork, company_id)
+        self.author_name = self.responce['repository']['owner']['login']
+    def __str__(self) -> str:
+        return 'Code'

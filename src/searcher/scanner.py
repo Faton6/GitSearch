@@ -1,7 +1,7 @@
 # Standart libs import
 # import signal
 import time
-
+from random import choice
 # from urllib.parse import unquote
 from concurrent.futures import ThreadPoolExecutor, Future, wait, FIRST_COMPLETED, ProcessPoolExecutor
 
@@ -9,7 +9,7 @@ import src.constants as const
 
 # Project lib's import
 from src.filters import Connector, dumping_data, Checker, CLONED, SCANNED
-from src.logger import logger
+from src.logger import logger, CLR
 # from typing import Generator
 
 from src.searcher.parsers import (GitParserSearch, GitRepoParser, GitCodeParser, GitCommitParser)
@@ -27,7 +27,7 @@ class Scanner():
     clone_workers = 1
 
     def __init__(self, organization: int | None = None):
-        self.checked: dict = {}  # checked repos
+        self.checked: list = []  # checked repos
         self.org = organization
 
     def __del__(self):
@@ -35,18 +35,18 @@ class Scanner():
 
     def search(self):  # -> Generator[tuple[tuple[str], str]]:
         for i, dork in enumerate(const.dork_dict[self.org]):
-            token = const.token_list[i % len(const.token_list)]
             # To optimize resources and decrease risk of problem with DB
             # we dump found data, clean RESULT_MASS and return to scan
-
             check_obj_pool_size()
 
             const.all_dork_search_counter += 1
             const.dork_search_counter += 1
-            logger.info(f'Dork: {dork}')
+
+            log_color = choice(tuple(CLR.values()))
+            logger.info('Dork: %s %s %s ', log_color, dork, CLR["RESET"])
 
             for parser_cls in self.parsers:
-                parser = parser_cls(dork, self.org, token)
+                parser = parser_cls(dork, self.org)
                 for obj_list in parser.get_pages():
                     yield obj_list, str(parser)
 
@@ -57,7 +57,6 @@ class Scanner():
                 ThreadPoolExecutor(max_workers=self.clone_workers) as clone_exec:
 
             for obj_list, scan_name in self.search():
-
                 if len(obj_list) < 1:
                     logger.info('Got empty page from, iterating further...')
                     time.sleep(5)
@@ -73,15 +72,18 @@ class Scanner():
                         # logger.info('End %s search', scan_name)
 
                     targets: dict[Future, Checker] = {}
-                    token_counter: int = 0
-                    for obj in temp_obj_list:
-                        if (obj.repo_name in self.checked and len(self.checked[obj.repo_name])) or obj.repo_name in \
-                                const.RESULT_MASS[scan_name]:
-                            continue
 
-                        token_counter += 1
-                        checker = Checker(obj.repo_url, obj.dork, obj, 1, const.token_list[token_counter % len(const.token_list)])
+                    for obj in temp_obj_list:
+                        if obj.repo_name in self.checked or obj.repo_name in const.RESULT_MASS[scan_name]:
+                            continue
+                        else:
+                            self.checked.append(obj.repo_name)
+
+                        obj.stats.get_repo_stats()
+
+                        checker = Checker(obj.repo_url, obj.dork, obj, 1)
                         targets[clone_exec.submit(checker.clone)] = checker
+
 
                     while True:
 
@@ -93,7 +95,7 @@ class Scanner():
                             done_fs = (done_fs,)
 
                         for fs in done_fs:
-                            #if obj.repo_name in const.RESULT_MASS[scan_name]:
+                            # if obj.repo_name in const.RESULT_MASS[scan_name]:
                             #    continue
                             check_obj_pool_size()
                             checker = targets[fs]
@@ -116,10 +118,10 @@ class Scanner():
 
                                 if isinstance(result, const.AutoVivification):
                                     checker.obj.secrets = result
-                                    self.checked[checker.obj.repo_name] = result
+                                    #self.checked[checker.obj.repo_name] = result
                             elif checker.status & CLONED > 0:
                                 targets[scan_exec.submit(checker.run)] = checker
 
                     if result == 1:
-                        logger.info('8'*80)
+                        logger.info('8' * 80)
                         return

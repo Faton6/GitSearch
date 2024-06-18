@@ -1,5 +1,5 @@
 # Standart libs import
-import random
+from random import choice
 import json
 from concurrent.futures import ThreadPoolExecutor
 import os
@@ -8,7 +8,6 @@ import subprocess
 from pathlib import Path
 import re
 import time
-import datetime
 import tracemalloc
 
 import git
@@ -29,7 +28,7 @@ with open(f'{constants.MAIN_FOLDER_PATH}/src/exclude_list.txt', 'r') as fd:
 def trace_monitor():
     snapshot = tracemalloc.take_snapshot()
     top_stats = snapshot.compare_to(constants.snap_backup, "lineno")
-    logger.info("---------------------------------------------------------")
+    logger.info('-'* 50)
     logger.info('Process info')
     size_count = 0
     counter = 0
@@ -46,11 +45,11 @@ def trace_monitor():
         counter += 1
     logger.info('Totall size: %d MB', size_count / 1048576)
     logger.info('Totall counter: %d files', counter)
-    logger.info("---------------------------------------------------------")
+    logger.info('-'* 50)
 
 
 def dumping_data():
-    logger.info('---------------------------------n')
+    logger.info('-'* 50)
     logger.info('Trace monitor before dump and clearing:')
     trace_monitor()
     result_unempty = False
@@ -77,7 +76,7 @@ def dumping_data():
                 shutil.rmtree(os.path.join(root, d))
     logger.info('Process info after dump to DB and clearing')
     trace_monitor()
-    logger.info('---------------------------------')
+    logger.info('-'* 50)
 
 
 def pywhat_analyze(match, cwd):
@@ -244,7 +243,6 @@ class Checker:
         self.secrets['status'] = []
         self.repo: git.Repo
         self.status = INITED
-        self.token: str = token
 
         self.scan_time_limit = 3000 if self.mode == 3 else 1000
 
@@ -261,7 +259,7 @@ class Checker:
             'ioc_finder': self.ioc_finder_scan
             # ,'ioc_extractor': self._ioc_extractor
         }
-        self.obj.stats = GitParserStats(self.url, self.token).get_stats()
+        #self.obj.stats = GitParserStats(self.url).get_repo_stats()
 
     def _clean_repo_dirs(self):
         if os.path.exists(f"{constants.TEMP}/{self.repo_dir}"):
@@ -279,13 +277,17 @@ class Checker:
         return all_names
 
     def clone(self):
-        logger.info(f'Repository {self.url} size: {self.obj.stats["size"]}')
-        if self.obj.stats['size'] > constants.REPO_MAX_SIZE:
-            logger.info('Repository %s oversize, code not analyze', self.url)
+        log_color = choice(tuple(CLR.values()))
+        logger.info(f'Repository %s %s %s size: %s %s %s', log_color, self.url, CLR["RESET"],
+                    log_color, self.obj.stats.repo_stats_leak_stats_table["size"], CLR["RESET"])
+        if self.obj.stats.repo_stats_leak_stats_table['size'] > constants.REPO_MAX_SIZE:
+            logger.info('Repository %s %s %s oversize, code not analyze', log_color, self.url, CLR["RESET"])
             self.obj.secrets['status'].append(f'Repository {self.url} is oversize, code not analyze')
             self._clean_repo_dirs()
             self.status |= NOT_CLONED
-            logger.info('Clonning %s', self.url)
+
+        else:
+            logger.info('Clonning %s %s %s', log_color, self.url, CLR["RESET"])
 
             for try_clone in range(3):
                 try:
@@ -302,8 +304,9 @@ class Checker:
             else:
                 logger.error('Failed to clone repo %s', self.url)
                 self._clean_repo_dirs()
-        else:
+
             self.status |= CLONED
+        self.obj.stats.get_contributors_stats()  # get stats this to optimize token usage
 
     def grep_scan(self):
         counter = 1
@@ -347,7 +350,7 @@ class Checker:
                     os.remove(f'{repo_path}/{file_name}')
 
     def scan(self):
-        log_color = random.choice(tuple(CLR.values()))
+        log_color = choice(tuple(CLR.values()))
         logger.info('Started scan: %s | %s %s %s ', self.dork, log_color,
                     self.url, CLR["RESET"])
 
@@ -892,7 +895,7 @@ class Checker:
         self.secrets['ioc_extractor'] = res_dict
         return 0
 
-    def run(self):  # DEBUG (in normal mode = 500
+    def run(self):
         """
         скачивает репозиторий по ссылке из url и проверяет с помощью сканеров TODO
         в конце, скаченный репозиторий удаляется,
@@ -911,5 +914,7 @@ class Checker:
             self.scan()
             self.status |= SCANNED
             self._clean_repo_dirs()
+
+        self.obj.stats.get_commits_stats()  # get stats this to optimize token usage
 
         return self.secrets

@@ -4,7 +4,7 @@ from src.logger import logger
 
 from src import Connector
 from src import constants
-from src.searcher.RepoObj import RepoObj
+from src.LeakObj import RepoObj
 from src import filters
 
 checked_list = {}

@@ -16,13 +16,11 @@ services:
           gitsearch_network:
             ipv4_address: 172.32.0.99
         depends_on:
-          db:
-            condition: service_healthy
-          phpmyadmin:
-            condition: service_healthy
+          - db
 
     db:
       image: mariadb:10.3
+      container_name: db
       restart: always
       environment:
         MYSQL_DATABASE: Gitsearch
@@ -30,7 +28,7 @@ services:
       ports:
         - "3306:3306"
       volumes:
-        - "./Gitsearch_DB.sql:/docker-entrypoint-initdb.d/Gitsearch_DB.sql"
+        - "./Gitsearch_DB.sql:/docker-entrypoint-initdb.d/Gitsearch_DB2.sql"
         - "./data:/var/lib/mysql"
 
       networks:
@@ -40,6 +38,7 @@ services:
 
     phpmyadmin:
       image: phpmyadmin
+      container_name: phpmyadmin
       restart: always
       ports:
         - 8080:80

@@ -10,7 +10,11 @@ CLR = {
     "YELLOW": '\033[33m',
     "RED": '\033[31m',
     "VERYRED": '\033[91m',
+    "bold_red": "\x1b[31;1m",
+    "blue": "\x1b[1;34m",
+    "light_blue": "\x1b[1;36m",
     "RESET": '\033[0m',
+    "purple": "\x1b[1;35m",
     "BOLD": '\033[1m'
 }
 

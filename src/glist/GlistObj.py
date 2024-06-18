@@ -154,18 +154,6 @@ class GlistObj:
         self.status = '\n'.join(self.status)
         self.ready_to_send = True
 
-    def write_obj_dict(self):  # for write to json
-        if not self.ready_to_send:
-            self._check_status()
-        if self.secrets['created_at'] == 'Not checked':
-            self.created_date = self.secrets['created_at']
-            self.updated_date = self.secrets['updated_at']
-        ret_dict = {'Dork': self.dork, 'Url': self.repo_url, 'Author_name': self.author_name,
-                    'Repo_name': self.repo_name, 'Created date': self.created_date,
-                    'Updated date': self.updated_date, 'Status': self.status,
-                    'Level': self.lvl, 'Founded secrets': base64.b64encode(bz2.compress(bytes(self.secrets)))}
-        return ret_dict
-
     def write_obj(self):  # for write to DB
         if self.secrets['created_at'] == 'Not checked' and 'created_at' in self.secrets.keys():
             self.created_date = self.secrets['created_at']

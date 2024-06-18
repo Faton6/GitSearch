@@ -63,13 +63,14 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
                         'report_name': constants.RESULT_MASS[scan_key][scanObj].repo_url,
                         'row_data':
                             str(base64.b64encode(bz2.compress(json.dumps(constants.RESULT_MASS[scan_key][scanObj].
-                                                                         secrets, indent=4).encode('utf-8'))))[2:-1],
-                        'stats_data': str(base64.b64encode(json.dumps(constants.RESULT_MASS[scan_key][scanObj].
-                                                                         stats, indent=4).encode('utf-8')))[2:-1]
+                                                                         secrets, indent=4).encode('utf-8'))))[2:-1]
                     }
                 }
+                leak_stats_table, accounts_table, commiters_table = constants.RESULT_MASS[scan_key][scanObj].get_stats()
+
+
                 dumped_repo_list.append(constants.RESULT_MASS[scan_key][scanObj].repo_url)
-                res_backup[counter] = [data_leak, data_row_report]
+                res_backup[counter] = [data_leak, data_row_report, leak_stats_table, accounts_table, commiters_table]
                 counter += 1
     elif mode == 1:
         for url in result_deepscan.keys():
@@ -95,6 +96,7 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
                                                                      indent=4).encode('utf-8'))))[2:-1]
                 }
             }
+
             res_backup[counter] = [{'DeepScan': 'DeepScan'}, data_row_report]
             counter += 1
 
@@ -180,16 +182,57 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
             try:
                 conn, cursor = connect_to_database()
                 cursor.execute(
-                    "INSERT INTO leak (url, level, author_info, found_at, created_at, updated_at, approval, leak_type, result, company_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO leak (url, level, author_info, found_at, created_at, updated_at, approval," \
+                    " leak_type, result, company_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (content['url'], content['level'], content['author_info'], content['found_at'],
                      content['created_at'], content['updated_at'], content['approval'], content['leak_type'],
                      content['result'], content['company_id']))
                 conn.commit()
                 leak_id = cursor.lastrowid
+
                 data_row_report = backup_rep['scan'][i][1]['content']
-                cursor.execute("INSERT INTO row_report (leak_id, report_name, row_data, stats_data) VALUES (?, ?, ?, ?)",
-                               (leak_id, data_row_report['report_name'], data_row_report['row_data'], data_row_report['stats_data']))
+                cursor.execute("INSERT INTO row_report (leak_id, report_name, row_data) VALUES (?, ?, ?)",
+                               (leak_id, data_row_report['report_name'], data_row_report['row_data']))
                 conn.commit()
+
+                leak_stats_table = backup_rep['scan'][i][2]
+
+                cursor.execute(
+                    "INSERT INTO leak_stats (leak_id, size, stargazers_count, has_issues, has_projects, has_downloads,"
+                    "has_wiki, has_pages, forks_count, open_issues_count, subscribers_count, topics, contributors_count, "
+                    "commits_count, commiters_count, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (leak_id, leak_stats_table['size'], leak_stats_table['stargazers_count'], leak_stats_table['has_issues'],
+                     leak_stats_table['has_projects'], leak_stats_table['has_downloads'], leak_stats_table['has_wiki'],
+                     leak_stats_table['has_pages'], leak_stats_table['forks_count'], leak_stats_table['open_issues_count'],
+                     leak_stats_table['subscribers_count'], leak_stats_table['topics'], leak_stats_table['contributors_count'],
+                     leak_stats_table['commits_count'], leak_stats_table['commiters_count'], leak_stats_table['description']))
+                conn.commit()
+                # TODO:
+                accounts_table = backup_rep['scan'][i][3]
+                accounts_from_DB = dump_account_from_DB()
+                accounts_ids = []
+                for account in accounts_table:
+                    if account['account'] not in accounts_from_DB:
+                        cursor.execute(
+                            "INSERT INTO accounts (account, need_monitor, related_company_id) VALUES (?, ?, ?)",
+                            (account['account'], account['need_monitor'], account['related_company_id']))
+                        conn.commit()
+                        accounts_ids.append(cursor.lastrowid)
+                # conn.commit()
+                # account_id = cursor.lastrowid
+
+                for account_id in list(accounts_ids):
+                    cursor.execute(
+                        "INSERT INTO related_accounts_leaks (leak_id, account_id) VALUES (?, ?)",
+                        (leak_id, account_id))
+                    conn.commit()
+                commiters_table = backup_rep['scan'][i][4]
+                for commiter in commiters_table:
+                    cursor.execute(
+                        "INSERT INTO commiters (leak_id, commiter_name, commiter_email, need_monitor, related_account_id) VALUES (?, ?, ?, ?, ?)",
+                        (leak_id, commiter['commiter_name'], commiter['commiter_email'],
+                         commiter['need_monitor'], commiter['related_account_id']))
+                    conn.commit()
 
             except mariadb.Error as e:
                 return logger.error(f"Error: {e}")
@@ -200,6 +243,24 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
     logger.info('End dump data to DB')
     logger.info('#' * 80)
 
+def dump_account_from_DB():
+    logger.info(f'Dumping accounts from DB...')
+
+    conn, cursor = connect_to_database()
+    try:
+        cursor.execute("SELECT account FROM accounts")
+        conn.commit()
+
+        dumped_data = list(cursor.fetchall())
+        #id_account = {}
+        #for data in dumped_data:
+        #    id_account[data[0]] = data[1]
+        return dumped_data
+    except mariadb.Error as e:
+        return logger.error(f"Error: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 
 def dump_row_data_from_DB(target_leak_id):

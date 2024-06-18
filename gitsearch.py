@@ -22,7 +22,7 @@ def signal_shutdown():
 if __name__ == "__main__":
     subprocess.run(['git', 'config', '--global', '--add', 'safe.directory', '/app'])
 
-    if constants.token_list[0] == '-':
+    if constants.token_tuple[0] == '-':
         logger.warning('Warning: Token not set. Open config.json and put token to token_list')
     if constants.url_DB != '-':
         constants.url_from_DB = Connector.dump_from_DB()
@@ -63,6 +63,7 @@ if __name__ == "__main__":
 
     # Github scan
     logger.info('Start Github scan')
+
     for org in constants.dork_dict:
         Scanner(org).gitscan()
     filters.dumping_data()
