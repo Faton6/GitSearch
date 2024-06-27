@@ -36,7 +36,7 @@ class LeakObj(ABC):
     obj_type = '-'
 
 
-    def __init__(self, url: str, responce: dict, dork: str, company_id: int = 0):
+    def __init__(self, url: str, responce: dict, dork: str, company_id: int = 1):
 
         self.author_name = None
         self.url = url
@@ -231,7 +231,7 @@ class LeakObj(ABC):
 class RepoObj(LeakObj):
     obj_type: str = 'Repositories'
 
-    def __init__(self, url: str, responce: dict, dork: str, company_id: int = 0):
+    def __init__(self, url: str, responce: dict, dork: str, company_id: int = 1):
         super().__init__(url, responce, dork, company_id)
         self.author_name = self.responce['owner']['login']
     def __str__(self) -> str:

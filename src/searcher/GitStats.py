@@ -89,6 +89,9 @@ class GitParserStats:
                                                     'commiters_count': 0,
                                                     'description': response['description']
                                                     }
+            else:
+                logger.error('Got message from github request: %s %s %s', self.log_color,
+                             str(response), CLR["RESET"])
 
         self.repo_stats_getted = True
 
@@ -113,6 +116,9 @@ class GitParserStats:
                                                                        'need_monitor': 0,
                                                                        'related_company_id': 0
                                                                        })
+            else:
+                logger.error('Got message from github request: %s %s %s', self.log_color,
+                             str(response), CLR["RESET"])
                 self.repo_stats_leak_stats_table['contributors_count'] = len(self.contributors_stats_accounts_table)
         self.coll_stats_getted = True
 
@@ -151,7 +157,9 @@ class GitParserStats:
                                                                        # TODO: update to 1 if it dangerous leak
                                                                        'related_account_id': 0
                                                                        })
-
+            else:
+                logger.error('Got message from github request: %s %s %s', self.log_color,
+                             str(response), CLR["RESET"])
                 self.repo_stats_leak_stats_table['commits_count'] = len(response)
                 self.repo_stats_leak_stats_table['commiters_count'] = len(self.commits_stats_commiters_table)
 

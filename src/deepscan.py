@@ -86,25 +86,29 @@ def _list_scan(url_list):
     if len(url_list) == 0:
         logger.info(f'Not founded any new urls')
         return
-    for i in url_list:
-        responce_repo = {'full_name': i, 'owner': {'login': i.split('/')[-2]}}
-        rep_obj_list.append(RepoObj(i, responce_repo, 'None'))
-    for i in rep_obj_list:
-        if i.repo_name not in checked_list:
-            checked_list.update({f'{i.repo_name}': ''})
-        logger.info(f'Current repository: {i.repo_url}')
-        if checked_list[i.repo_name] == '':
+    for obj in url_list:
+        responce_repo = {'full_name': obj, 'owner': {'login': obj.split('/')[-2]}}
+        rep_obj_list.append(RepoObj(obj, responce_repo, 'None dork'))
+    for obj in rep_obj_list:
+        if obj.repo_name not in checked_list:
+            checked_list.update({f'{obj.repo_name}': ''})
+        logger.info(f'Current repository: {obj.repo_url}')
+        obj.stats.get_repo_stats()
+        if checked_list[obj.repo_name] == '':
             mode_for_scan = 1
-            check_repo_res = filters.Checker.run(i.repo_url, 'None', mode_for_scan)
+
+            checker = filters.Checker(obj.repo_url, obj.dork, obj, 1)
+            checker.clone()
+            check_repo_res = checker.run()
             if type(check_repo_res) == int and check_repo_res == 1:
                 for j in rep_obj_list:
                     constants.RESULT_MASS['Repo_res'][j.repo_name] = j
                 return []
             elif type(check_repo_res) == constants.AutoVivification:
-                i.secrets = check_repo_res
-                checked_list[i.repo_name] = check_repo_res
+                obj.secrets = check_repo_res
+                checked_list[obj.repo_name] = check_repo_res
         else:
-            i.secrets = checked_list[i.repo_name]
+            obj.secrets = checked_list[obj.repo_name]
 
     for j in rep_obj_list:
         if type(j) is RepoObj:

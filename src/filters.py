@@ -1,7 +1,7 @@
 # Standart libs import
 from random import choice
 import json
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import shutil
 import subprocess
@@ -240,7 +240,6 @@ class Checker:
         self.mode = mode
         self.repo_dir = url.split('/')[-2] + '---' + url.split('/')[-1]
         self.secrets = constants.AutoVivification()
-        self.secrets['status'] = []
         self.repo: git.Repo
         self.status = INITED
 
@@ -249,14 +248,22 @@ class Checker:
         self.scans = {
             'gitleaks': self.gitleaks_scan,
             'gitsecrets': self.gitsecrets_scan,
-            'whispers': self.whispers_scan,
-            # 'trufflehog': Checker._trufflehog_scan, TODO some problems 'Filesystem'
+            #'whispers': self.whispers_scan,
+            'trufflehog': self.trufflehog_scan,
             'grepscan': self.grep_scan,
             'deepsecrets': self.deepsecrets_scan
+
         }
 
         self.deep_scans = {
-            'ioc_finder': self.ioc_finder_scan
+            'gitleaks': self.gitleaks_scan,
+            'gitsecrets': self.gitsecrets_scan,
+            # 'whispers': self.whispers_scan,
+            # 'trufflehog': Checker._trufflehog_scan, TODO some problems 'Filesystem'
+            'grepscan': self.grep_scan,
+            'deepsecrets': self.deepsecrets_scan,
+            'ioc_finder': self.ioc_finder_scan,
+
             # ,'ioc_extractor': self._ioc_extractor
         }
         #self.obj.stats = GitParserStats(self.url).get_repo_stats()
@@ -282,7 +289,7 @@ class Checker:
                     log_color, self.obj.stats.repo_stats_leak_stats_table["size"], CLR["RESET"])
         if self.obj.stats.repo_stats_leak_stats_table['size'] > constants.REPO_MAX_SIZE:
             logger.info('Repository %s %s %s oversize, code not analyze', log_color, self.url, CLR["RESET"])
-            self.obj.secrets['status'].append(f'Repository {self.url} is oversize, code not analyze')
+            self.obj.status.append(f'Repository {self.url} is oversize, code not analyze')
             self._clean_repo_dirs()
             self.status |= NOT_CLONED
 
@@ -293,10 +300,9 @@ class Checker:
                 try:
                     self._clean_repo_dirs()
                     self.repo = git.Repo.clone_from(
-                        self.url, f'/{constants.TEMP}/{self.repo_dir}')
-                    self.clean_excluded_files()
+                        self.url, f'{constants.TEMP}/{self.repo_dir}')
                     os.makedirs(f"{constants.TEMP}/{self.repo_dir}---reports")
-                    self.get_dates()
+                    self.clean_excluded_files()
                     break
                 except Exception as exc:
                     time.sleep(1)
@@ -313,32 +319,33 @@ class Checker:
         try:
             for folder, _, files in os.walk(f"{constants.TEMP}/{self.repo_dir}"):
                 for file in files:
+
                     fullpath = os.path.join(folder, file)
                     with open(fullpath, 'r', encoding='utf-8', errors='ignore') as f:
-                        for line in f.readlines():
-                            for leak in constants.leak_check_list:
-                                if self.dork in line or leak in line:
-                                    self.secrets['grepscan'][f'Leak #{counter}']['Match'] = str(
-                                        line[:120])
-                                    self.secrets['grepscan'][f'Leak #{counter}']['File'] = str(
-                                        fullpath)
+                        file_text = f.read()
+                        for leak in list(set(re.findall(self.dork, file_text))):
+                            self.secrets['grepscan'][f'Leak #{counter}']['Match'] = leak
+                            self.secrets['grepscan'][f'Leak #{counter}']['File'] = str(
+                                fullpath)
+                            counter += 1
+                            if counter > 1000:
+                                counter = 1
+                                break
+                        for target_word in constants.leak_check_list:
+                            for leak in list(set(re.findall(self.dork, file_text))):
+                                self.secrets['grepscan'][f'Leak #{counter}']['Match'] = leak
+                                self.secrets['grepscan'][f'Leak #{counter}']['File'] = str(
+                                    fullpath)
+
                                 counter += 1
+                                if counter > 1000:
+                                    counter = 1
+                                    break
         except Exception as ex:
             logger.error('Error in grepscan: %s', ex)
             return 2
 
         return 0
-
-    def get_dates(self):
-        if self.repo is None:
-            raise CheckerException(
-                "In get_dates(): repositiory must be clone()-ed")
-
-        first_commit = next(self.repo.iter_commits('--all', reverse=True))
-        self.secrets['created_at'] = first_commit.authored_datetime.timetuple()
-
-        last_commit = next(self.repo.iter_commits('--all'))
-        self.secrets['updated_at'] = last_commit.authored_datetime.timetuple()
 
     def clean_excluded_files(self):
         repo_path: str = f"{constants.TEMP}/{self.repo_dir}"
@@ -346,34 +353,30 @@ class Checker:
         for file_name in os.listdir(repo_path):
             for ext in self.file_ignore:
                 if file_name.endswith(ext):
-                    self.secrets['status'].append(f'File extension: {ext}')
+                    self.obj.status.append(f'File extension: {ext}')
                     os.remove(f'{repo_path}/{file_name}')
 
     def scan(self):
         log_color = choice(tuple(CLR.values()))
         logger.info('Started scan: %s | %s %s %s ', self.dork, log_color,
                     self.url, CLR["RESET"])
-
+        cur_dir = os.getcwd()
+        os.chdir(f"{constants.TEMP}/{self.repo_dir}")
         # TODO take max_workers from config
         with ThreadPoolExecutor(max_workers=6) as executor:
-            results = list(executor.map(lambda method:
-                                        (self.scans[method], method),
-                                        (self.scans | self.deep_scans
-                                         if self.mode == 3
-                                         else self.scans).keys()))
+            futures = {executor.submit(method): name for name, method in self.scans.items()}
+            for future in as_completed(futures):
+                res, method = future.result(), futures[future]
+                if res == 1:
+                    return 1
 
-        for res, method_name in results:
-            if res == 1:
-                return 1
+                if res == 2:
+                    logger.error('Excepted error in scan, check log file!')
+                elif res == 3:
+                    logger.info(f'Canceling scan in repo: {"/".join(self.url.split("/")[-2:])}')
 
-            if res == 2:
-                logger.error('Excepted error in %s scan, check log file!',
-                             method_name)
-            elif res == 3:
-                print(f'Canceling {method_name} scan in repo: {"/".join(self.url.split("/")[-2:])}')
-            elif res == 4:
-                self.secrets[method_name] = f'{method_name} hasn\'t found any leaks.'
 
+        os.chdir(cur_dir)
         logger.info('Scanned: %s | %s %s %s ', self.dork, log_color, self.url,
                     CLR["RESET"])
 
@@ -382,21 +385,24 @@ class Checker:
     @_exc_catcher
     def gitleaks_scan(self):
         try:
-            tr = time.perf_counter()
 
+            tr = time.perf_counter()
             gitleaks_proc = subprocess.Popen([
-                'gitleaks detect --no-banner --no-color --report-format json \
-                    -r ./gitleaks_rep.json'],
+                'gitleaks', 'detect', '--no-banner', '--no-color', '--report-format', 'json',
+                '--report-path', constants.TEMP+'/'+self.repo_dir+'/gitleaks_rep.json'],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 cwd=f'{constants.TEMP}/{self.repo_dir}')
+
             while gitleaks_proc.poll() is None:
+
                 if time.perf_counter() - tr > self.scan_time_limit:
                     gitleaks_proc.kill()
                     logger.info('Timeout occured')
                     if os.path.exists('gitleaks_rep.json'):
                         os.remove('gitleaks_rep.json')
                     return 3
+
                 if os.path.exists(constants.COMMAND_FILE):
                     fd = open(constants.COMMAND_FILE, 'r')
                     command_line = fd.readline()
@@ -422,40 +428,43 @@ class Checker:
                         return 1
                     else:
                         fd.close()
+
         except Exception as ex:
+
             if 'status 1' not in str(ex):
                 logger.error('Error in gitleaks: %s', ex)
                 return 2
+        if os.path.exists(f'{constants.TEMP}/{self.repo_dir}/gitleaks_rep.json'):
+            with open(f'{constants.TEMP}/{self.repo_dir}/gitleaks_rep.json', 'r') as file:
+                js = json.load(file)
+                is_first = True
+                counter = 1
+                for elem in js:
+                    a = True
+                    if not is_first:
+                        for _, v in self.secrets['gitleaks'].items():
+                            if str(elem['Match']) == v['Match']:
+                                a = False
+                                break
+                            a = True
+                    if a:
+                        is_first = False
+                        self.secrets['gitleaks'][f'Leak #{counter}']['Match'] = str(
+                            elem['Match'][0:120])
+                        self.secrets['gitleaks'][f'Leak #{counter}']['File'] = str(
+                            elem['File'])
+                        self.secrets['gitleaks'][f'Leak #{counter}']['Email'] = str(
+                            elem['Email'])
+                        self.secrets['gitleaks'][f'Leak #{counter}']['Names'] = self._pywhat_analyze_names(str(
+                            self.secrets['gitleaks'][f'Leak #{counter}']['Match']))
+                        counter += 1
 
-            if os.path.exists('gitleaks_rep.json'):
-                with open('gitleaks_rep.json', 'r') as file:
-                    js = json.load(file)
-                    is_first = True
-                    counter = 1
-                    for elem in js:
-                        a = True
-                        if not is_first:
-                            for _, v in self.secrets['gitleaks'].items():
-                                if str(elem['Match']) == v['Match']:
-                                    a = False
-                                    break
-                                a = True
-                        if a:
-                            is_first = False
-                            self.secrets['gitleaks'][f'Leak #{counter}']['Match'] = str(
-                                elem['Match'][0:120])
-                            self.secrets['gitleaks'][f'Leak #{counter}']['File'] = str(
-                                elem['File'])
-                            self.secrets['gitleaks'][f'Leak #{counter}']['Email'] = str(
-                                elem['Email'])
-                            self.secrets['gitleaks'][f'Leak #{counter}']['Names'] = self._pywhat_analyze_names(str(
-                                self.secrets['gitleaks'][f'Leak #{counter}']['Match']))
-                            counter += 1
-                if self.secrets['gitleaks'] is None:
-                    self.secrets['gitleaks'] = 'Not founded any leaks'
-                Path(f"{constants.TEMP}/{self.repo_dir}/gitleaks_rep.json").rename(
-                    f"{constants.TEMP}/{self.repo_dir}---reports/gitleaks_rep.json")
-                return 0
+            if self.secrets['gitleaks'] is None:
+                self.secrets['gitleaks'] = 'Not founded any leaks'
+
+            Path(f"{constants.TEMP}/{self.repo_dir}/gitleaks_rep.json").rename(
+                f"{constants.TEMP}/{self.repo_dir}---reports/gitleaks_rep.json")
+            return 0
 
     @_exc_catcher
     def gitsecrets_scan(self):
@@ -609,7 +618,8 @@ class Checker:
                 self.secrets['whispers'][f'Leak #{counter}']['File'] = str(
                     i["file"])
                 counter += 1
-
+            logger.info('whispers report: ')
+            print(self.secrets['whispers'])
             if self.secrets['whispers'] is None:
                 self.secrets['whispers'] = 'Not founded any leaks'
             Path(f"{constants.TEMP}/{self.repo_dir}/whisper_rep.txt").rename(
@@ -619,19 +629,19 @@ class Checker:
     @_exc_catcher
     def trufflehog_scan(self):
         tr = time.perf_counter()
-
         trufflehog = subprocess.Popen(['trufflehog', 'git', '--json',
                                        '--no-update', 'file://.'],
                                       stdout=subprocess.PIPE,
                                       stderr=subprocess.DEVNULL,
                                       cwd=f'{constants.TEMP}/{self.repo_dir}')
-
+        '''
         while trufflehog.poll() is None:
             if time.perf_counter() - tr > self.scan_time_limit:
                 trufflehog.kill()
                 logger.info('Timeout occured')
                 logger.info('trufflehog scan skipped')
                 return 3
+            
             if os.path.exists(constants.COMMAND_FILE):
                 fd = open(constants.COMMAND_FILE, 'r')
                 command_line = fd.readline()
@@ -655,7 +665,7 @@ class Checker:
                     return 1
                 else:
                     fd.close()
-
+                '''
         with open('trufflehog_rep.txt', 'wb') as file:
             var = trufflehog.communicate()[0]
             file.write(var)
@@ -668,36 +678,40 @@ class Checker:
         counter = 1
         for i in trufflehog_list:
             a = True
-
+            '''
             if i['RawV2'] != '':
                 match = i['RawV2']
             elif i['Raw'] != '':
                 match = i['Raw']
             else:
                 match = ''
+            
+            match = i
             if not is_first:
                 for _, v in self.secrets['trufflehog'].items():
                     if match == '' or str(match) == v['Match']:
                         a = False
-                        break
+                        continue
                     a = True
             if a and match != '':
                 is_first = False
-                self.secrets['trufflehog'][f'Leak #{counter}']['Match'] = str(
-                    match[0:120])
-                self.secrets['trufflehog'][f'Leak #{counter}']['Name'] = \
-                    self._pywhat_analyze_names(str(
-                        self.secrets['trufflehog'][f'Leak #{counter}']['Match'])
-                    )
-                self.secrets['trufflehog'][f'Leak #{counter}']['File'] = str(
-                    i['SourceMetadata']['Data']['Filesystem'][
-                        'file'])
-                counter += 1
-            if self.secrets['trufflehog'] is None:
-                self.secrets['trufflehog'] = 'Not founded any leaks'
-            Path(f"{constants.TEMP}/{self.repo_dir}/trufflehog_rep.txt").rename(
-                f"{constants.TEMP}/{self.repo_dir}---reports/trufflehog_rep.txt")
-            return 0
+            '''
+            self.secrets['trufflehog'][f'Leak #{counter}']['Match'] = i
+            self.secrets['trufflehog'][f'Leak #{counter}']['Name'] = \
+                self._pywhat_analyze_names(str(
+                    self.secrets['trufflehog'][f'Leak #{counter}']['Match']['Raw'])
+                )
+            #self.secrets['trufflehog'][f'Leak #{counter}']['File'] = str(
+            #    i['SourceMetadata']['Data']['Filesystem'][
+            #        'file'])
+            counter += 1
+            if counter > 100:
+                break
+        if self.secrets['trufflehog'] is None:
+            self.secrets['trufflehog'] = 'Not founded any leaks'
+        Path(f"{constants.TEMP}/{self.repo_dir}/trufflehog_rep.txt").rename(
+            f"{constants.TEMP}/{self.repo_dir}---reports/trufflehog_rep.txt")
+        return 0
 
     @_exc_catcher
     def deepsecrets_scan(self):
@@ -707,6 +721,7 @@ class Checker:
                                             stdout=subprocess.DEVNULL,
                                             stderr=subprocess.DEVNULL,
                                             cwd=f'{constants.TEMP}/{self.repo_dir}')
+
         while deepsecrets_proc.poll() is None:
             if time.perf_counter() - tr > self.scan_time_limit:
                 deepsecrets_proc.kill()
@@ -739,6 +754,7 @@ class Checker:
                     return 1
                 else:
                     fd.close()
+
         if os.path.exists('deepsecrets_rep.json'):
             with open('deepsecrets_rep.json', 'r') as file:
                 js = json.load(file)
@@ -771,7 +787,6 @@ class Checker:
                             counter += 1
             if self.secrets['deepsecrets'] is None:
                 self.secrets['deepsecrets'] = 'Not founded any leaks'
-
             Path(f"{constants.TEMP}/{self.repo_dir}/deepsecrets_rep.json").rename(
                 f"{constants.TEMP}/{self.repo_dir}---reports/deepsecrets_rep.json")
             return 0
@@ -916,5 +931,5 @@ class Checker:
             self._clean_repo_dirs()
 
         self.obj.stats.get_commits_stats()  # get stats this to optimize token usage
-
+        self.obj.secrets = self.secrets
         return self.secrets

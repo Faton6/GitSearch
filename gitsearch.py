@@ -9,8 +9,9 @@ from src import constants
 from src import Connector
 from src.logger import logger
 from src.searcher import Scanner
+
 # from src.glist.glist_scan import GlistScan
-# from src import deepscan
+from src import deepscan
 from src import filters
 
 def signal_shutdown():
@@ -53,8 +54,8 @@ if __name__ == "__main__":
     logger.info('Curent directory: %s', constants.SEARCH_FOLDER_PATH)
 
     # List scan
-    # logger.info('Start List scan')
-    # deepscan.list_search()
+    logger.info('Start List scan')
+    deepscan.list_search()
 
     # Github Gist scan
     # logger.info('Start Gist scan')

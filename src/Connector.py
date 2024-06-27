@@ -244,7 +244,6 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
     logger.info('#' * 80)
 
 def dump_account_from_DB():
-    logger.info(f'Dumping accounts from DB...')
 
     conn, cursor = connect_to_database()
     try:
@@ -277,6 +276,7 @@ def dump_row_data_from_DB(target_leak_id):
     finally:
         if conn:
             conn.close()
+
 
 
 
