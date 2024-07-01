@@ -207,7 +207,7 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
                      leak_stats_table['subscribers_count'], leak_stats_table['topics'], leak_stats_table['contributors_count'],
                      leak_stats_table['commits_count'], leak_stats_table['commiters_count'], leak_stats_table['description']))
                 conn.commit()
-                # TODO:
+
                 accounts_table = backup_rep['scan'][i][3]
                 accounts_from_DB = dump_account_from_DB()
                 accounts_ids = []

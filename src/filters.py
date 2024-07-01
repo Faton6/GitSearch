@@ -187,16 +187,18 @@ def filter_url_by_db(urls: list[str] | tuple[str] | str):
     if isinstance(urls, str):
         urls = (urls,)
     filtered_urls = []
-
     url_dump_from_db = constants.url_from_DB  # list with dict: {url:final_resul}
     if url_dump_from_db == '-':
         return urls
 
     for url in urls:
         to_add = True
-        temp_del = url.split('https://github.com/')[1]
-        url = 'https://github.com/' + temp_del.split('/')[0] + '/' + temp_del.split('/')[1]
 
+        temp_del = url.split('github.com/')[1]
+        if 'gist' in url:
+            url = 'https://gist.github.com/' + temp_del.split('/')[0] + '/' + temp_del.split('/')[1]
+        else:
+            url = 'https://github.com/' + temp_del.split('/')[0] + '/' + temp_del.split('/')[1]
         for url_from_db, value in url_dump_from_db.items():
             if url == url_from_db and not value in constants.RESULT_CODES:
                 to_add = False

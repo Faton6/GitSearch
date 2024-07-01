@@ -33,24 +33,24 @@ class LeakObj(ABC):
             def write_obj_dict - get dict of object fields for write in json
             def write_obj - get list of object fields for write in DB
     """
-    obj_type = '-'
 
 
-    def __init__(self, url: str, responce: dict, dork: str, company_id: int = 1):
+    def __init__(self, obj_type: str, url: str, responce: dict, dork: str, company_id: int = 1):
 
         self.author_name = None
         self.url = url
-
+        self.obj_type = obj_type
         self.repo_url = url.split('github.com/')[1]
-        self.repo_url = 'https://github.com/' + self.repo_url.split('/')[0] + '/' + self.repo_url.split('/')[1]
-
+        if obj_type == 'Glist':
+            self.repo_url = 'https://gist.github.com/' + self.repo_url.split('/')[0] + '/' + self.repo_url.split('/')[1]
+        else:
+            self.repo_url = 'https://github.com/' + self.repo_url.split('/')[0] + '/' + self.repo_url.split('/')[1]
         self.responce = responce
         self.dork = dork
         self.company_id = company_id
         self.repo_name = self.repo_url.split('github.com/')[1]
 
         self.found_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
-
         self.stats = GitParserStats(self.repo_url)
 
         self.secrets = {'Not state': 'Not state'}
@@ -188,7 +188,6 @@ class LeakObj(ABC):
         }
         return ret_mass
 
-
     def write_to_mail(self):
         if (self.created_date == 'Not checked' and 'created_at' in self.secrets.keys()
                 and filters.is_time_format(self.secrets['created_at']) and filters.is_time_format(
@@ -216,7 +215,6 @@ class LeakObj(ABC):
                       f'Дополнительная информация в отчете об утечке.\n')
         return result_str
 
-
     def get_stats(self):
         if not self.stats.coll_stats_getted:
             self.stats.get_contributors_stats()
@@ -232,8 +230,9 @@ class RepoObj(LeakObj):
     obj_type: str = 'Repositories'
 
     def __init__(self, url: str, responce: dict, dork: str, company_id: int = 1):
-        super().__init__(url, responce, dork, company_id)
+        super().__init__(self.obj_type, url, responce, dork, company_id)
         self.author_name = self.responce['owner']['login']
+
     def __str__(self) -> str:
         return 'Repositories'
 
@@ -242,7 +241,7 @@ class CommitObj(LeakObj):
     obj_type: str = 'Commits'
 
     def __init__(self, url: str, responce: dict, dork: str, company_id: int = 0):
-        super().__init__(url, responce, dork, company_id)
+        super().__init__(self.obj_type, url, responce, dork, company_id)
         self.author_name = self.responce['commit']['author']['name']
         self.author_email = self.responce['commit']['author']['email']
         self.commit = self.responce['commit']['message']
@@ -258,7 +257,19 @@ class CodeObj(LeakObj):
     obj_type: str = 'Code'
 
     def __init__(self, url: str, responce: dict, dork: str, company_id: int = 0):
-        super().__init__(url, responce, dork, company_id)
+        super().__init__(self.obj_type, url, responce, dork, company_id)
         self.author_name = self.responce['repository']['owner']['login']
+
     def __str__(self) -> str:
         return 'Code'
+
+
+class GlistObj(LeakObj):
+    obj_type: str = 'Glist'
+
+    def __init__(self, url: str, dork: str, company_id: int = 0):
+        super().__init__(self.obj_type, url, {}, dork, company_id)
+        self.author_name = url.split('github.com/')[1].split('/')[0]
+
+    def __str__(self) -> str:
+        return 'Glist'

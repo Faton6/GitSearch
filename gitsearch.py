@@ -10,7 +10,7 @@ from src import Connector
 from src.logger import logger
 from src.searcher import Scanner
 
-# from src.glist.glist_scan import GlistScan
+from src.glist.glist_scan import GlistScan
 from src import deepscan
 from src import filters
 
@@ -58,9 +58,9 @@ if __name__ == "__main__":
     deepscan.list_search()
 
     # Github Gist scan
-    # logger.info('Start Gist scan')
-    # GlistScan.run(filter_='updated', quantity=30)
-    # filters.dumping_data()
+    logger.info('Start Gist scan')
+    GlistScan.run(filter_='updated', quantity=30)
+    filters.dumping_data()
 
     # Github scan
     logger.info('Start Github scan')
