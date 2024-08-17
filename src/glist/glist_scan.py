@@ -50,6 +50,22 @@ class GlistScan:
     def _links_exfiltr(cls, html: str, quantity: int):
         soup = BeautifulSoup(html, 'html.parser')
         links = soup.find_all('a', href=True)
+        pattern = r'\"/[A-Za-z0-9-]+\/[A-Za-z0-9]+\"'
+        gist_links = set()
+        for link in links:
+            if type(link) is dict and 'href' in link:
+                href = link['href']
+            else:
+                href = str(link)
+            if re.search(pattern, href):
+                href = href.split('href=\"')[1].split('\">')[0]
+                href = 'https://gist.github.com' + href
+                gist_links.add(href)
+        return tuple(gist_links)
+    '''
+    def _links_exfiltr(cls, html: str, quantity: int):
+        soup = BeautifulSoup(html, 'html.parser')
+        links = soup.find_all('a', href=True)
         pattern = r'^/[A-Za-z0-9-]+/[A-Za-z0-9]+$'
         gist_links = set()
         for link in links:
@@ -65,6 +81,7 @@ class GlistScan:
         #              if i < quantity)
 
         return tuple(gist_links)
+    '''
 
 
     @classmethod

@@ -1,6 +1,6 @@
 # Standart libs import
 import time
-from abc import ABC, abstractmethod
+from abc import ABC
 
 # Project lib's import
 from src import constants
@@ -34,7 +34,6 @@ class LeakObj(ABC):
             def write_obj - get list of object fields for write in DB
     """
 
-
     def __init__(self, obj_type: str, url: str, responce: dict, dork: str, company_id: int = 1):
 
         self.author_name = None
@@ -61,80 +60,118 @@ class LeakObj(ABC):
         # logger.info(f'Object {constants.quantity_obj_before_send}/{constants.MAX_OBJ_BEFORE_SEND} before dump.')
 
     def _check_status(self):
-        self.status.append(f'Обнаружена утечка в разделе {self.obj_type} по поиску {self.dork}')
-
+        # state 1
+        self._check_stats()
+        self.status.insert(0, f'Обнаружена утечка в разделе {self.obj_type} по поиску {self.dork}')
+        # state 2
+        if 'status' in self.secrets:
+            for i in self.secrets['status']:
+                self.status.append(i)
+        # state 3
+        founded_commiters = [comm['commiter_name'] + '/' + comm['commiter_email'] for comm in
+                             self.stats.commits_stats_commiters_table]
         for leak_type in constants.leak_check_list:
             if leak_type in self.author_name:
-                self.status.append(f'Утечка в имени автора, найдена по слову: {leak_type}, утечка: {self.author_name}.')
+                self.status.append(f'Утечка в имени автора, найдена по слову: {leak_type}, утечка: {self.author_name}')
+            if leak_type in ", ".join(founded_commiters):
+                self.status.append(f'Утечка в имени/почте коммитеров, найдена по слову: {leak_type}')
             if leak_type in self.repo_name:
                 self.status.append(
-                    f'Утечка в имени репозитория, найдена по слову: {leak_type}, утечка: {self.repo_name}.')
-            if 'status' in self.secrets:
-                for i in self.secrets['status']:
-                    self.status.append(i)
-            if ('grepscan' in self.secrets and type(self.secrets['grepscan']) is constants.AutoVivification
-                    and len(self.secrets['grepscan'])):
-                max_leaks = 5
-                for leak in self.secrets['grepscan']:
-                    if 12 < len(str(self.secrets['grepscan'][leak])) < 200:
-                        self.status.append(f'Утечка в коде: {str(self.secrets["grepscan"][leak])}.')
-                    max_leaks -= 1
-                    if max_leaks == 0:
-                        break
-            if ('gitleaks' in self.secrets and type(self.secrets['gitleaks']) is constants.AutoVivification
-                    and len(self.secrets['gitleaks'])):
-                max_leaks = 5
-                for leak in self.secrets['gitleaks']:
-                    if 12 < len(str(self.secrets['gitleaks'][leak])) < 200:
-                        self.status.append(f'Утечка в коде: {str(self.secrets["gitleaks"][leak])}.')
-                    max_leaks -= 1
-                    if max_leaks == 0:
-                        break
-            if ('gitsecrets' in self.secrets and type(self.secrets['gitsecrets']) is constants.AutoVivification
-                    and len(self.secrets['gitsecrets'])):
-                max_leaks = 5
-                for leak in self.secrets['gitsecrets']:
-                    if 12 < len(str(self.secrets['gitsecrets'][leak])) < 200:
-                        self.status.append(f'Утечка в коде: {str(self.secrets["gitsecrets"][leak])}.')
-                    max_leaks -= 1
-                    if max_leaks == 0:
-                        break
-            if ('whispers' in self.secrets and type(self.secrets['whispers']) is constants.AutoVivification
-                    and len(self.secrets['whispers'])):
-                max_leaks = 5
-                for leak in self.secrets['whispers']:
-                    if 12 < len(str(self.secrets['whispers'][leak])) < 200:
-                        self.status.append(f'Утечка в коде: {str(self.secrets["whispers"][leak])}.')
-                    max_leaks -= 1
-                    if max_leaks == 0:
-                        break
-            if ('trufflehog' in self.secrets and type(self.secrets['trufflehog']) is constants.AutoVivification
-                    and len(self.secrets['trufflehog'])):
-                max_leaks = 5
-                for leak in self.secrets['trufflehog']:
-                    if 12 < len(str(self.secrets['trufflehog'][leak])) < 200:
-                        self.status.append(f'Утечка в коде: {str(self.secrets["trufflehog"][leak])}.')
-                    max_leaks -= 1
-                    if max_leaks == 0:
-                        break
-            if ('deepsecrets' in self.secrets and type(self.secrets['deepsecrets']) is constants.AutoVivification
-                    and len(self.secrets['deepsecrets'])):
-                max_leaks = 5
-                for leak in self.secrets['deepsecrets']:
-                    if 12 < len(str(self.secrets['deepsecrets'][leak])) < 200:
-                        self.status.append(f'Утечка в коде: {str(self.secrets["deepsecrets"][leak])}.')
-                    max_leaks -= 1
-                    if max_leaks == 0:
-                        break
-            if ('ioc_finder' in self.secrets and type(self.secrets['ioc_finder']) is constants.AutoVivification
-                    and len(self.secrets['ioc_finder'])):
-                max_leaks = 5
-                for leak in self.secrets['ioc_finder']:
-                    if 12 < len(str(self.secrets['ioc_finder'][leak])) < 200:
-                        self.status.append(f'Утечка в коде: {str(self.secrets["ioc_finder"][leak])}.')
-                    max_leaks -= 1
-                    if max_leaks == 0:
-                        break
+                    f'Утечка в имени репозитория, найдена по слову: {leak_type}, утечка: {self.repo_name}')
+        # state 4
+        MAX_COMMITERS_DISPLAY = 5
+        MAX_DESCRIPTION_LEN = 50
+        self.status.append(f'Статистика по репозиторию: \nРазмер: {self.stats.repo_stats_leak_stats_table["size"]},'
+                           f' форки: {self.stats.repo_stats_leak_stats_table["forks_count"]},'
+                           f' звезды: {self.stats.repo_stats_leak_stats_table["stargazers_count"]},'
+                           f' был ли скачен: {self.stats.repo_stats_leak_stats_table["has_downloads"]},'
+                           f' кол-во issue: {self.stats.repo_stats_leak_stats_table["open_issues_count"]}')
+        if self.stats.repo_stats_leak_stats_table["description"] not in ["_", "", " "]:
+            if len(self.stats.repo_stats_leak_stats_table["description"]) > MAX_DESCRIPTION_LEN:
+                self.status.append(
+                    f'Краткое описание: {self.stats.repo_stats_leak_stats_table["description"][:MAX_DESCRIPTION_LEN]}...')
+            else:
+                self.status.append(f'Краткое описание: {self.stats.repo_stats_leak_stats_table["description"]}')
+        else:
+            self.status.append(f'Краткое описание: отсутствует')
+        self.status.append(
+            f'Топики: {self.stats.repo_stats_leak_stats_table["topics"] if self.stats.repo_stats_leak_stats_table["topics"] not in ["_", "", " "] else "отсутствуют"}')
+        if len(founded_commiters) > MAX_COMMITERS_DISPLAY:
+            self.status.append(
+                f'Обнаружены следующие коммитеры: {", ".join(founded_commiters[:MAX_COMMITERS_DISPLAY])}. Еще есть {len(founded_commiters) - MAX_COMMITERS_DISPLAY} коммитеров')
+        else:
+            self.status.append(f'Обнаружены следующие коммитеры: {", ".join(founded_commiters)}')
+
+        '''if ('gitleaks' in self.secrets and type(self.secrets['gitleaks']) is constants.AutoVivification
+                and len(self.secrets['gitleaks'])):
+            max_leaks = MAX_LEAKS
+            for leak in self.secrets['gitleaks']:
+                if 12 < len(str(self.secrets['gitleaks'][leak])) < 200:
+                    self.status.append(f'Утечка в коде: {str(self.secrets["gitleaks"][leak])}.')
+                max_leaks -= 1
+                if max_leaks == 0:
+                    break
+        if ('gitsecrets' in self.secrets and type(self.secrets['gitsecrets']) is constants.AutoVivification
+                and len(self.secrets['gitsecrets'])):
+            max_leaks = MAX_LEAKS
+            for leak in self.secrets['gitsecrets']:
+                if 12 < len(str(self.secrets['gitsecrets'][leak])) < 200:
+                    self.status.append(f'Утечка в коде: {str(self.secrets["gitsecrets"][leak])}.')
+                max_leaks -= 1
+                if max_leaks == 0:
+                    break
+
+        if ('trufflehog' in self.secrets and type(self.secrets['trufflehog']) is constants.AutoVivification
+                and len(self.secrets['trufflehog'])):
+            max_leaks = MAX_LEAKS
+            for leak in self.secrets['trufflehog']:
+                if 12 < len(str(self.secrets['trufflehog'][leak])) < 200:
+                    self.status.append(f'Утечка в коде: {str(self.secrets["trufflehog"][leak])}.')
+                max_leaks -= 1
+                if max_leaks == 0:
+                    break
+        if ('deepsecrets' in self.secrets and type(self.secrets['deepsecrets']) is constants.AutoVivification
+                and len(self.secrets['deepsecrets'])):
+            max_leaks = MAX_LEAKS
+            for leak in self.secrets['deepsecrets']:
+                if 12 < len(str(self.secrets['deepsecrets'][leak])) < 200:
+                    self.status.append(f'Утечка в коде: {str(self.secrets["deepsecrets"][leak])}.')
+                max_leaks -= 1
+                if max_leaks == 0:
+                    break
+        if ('ioc_finder' in self.secrets and type(self.secrets['ioc_finder']) is constants.AutoVivification
+                and len(self.secrets['ioc_finder'])):
+            max_leaks = MAX_LEAKS
+            for leak in self.secrets['ioc_finder']:
+                if 12 < len(str(self.secrets['ioc_finder'][leak])) < 200:
+                    self.status.append(f'Утечка в коде: {str(self.secrets["ioc_finder"][leak])}.')
+                max_leaks -= 1
+                if max_leaks == 0:
+                    break'''
+        # state 5
+        scaners = [
+            'gitleaks',
+            'gitsecrets',
+            'trufflehog',
+            'grepscan',
+            'deepsecrets'
+        ]
+        if ('grepscan' in self.secrets and type(self.secrets['grepscan']) is constants.AutoVivification
+                and len(self.secrets['grepscan'])):
+            self.status.append(
+                f'Первая строка, найденная grepscan: {list(self.secrets["grepscan"].values())[0]["Match"]}')
+
+        sum_leaks_count = 0
+        for scan_type in scaners:
+            if (scan_type in self.secrets and type(self.secrets[scan_type]) is constants.AutoVivification
+                    and len(self.secrets[scan_type])):
+                sum_leaks_count += len(self.secrets[scan_type])
+                self.status.append(
+                    f'Найдено {len(self.secrets[scan_type])} утечек {scan_type} сканером')
+
+        self.status.append(f'Всего обнаружено утечек: {sum_leaks_count}')
+        self.status.append(f'Длина полного отчета: {filters.count_nested_dict_len(self.secrets)}')
+        # state 6
         temp = []
         for i in self.status:
             if i not in temp:
@@ -147,8 +184,13 @@ class LeakObj(ABC):
             self.lvl = 1  # 'Medium'
         if counter >= constants.MEDIUM_LOW_THRESHOLD:
             self.lvl = 2  # 'High'
-        self.status = '\n'.join(self.status)
+        self.status = '\n- '.join(self.status)
         self.ready_to_send = True
+
+    def _prepare_secrets(self):
+        if len(self.secrets) > 10:
+            for key in self.secrets.keys():
+                pass  # TODO check secrets duplicates
 
     def write_obj(self):  # for write to DB
 
@@ -162,8 +204,12 @@ class LeakObj(ABC):
         # For example: password, API_key, source code, etc
         if not self.ready_to_send:
             self._check_status()
-        founded_leak = str(self.status[:1000]) + '...'
+        if len(self.status) > 10000:
+            founded_leak = str(self.status[:10000]) + '...'
+        else:
+            founded_leak = self.status
 
+        self._prepare_secrets()
         # Result:
         # 0 - leaks doesn't found, add to exclude list
         # 1 - leaks found, sent request to block
@@ -199,8 +245,8 @@ class LeakObj(ABC):
             self.updated_date = 'не обнаружена'
         if not self.ready_to_send:
             self._check_status()
-        if type(self.status) is str and len(self.status) > 300:
-            status_list = self.status[:300] + '...'
+        if type(self.status) is str and len(self.status) > 10000:
+            status_list = str(self.status)[:10000] + '...'
         else:
             status_list = self.status
         status_string = "\n\t".join(status_list)
@@ -215,13 +261,36 @@ class LeakObj(ABC):
                       f'Дополнительная информация в отчете об утечке.\n')
         return result_str
 
-    def get_stats(self):
+    def _check_stats(self):
         if not self.stats.coll_stats_getted:
             self.stats.get_contributors_stats()
         if not self.stats.comm_stats_getted:
             self.stats.get_commits_stats()
         for contributor in self.stats.contributors_stats_accounts_table:
-            contributor['related_company_id'] = self.company_id
+            contributor['company_id'] = self.company_id
+
+        if 'trufflehog' in self.secrets and len(self.secrets['trufflehog']):
+            commiter = {}
+            for leak in self.secrets['trufflehog']:
+                try:
+                    if self.secrets['trufflehog'][leak]['SourceMetadata']['Data']['Git']['email'].split('<')[
+                        0] not in commiter.keys():
+                        commiter[
+                            self.secrets['trufflehog'][leak]['SourceMetadata']['Data']['Git']['email'].split('<')[0]] \
+                            = self.secrets['trufflehog'][leak]['SourceMetadata']['Data']['Git']['email'].split('<')[1]
+                except Exception as ex:
+                    logger.error('Not found acc_name/email in trufflehog scan in %s repository', self.repo_name)
+            founded_commiters = [comm['commiter_name'] for comm in self.stats.commits_stats_commiters_table]
+            for comm in commiter.keys():
+                if comm not in founded_commiters:
+                    self.stats.commits_stats_commiters_table.append({'commiter_name': comm,
+                                                                     'commiter_email': commiter[comm],
+                                                                     'need_monitor': 0,
+                                                                     'related_account_id': 0
+                                                                     })
+                    founded_commiters.append(comm)
+
+    def get_stats(self):
         return (self.stats.repo_stats_leak_stats_table,
                 self.stats.contributors_stats_accounts_table, self.stats.commits_stats_commiters_table)
 

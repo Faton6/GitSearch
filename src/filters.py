@@ -1,4 +1,5 @@
 # Standart libs import
+import sys
 from random import choice
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -9,7 +10,7 @@ from pathlib import Path
 import re
 import time
 import tracemalloc
-
+import hashlib
 import git
 
 # Project lib's import
@@ -17,7 +18,6 @@ from ioc_finder import find_iocs
 
 from src import Connector, constants
 from src.logger import logger, CLR
-from src.searcher.GitStats import GitParserStats
 
 exclusions: tuple[str]
 
@@ -25,10 +25,18 @@ with open(f'{constants.MAIN_FOLDER_PATH}/src/exclude_list.txt', 'r') as fd:
     exclusions = tuple(line.rstrip() for line in fd)
 
 
+def count_nested_dict_len(input_dict):
+    length = len(input_dict)
+    for key, value in input_dict.items():
+        if isinstance(value, dict) or isinstance(value, constants.AutoVivification):
+            length += count_nested_dict_len(value)
+    return length
+
+
 def trace_monitor():
     snapshot = tracemalloc.take_snapshot()
     top_stats = snapshot.compare_to(constants.snap_backup, "lineno")
-    logger.info('-'* 50)
+    logger.info('-' * 50)
     logger.info('Process info')
     size_count = 0
     counter = 0
@@ -45,11 +53,23 @@ def trace_monitor():
         counter += 1
     logger.info('Totall size: %d MB', size_count / 1048576)
     logger.info('Totall counter: %d files', counter)
-    logger.info('-'* 50)
+    logger.info('-' * 50)
+    logger.info('Check TEMP_FOLDER directory')
+    temp_dir_list = os.listdir(constants.TEMP_FOLDER)
+    if len(temp_dir_list) > 2:
+        if 'command_file' in temp_dir_list:
+            temp_dir_list.remove('command_file')
+
+        if 'list_to_scan.txt' in temp_dir_list:
+            temp_dir_list.remove('list_to_scan.txt')
+        for dir_now in temp_dir_list:
+            if os.path.isdir(constants.TEMP_FOLDER + '/' + dir_now):
+                shutil.rmtree(constants.TEMP_FOLDER + '/' + dir_now)
+        logger.info(f'Cleared {len(temp_dir_list) - 1} directory in TEMP_FOLDER directory')
 
 
 def dumping_data():
-    logger.info('-'* 50)
+    logger.info('-' * 50)
     logger.info('Trace monitor before dump and clearing:')
     trace_monitor()
     result_unempty = False
@@ -68,15 +88,15 @@ def dumping_data():
     constants.RESULT_MASS = constants.AutoVivification()
     constants.quantity_obj_before_send = 0
     logger.info('Clear temp folder')
-    if os.path.exists(constants.TEMP):
-        for root, dirs, files in os.walk('constants.TEMP'):
+    if os.path.exists(constants.TEMP_FOLDER):
+        for root, dirs, files in os.walk('constants.TEMP_FOLDER'):
             for f in files:
                 os.unlink(os.path.join(root, f))
             for d in dirs:
                 shutil.rmtree(os.path.join(root, d))
     logger.info('Process info after dump to DB and clearing')
     trace_monitor()
-    logger.info('-'* 50)
+    logger.info('-' * 50)
 
 
 def pywhat_analyze(match, cwd):
@@ -215,11 +235,39 @@ def _exc_catcher(func):
         try:
             result = func(*args, **kwargs)
             return result
+        except subprocess.TimeoutExpired:
+            logger.error("TimeoutExpired exception in %s", func.__name__)
         except Exception as exc:
             logger.error("Exception in %s: %s", func.__name__, exc)
             return 2
 
     return wrapper
+
+
+''' 
+    _semantic_check_dork return 1 if input string meaningfull and 0 if not
+
+    Now based on RegEx rule, need change to NLP
+    The need for the dork should be removed
+    TODO change to NLP identification
+
+'''
+
+
+def _semantic_check_dork(string_check: str, dork: str):
+    # Define a pattern to match meaningful occurrences of string_check
+    pattern = r'\b' + dork + r'[\w.-]*\b'
+    meaningful_pattern = re.compile(pattern, re.IGNORECASE)
+
+    # Define a pattern to exclude gibberish
+    pattern = r'[^a-zA-Z0-9\s]+' + dork + r'[^a-zA-Z0-9\s]+'
+    exclude_pattern = re.compile(pattern, re.IGNORECASE)
+
+    # Filter lines with meaningful occurrences of string_check
+    if meaningful_pattern.search(string_check) and not exclude_pattern.search(string_check):
+        return 1
+    else:
+        return 0
 
 
 class CheckerException(Exception):
@@ -240,45 +288,40 @@ class Checker:
         self.obj = obj
         self.dork = dork
         self.mode = mode
-        self.repo_dir = url.split('/')[-2] + '---' + url.split('/')[-1]
+        scan_type = 'None'
+        self.repos_dir = constants.TEMP_FOLDER + '/' + url.split('/')[-2] + '---' + url.split('/')[-1]
+        self.report_dir = self.repos_dir + '---reports/'
         self.secrets = constants.AutoVivification()
         self.repo: git.Repo
         self.status = INITED
-
-        self.scan_time_limit = 3000 if self.mode == 3 else 1000
-
+        self.scan_time_limit = constants.MAX_TIME_TO_SCAN_BY_UTIL_DEEP if self.mode == 3 else constants.MAX_TIME_TO_SCAN_BY_UTIL_DEFAULT
+        self.log_color = choice(tuple(CLR.values()))
         self.scans = {
             'gitleaks': self.gitleaks_scan,
             'gitsecrets': self.gitsecrets_scan,
-            #'whispers': self.whispers_scan,
             'trufflehog': self.trufflehog_scan,
             'grepscan': self.grep_scan,
             'deepsecrets': self.deepsecrets_scan
-
         }
 
         self.deep_scans = {
             'gitleaks': self.gitleaks_scan,
             'gitsecrets': self.gitsecrets_scan,
-            # 'whispers': self.whispers_scan,
-            # 'trufflehog': Checker._trufflehog_scan, TODO some problems 'Filesystem'
             'grepscan': self.grep_scan,
             'deepsecrets': self.deepsecrets_scan,
             'ioc_finder': self.ioc_finder_scan,
-
             # ,'ioc_extractor': self._ioc_extractor
         }
-        #self.obj.stats = GitParserStats(self.url).get_repo_stats()
 
     def _clean_repo_dirs(self):
-        if os.path.exists(f"{constants.TEMP}/{self.repo_dir}"):
-            shutil.rmtree(f"{constants.TEMP}/{self.repo_dir}")
-        if os.path.exists(f"{constants.TEMP}/{self.repo_dir}---reports"):
-            shutil.rmtree(f"{constants.TEMP}/{self.repo_dir}---reports")
+        if os.path.exists(self.repos_dir):
+            shutil.rmtree(self.repos_dir)
+        if os.path.exists(self.report_dir):
+            shutil.rmtree(self.report_dir)
 
     def _pywhat_analyze_names(self, match):
         all_names = []
-        res_analyze = pywhat_analyze(match, f'{constants.TEMP}/{self.repo_dir}')
+        res_analyze = pywhat_analyze(match, self.repos_dir)
         for i in res_analyze:
             all_names.append(i['Name'])
         if len(all_names) < 1:
@@ -286,24 +329,27 @@ class Checker:
         return all_names
 
     def clone(self):
-        log_color = choice(tuple(CLR.values()))
-        logger.info(f'Repository %s %s %s size: %s %s %s', log_color, self.url, CLR["RESET"],
-                    log_color, self.obj.stats.repo_stats_leak_stats_table["size"], CLR["RESET"])
+
+        logger.info(f'Repository %s %s %s size: %s %s %s', self.log_color, self.url, CLR["RESET"],
+                    self.log_color, self.obj.stats.repo_stats_leak_stats_table["size"], CLR["RESET"])
         if self.obj.stats.repo_stats_leak_stats_table['size'] > constants.REPO_MAX_SIZE:
-            logger.info('Repository %s %s %s oversize, code not analyze', log_color, self.url, CLR["RESET"])
-            self.obj.status.append(f'Repository {self.url} is oversize, code not analyze')
+            logger.info(
+                f'Repository %s %s %s oversize ({self.obj.stats.repo_stats_leak_stats_table["size"]} > {constants.REPO_MAX_SIZE} limit), code not analyze',
+                self.log_color, self.url, CLR["RESET"])
+            self.obj.status.append(
+                f'Repository {self.url} is oversize ({self.obj.stats.repo_stats_leak_stats_table["size"]}), code not analyze')
             self._clean_repo_dirs()
             self.status |= NOT_CLONED
 
         else:
-            logger.info('Clonning %s %s %s', log_color, self.url, CLR["RESET"])
+            logger.info('Clonning %s %s %s', self.log_color, self.url, CLR["RESET"])
 
-            for try_clone in range(3):
+            for try_clone in range(constants.MAX_TRY_TO_CLONE):
                 try:
                     self._clean_repo_dirs()
                     self.repo = git.Repo.clone_from(
-                        self.url, f'{constants.TEMP}/{self.repo_dir}')
-                    os.makedirs(f"{constants.TEMP}/{self.repo_dir}---reports")
+                        self.url, self.repos_dir)
+                    os.makedirs(self.report_dir)
                     self.clean_excluded_files()
                     break
                 except Exception as exc:
@@ -316,41 +362,8 @@ class Checker:
             self.status |= CLONED
         self.obj.stats.get_contributors_stats()  # get stats this to optimize token usage
 
-    def grep_scan(self):
-        counter = 1
-        try:
-            for folder, _, files in os.walk(f"{constants.TEMP}/{self.repo_dir}"):
-                for file in files:
-
-                    fullpath = os.path.join(folder, file)
-                    with open(fullpath, 'r', encoding='utf-8', errors='ignore') as f:
-                        file_text = f.read()
-                        for leak in list(set(re.findall(self.dork, file_text))):
-                            self.secrets['grepscan'][f'Leak #{counter}']['Match'] = leak
-                            self.secrets['grepscan'][f'Leak #{counter}']['File'] = str(
-                                fullpath)
-                            counter += 1
-                            if counter > 1000:
-                                counter = 1
-                                break
-                        for target_word in constants.leak_check_list:
-                            for leak in list(set(re.findall(self.dork, file_text))):
-                                self.secrets['grepscan'][f'Leak #{counter}']['Match'] = leak
-                                self.secrets['grepscan'][f'Leak #{counter}']['File'] = str(
-                                    fullpath)
-
-                                counter += 1
-                                if counter > 1000:
-                                    counter = 1
-                                    break
-        except Exception as ex:
-            logger.error('Error in grepscan: %s', ex)
-            return 2
-
-        return 0
-
     def clean_excluded_files(self):
-        repo_path: str = f"{constants.TEMP}/{self.repo_dir}"
+        repo_path: str = self.repos_dir
 
         for file_name in os.listdir(repo_path):
             for ext in self.file_ignore:
@@ -359,406 +372,240 @@ class Checker:
                     os.remove(f'{repo_path}/{file_name}')
 
     def scan(self):
-        log_color = choice(tuple(CLR.values()))
-        logger.info('Started scan: %s | %s %s %s ', self.dork, log_color,
+        logger.info('Started scan: %s | %s %s %s ', self.dork, self.log_color,
                     self.url, CLR["RESET"])
         cur_dir = os.getcwd()
-        os.chdir(f"{constants.TEMP}/{self.repo_dir}")
-        # TODO take max_workers from config
-        with ThreadPoolExecutor(max_workers=6) as executor:
+        os.chdir(self.repos_dir)
+        with ThreadPoolExecutor(max_workers=len(self.scans)) as executor:
             futures = {executor.submit(method): name for name, method in self.scans.items()}
             for future in as_completed(futures):
                 res, method = future.result(), futures[future]
                 if res == 1:
                     return 1
-
                 if res == 2:
                     logger.error('Excepted error in scan, check log file!')
                 elif res == 3:
                     logger.info(f'Canceling scan in repo: {"/".join(self.url.split("/")[-2:])}')
 
-
         os.chdir(cur_dir)
-        logger.info('Scanned: %s | %s %s %s ', self.dork, log_color, self.url,
+        logger.info('Scanned: %s | %s %s %s ', self.dork, self.log_color, self.url,
                     CLR["RESET"])
 
         return self.secrets
 
     @_exc_catcher
+    def grep_scan(self):
+        scan_type = 'grepscan'
+        self.secrets[scan_type] = constants.AutoVivification()
+        logger.info('Repository %s %s %s start grepscan', self.log_color, self.url, CLR["RESET"])
+        try:
+            grep_command = 'grep -r \"' + self.dork + '\" ' + self.repos_dir
+            grep_proc = subprocess.run(grep_command, stdin=None, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                       shell=True, timeout=self.scan_time_limit, text=True)
+
+            dork_list = list(set(grep_proc.stdout.split('\n')))[:constants.MAX_UTIL_RES_LINES]
+            for index, leak in enumerate(dork_list):
+                if len(leak) < 2:
+                    continue
+                fullpath = leak.split(':')[0]
+                leak = ''.join(leak.split(':')[1:])
+                self.secrets[scan_type][f'Leak #{index}']['meaningfull'] = _semantic_check_dork(leak, self.dork)
+
+                if len(leak) > constants.MAX_LINE_LEAK_LEN:
+                    ind = leak.index(self.dork)
+                    leak = '...' + leak[int(ind - constants.MAX_LINE_LEAK_LEN / 2):ind] + leak[ind:int(
+                        ind + constants.MAX_LINE_LEAK_LEN / 2)] + '...'
+                self.secrets[scan_type][f'Leak #{index}']['Match'] = leak
+                self.secrets[scan_type][f'Leak #{index}']['File'] = str(fullpath)
+            logger.info('Repository %s %s %s grepscan finished success', self.log_color, self.url, CLR["RESET"])
+        except subprocess.TimeoutExpired:
+            logger.error(f'{scan_type} timeout occured in repository %s %s %s', self.log_color, self.url, CLR["RESET"])
+            return 2
+        except Exception as ex:
+            logger.error(f'Error in repository %s %s %s {scan_type}: %s', self.log_color, self.url, CLR["RESET"], ex)
+            return 2
+        logger.info(f'{scan_type} scan %s %s %s success', self.log_color, self.url, CLR["RESET"])
+        return 0
+
+    # @_exc_catcher
     def gitleaks_scan(self):
+        scan_type = 'gitleaks'
+        self.secrets[scan_type] = constants.AutoVivification()
+
         try:
 
-            tr = time.perf_counter()
-            gitleaks_proc = subprocess.Popen([
-                'gitleaks', 'detect', '--no-banner', '--no-color', '--report-format', 'json',
-                '--report-path', constants.TEMP+'/'+self.repo_dir+'/gitleaks_rep.json'],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                cwd=f'{constants.TEMP}/{self.repo_dir}')
+            gitleaks_com = (
+                    '/usr/local/bin/gitleaks detect --no-banner --no-color --report-format json --exit-code 0 --report-path "'
+                    + self.report_dir + scan_type + '_rep.json"')
+            ll = os.curdir
+            os.chdir(self.repos_dir)
+            gitleaks_proc = subprocess.run(gitleaks_com, stdin=None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                           shell=True, timeout=self.scan_time_limit, text=True, cwd=self.repos_dir)
 
-            while gitleaks_proc.poll() is None:
-
-                if time.perf_counter() - tr > self.scan_time_limit:
-                    gitleaks_proc.kill()
-                    logger.info('Timeout occured')
-                    if os.path.exists('gitleaks_rep.json'):
-                        os.remove('gitleaks_rep.json')
-                    return 3
-
-                if os.path.exists(constants.COMMAND_FILE):
-                    fd = open(constants.COMMAND_FILE, 'r')
-                    command_line = fd.readline()
-                    if command_line == 'skip' or command_line == 'skip\n':
-                        fd.close()
-                        open(constants.COMMAND_FILE, 'w').close()
-                        time.sleep(1)
-                        gitleaks_proc.kill()
-                        if os.path.exists('gitleaks_rep.json'):
-                            os.remove('gitleaks_rep.json')
-                        return 3
-                    elif command_line == 'stop' or command_line == 'stop\n':
-                        fd.close()
-                        open(constants.COMMAND_FILE, 'w').close()
-                        time.sleep(1)
-                        gitleaks_proc.kill()
-                        logger.info('Send stop-command')
-                        if os.path.exists(f"{constants.TEMP}/{self.repo_dir}"):
-                            shutil.rmtree(
-                                f"{constants.TEMP}/{self.repo_dir}")
-                            shutil.rmtree(
-                                f"{constants.TEMP}/{self.repo_dir}---reports")
-                        return 1
-                    else:
-                        fd.close()
-
+            os.chdir(ll)
+        except subprocess.TimeoutExpired:
+            logger.error(scan_type + ' timeout occured in repository %s %s %s', self.log_color, self.url, CLR["RESET"])
+            return 2
         except Exception as ex:
-
-            if 'status 1' not in str(ex):
-                logger.error('Error in gitleaks: %s', ex)
-                return 2
-        if os.path.exists(f'{constants.TEMP}/{self.repo_dir}/gitleaks_rep.json'):
-            with open(f'{constants.TEMP}/{self.repo_dir}/gitleaks_rep.json', 'r') as file:
+            logger.error(f'Error in repository %s %s %s {scan_type}: %s', self.log_color, self.url, CLR["RESET"], ex)
+            return 2
+        if os.path.exists(self.report_dir + scan_type + '_rep.json'):
+            with open(self.report_dir + scan_type + '_rep.json', 'r') as file:
                 js = json.load(file)
-                is_first = True
-                counter = 1
-                for elem in js:
-                    a = True
-                    if not is_first:
-                        for _, v in self.secrets['gitleaks'].items():
-                            if str(elem['Match']) == v['Match']:
-                                a = False
-                                break
-                            a = True
-                    if a:
-                        is_first = False
-                        self.secrets['gitleaks'][f'Leak #{counter}']['Match'] = str(
-                            elem['Match'][0:120])
-                        self.secrets['gitleaks'][f'Leak #{counter}']['File'] = str(
-                            elem['File'])
-                        self.secrets['gitleaks'][f'Leak #{counter}']['Email'] = str(
-                            elem['Email'])
-                        self.secrets['gitleaks'][f'Leak #{counter}']['Names'] = self._pywhat_analyze_names(str(
-                            self.secrets['gitleaks'][f'Leak #{counter}']['Match']))
-                        counter += 1
+                matched_secrets = {}
+                for index, elem in enumerate(js):
+                    if index > constants.MAX_UTIL_RES_LINES:
+                        break
+                    if elem['Match'] not in matched_secrets.keys():
+                        matched_secrets[elem['Match']] = 1
+                    elif matched_secrets[elem['Match']] > 3:
+                        continue
+                    # Position of match: StartColumn-EndColumn and StartLine-EndLine
+                    elem['Position'] = 'V:' + str(elem['StartColumn']) + '-' + str(elem['EndColumn']) + ';H:' + str(
+                        elem[
+                            'StartLine']) + '-' + str(elem['EndLine']) + ';'
 
-            if self.secrets['gitleaks'] is None:
-                self.secrets['gitleaks'] = 'Not founded any leaks'
+                    elem.pop('Fingerprint', None)
 
-            Path(f"{constants.TEMP}/{self.repo_dir}/gitleaks_rep.json").rename(
-                f"{constants.TEMP}/{self.repo_dir}---reports/gitleaks_rep.json")
-            return 0
+                    elem.pop('StartLine', None)
+                    elem.pop('EndLine', None)
+                    elem.pop('StartColumn', None)
+                    elem.pop('EndColumn', None)
+                    elem.pop('SymlinkFile', None)
+
+                    elem.pop('Secret', None)
+                    elem.pop('Entropy', None)
+                    elem.pop('Message', None)
+                    if len(elem['Match']) > constants.MAX_LINE_LEAK_LEN:
+                        elem['Match'] = elem['Match'][:constants.MAX_LINE_LEAK_LEN] + '...'
+                    self.secrets[scan_type][f'Leak #{index}'] = elem
+                    self.secrets[scan_type][f'Leak #{index}']['meaningfull'] = _semantic_check_dork(elem['Match'],
+                                                                                                    self.dork)
+            logger.info(f'{scan_type} scan %s %s %s success', self.log_color, self.url, CLR["RESET"])
+        return 0
 
     @_exc_catcher
     def gitsecrets_scan(self):
+        scan_type = 'gitsecrets'
+        self.secrets[scan_type] = constants.AutoVivification()
         subprocess.run(['git', 'secrets', '--install', '-f'],
                        stderr=subprocess.DEVNULL,
                        stdout=subprocess.DEVNULL,
-                       timeout=1000)
+                       timeout=self.scan_time_limit,
+                       shell=True)
         subprocess.run(['git', 'secrets', '--register-aws'],
                        stderr=subprocess.DEVNULL,
                        stdout=subprocess.DEVNULL,
-                       timeout=1000)
+                       timeout=self.scan_time_limit,
+                       shell=True)
         subprocess.run(['git', 'secrets', '--aws-provider'],
                        stderr=subprocess.DEVNULL,
                        stdout=subprocess.DEVNULL,
-                       timeout=1000)
-        tr = time.perf_counter()
-        gitsecret_proc = subprocess.Popen(['git', 'secrets', '--scan', '-r',
-                                           '.'],
-                                          stderr=subprocess.STDOUT,
-                                          stdout=subprocess.PIPE,
-                                          cwd=f'{constants.TEMP}/{self.repo_dir}')
+                       timeout=self.scan_time_limit,
+                       shell=True)
+        gitsecret_com = 'git secrets --scan -r ' + self.repos_dir
+        try:
+            old_dir = os.curdir
+            os.chdir(constants.TEMP_FOLDER)
+            gitsecret_proc = subprocess.run(gitsecret_com, capture_output=True,
+                                            shell=True, timeout=self.scan_time_limit, text=True, check=False)
 
-        while gitsecret_proc.poll() is None:
-            if time.perf_counter() - tr > self.scan_time_limit:
-                gitsecret_proc.kill()
-                logger.info('Timeout occured')
-                logger.info('gitleaks scan skipped')
-                return 3
-            if os.path.exists(constants.COMMAND_FILE):
-                fd = open(constants.COMMAND_FILE, 'r')
-                command_line = fd.readline()
-                if command_line == 'skip' or command_line == 'skip\n':
-                    fd.close()
-                    open(constants.COMMAND_FILE, 'w').close()
-                    time.sleep(1)
-                    gitsecret_proc.kill()
-                    logger.info('gitleaks scan skipped')
-                    return 3
-                elif command_line == 'stop' or command_line == 'stop\n':
-                    fd.close()
-                    open(constants.COMMAND_FILE, 'w').close()
-                    time.sleep(1)
-                    gitsecret_proc.kill()
-                    logger.info('Send stop-command')
-                    if os.path.exists(f"{constants.TEMP}/{self.repo_dir}"):
-                        shutil.rmtree(f"{constants.TEMP}/{self.repo_dir}")
-                        shutil.rmtree(
-                            f"{constants.TEMP}/{self.repo_dir}---reports")
-                    return 1
+            os.chdir(old_dir)
+        except subprocess.TimeoutExpired:
+            logger.error(f'{scan_type} timeout occured in repository %s %s %s', self.log_color, self.url, CLR["RESET"])
+            return 2
+        except Exception as ex:
+            print(f'ERROR: {ex}')
+            logger.error(f'Error in repository %s %s %s {scan_type}: %s', self.log_color, self.url, CLR["RESET"], ex)
+            return 2
+
+        with open(self.report_dir + scan_type + '_rep.json', 'w') as file:
+            for line in gitsecret_proc.stderr.split('\n'):
+                file.write(line)
+                file.write('\n')
+        with open(self.report_dir + scan_type + '_rep.json', 'r') as file:
+            matched_secrets = constants.AutoVivification()
+            for index, line in enumerate(file.readlines()[:constants.MAX_UTIL_RES_LINES]):
+                if '[ERROR] Matched one or more prohibited patterns' in line:
+                    break
+                match_str = ''.join(line.split(':')[2:]).strip()
+
+                if match_str not in matched_secrets.keys():
+                    matched_secrets[match_str] = 1
                 else:
-                    fd.close()
-        is_first = True
-        counter = 1
-
-        with open('gitsecrets_rep.json', 'w') as file:
-            for i in str(gitsecret_proc.communicate()[0].decode('utf-8')).split('\n'):
-                file.write(i)
-                if '\"Match\"' in i:
-                    gitsecret = i.split('\"Match\"')
-                elif ' - ' in i:
-                    gitsecret = i.split(' - ')
-                else:
-                    self.secrets['gitsecrets'] = 'Not founded any leaks'
-                    return 0
-                a = True
-                if not is_first:
-                    for _, v in self.secrets['gitsecrets'].items():
-                        if str(gitsecret[1]) == v['Match']:
-                            a = False
-                            break
-                        else:
-                            a = True
-                if a:
-                    is_first = False
-                    self.secrets['gitsecrets'][f'Leak #{counter}']['Match'] = str(
-                        gitsecret[1][0:120])
-                    self.secrets['gitsecrets'][f'Leak #{counter}']['Names'] = self._pywhat_analyze_names(str(
-                        self.secrets['gitsecrets'][f'Leak #{counter}']['Match']))
-                    self.secrets['gitsecrets'][f'Leak #{counter}']['File'] = str(
-                        gitsecret[0].split(':')[0])
-                    counter += 1
-        Path(f"{constants.TEMP}/{self.repo_dir}/gitsecrets_rep.json").rename(
-            f"{constants.TEMP}/{self.repo_dir}---reports/gitsecrets_rep.json")
-
-    @_exc_catcher
-    def whispers_scan(self):
-        tr = time.perf_counter()
-
-        whisper = subprocess.Popen(
-            ['whispers', './'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            cwd=f'{constants.TEMP}/{self.repo_dir}')
-
-        while whisper.poll() is None:
-            if time.perf_counter() - tr > self.scan_time_limit:
-                whisper.kill()
-                logger.info('Timeout occured')
-                logger.info('Whisper scan skipped')
-                return 3
-            if os.path.exists(constants.COMMAND_FILE):
-                fd = open(constants.COMMAND_FILE, 'r')
-                command_line = fd.readline()
-                if command_line == 'skip' or command_line == 'skip\n':
-                    fd.close()
-                    open(constants.COMMAND_FILE, 'w').close()
-                    time.sleep(1)
-                    whisper.kill()
-                    logger.info('Whisper scan skipped')
-                    return 3
-                elif command_line == 'stop' or command_line == 'stop\n':
-                    fd.close()
-                    open(constants.COMMAND_FILE, 'w').close()
-                    time.sleep(1)
-                    whisper.kill()
-                    logger.info('Send stop-command')
-                    if os.path.exists(f"{constants.TEMP}/{self.repo_dir}"):
-                        shutil.rmtree(f"{constants.TEMP}/{self.repo_dir}")
-                        shutil.rmtree(
-                            f"{constants.TEMP}/{self.repo_dir}---reports")
-                    return 1
-                else:
-                    fd.close()
-
-        with open('whisper_rep.txt', 'wb') as file:
-            file.write(whisper.communicate()[0])
-        whisper_list = []
-        with open('whisper_rep.txt', 'r') as file:
-            for line in file:
-                whisper_list.append(json.loads(line))
-
-        is_first = True
-        counter = 1
-        for i in whisper_list:
-            if len(i) < 50 or len(i) == 125:  # 125 - false - whispers.log
-                break
-            a = True
-            if not is_first:
-                for _, v in self.secrets['whispers'].items():
-                    if f'{i["key"]} {i["value"]}' == v['Match']:
-                        a = False
-                        break
-                    a = True
-            if a:
-                is_first = False
-                self.secrets['whispers'][f'Leak #{counter}']['Match'] = str(
-                    f'{i["key"] + " " + i["value"]}'[0:120])
-                self.secrets['whispers'][f'Leak #{counter}']['Names'] = \
-                    self._pywhat_analyze_names(str(
-                        self.secrets['whispers'][f'Leak #{counter}']['Match']))
-                self.secrets['whispers'][f'Leak #{counter}']['File'] = str(
-                    i["file"])
-                counter += 1
-            logger.info('whispers report: ')
-            print(self.secrets['whispers'])
-            if self.secrets['whispers'] is None:
-                self.secrets['whispers'] = 'Not founded any leaks'
-            Path(f"{constants.TEMP}/{self.repo_dir}/whisper_rep.txt").rename(
-                f"{constants.TEMP}/{self.repo_dir}---reports/whisper_rep.txt")
-            return 0
+                    continue
+                if len(match_str) > constants.MAX_LINE_LEAK_LEN:
+                    match_str = match_str[:constants.MAX_LINE_LEAK_LEN]
+                self.secrets['gitsecrets'][f'Leak #{index}']['Match'] = str(match_str)
+                self.secrets['gitsecrets'][f'Leak #{index}']['File'] = ''.join(line.split(':')[:2]).strip()
+            logger.info(f'{scan_type} scan %s %s %s success', self.log_color, self.url, CLR["RESET"])
+        return 0
 
     @_exc_catcher
     def trufflehog_scan(self):
-        tr = time.perf_counter()
-        trufflehog = subprocess.Popen(['trufflehog', 'git', '--json',
-                                       '--no-update', 'file://.'],
-                                      stdout=subprocess.PIPE,
-                                      stderr=subprocess.DEVNULL,
-                                      cwd=f'{constants.TEMP}/{self.repo_dir}')
-        '''
-        while trufflehog.poll() is None:
-            if time.perf_counter() - tr > self.scan_time_limit:
-                trufflehog.kill()
-                logger.info('Timeout occured')
-                logger.info('trufflehog scan skipped')
-                return 3
-            
-            if os.path.exists(constants.COMMAND_FILE):
-                fd = open(constants.COMMAND_FILE, 'r')
-                command_line = fd.readline()
-                if command_line in ('skip', 'skip\n'):
-                    fd.close()
-                    open(constants.COMMAND_FILE, 'w').close()
-                    time.sleep(1)
-                    trufflehog.kill()
-                    logger.info('trufflehog scan skipped')
-                    return 3
-                elif command_line == 'stop' or command_line == 'stop\n':
-                    fd.close()
-                    open(constants.COMMAND_FILE, 'w').close()
-                    time.sleep(1)
-                    trufflehog.kill()
-                    logger.info('Send stop-command')
-                    if os.path.exists(f"{constants.TEMP}/{self.repo_dir}"):
-                        shutil.rmtree(f"{constants.TEMP}/{self.repo_dir}")
-                        shutil.rmtree(
-                            f"{constants.TEMP}/{self.repo_dir}---reports")
-                    return 1
-                else:
-                    fd.close()
-                '''
-        with open('trufflehog_rep.txt', 'wb') as file:
-            var = trufflehog.communicate()[0]
+        scan_type = 'trufflehog'
+        self.secrets[scan_type] = constants.AutoVivification()
+        try:
+            truf_com = 'trufflehog git --json --no-update file://' + self.repos_dir
+            trufflehog_proc = subprocess.run(truf_com, stdin=None, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                             shell=True, timeout=self.scan_time_limit, text=True)
+        except subprocess.TimeoutExpired:
+            logger.error(scan_type + ' timeout occured in repository %s %s %s', self.log_color, self.url, CLR["RESET"])
+            return 2
+        except Exception as ex:
+            logger.error(f'Error in repository %s %s %s {scan_type}: %s', self.log_color, self.url, CLR["RESET"], ex)
+            return 2
+
+        with open(self.report_dir + scan_type + '_rep.txt', 'w') as file:
+            var = trufflehog_proc.stdout  # trufflehog_proc.communicate()[0]
             file.write(var)
 
         trufflehog_list = []
-        with open('trufflehog_rep.txt', 'r') as file:
+        with open(self.report_dir + scan_type + '_rep.txt', 'r') as file:
             for line in file:
                 trufflehog_list.append(json.loads(line))
-        is_first = True
-        counter = 1
-        for i in trufflehog_list:
-            a = True
-            '''
-            if i['RawV2'] != '':
-                match = i['RawV2']
-            elif i['Raw'] != '':
-                match = i['Raw']
+        appended_list_hashes = []
+        for index, elem in enumerate(trufflehog_list[:constants.MAX_UTIL_RES_LINES]):
+            md5_dict_hash = hashlib.md5(json.dumps(elem['SourceMetadata'], sort_keys=True).encode('utf-8')).hexdigest()
+            if md5_dict_hash in appended_list_hashes:
+                continue
             else:
-                match = ''
-            
-            match = i
-            if not is_first:
-                for _, v in self.secrets['trufflehog'].items():
-                    if match == '' or str(match) == v['Match']:
-                        a = False
-                        continue
-                    a = True
-            if a and match != '':
-                is_first = False
-            '''
-            self.secrets['trufflehog'][f'Leak #{counter}']['Match'] = i
-            self.secrets['trufflehog'][f'Leak #{counter}']['Name'] = \
-                self._pywhat_analyze_names(str(
-                    self.secrets['trufflehog'][f'Leak #{counter}']['Match']['Raw'])
-                )
-            #self.secrets['trufflehog'][f'Leak #{counter}']['File'] = str(
-            #    i['SourceMetadata']['Data']['Filesystem'][
-            #        'file'])
-            counter += 1
-            if counter > 100:
-                break
-        if self.secrets['trufflehog'] is None:
-            self.secrets['trufflehog'] = 'Not founded any leaks'
-        Path(f"{constants.TEMP}/{self.repo_dir}/trufflehog_rep.txt").rename(
-            f"{constants.TEMP}/{self.repo_dir}---reports/trufflehog_rep.txt")
+                appended_list_hashes.append(md5_dict_hash)
+            elem.pop('SourceID', None)
+            elem.pop('SourceType', None)
+            elem.pop('SourceName', None)
+            elem.pop('DetectorType', None)
+            elem.pop('DecoderName', None)
+            elem.pop('Redacted', None)
+            elem.pop('ExtraData', None)
+            elem.pop('StructuredData', None)
+            self.secrets['trufflehog'][f'Leak #{index}'] = elem
+            self.secrets['trufflehog'][f'Leak #{index}']['Match'] = elem['RawV2'] if elem['RawV2'] != "" else elem[
+                'Raw']
+            self.secrets['trufflehog'][f'Leak #{index}'].pop('Raw')
+            self.secrets['trufflehog'][f'Leak #{index}'].pop('RawV2')
+        logger.info(f'{scan_type} scan %s %s %s success', self.log_color, self.url, CLR["RESET"])
         return 0
 
     @_exc_catcher
     def deepsecrets_scan(self):
-        tr = time.perf_counter()
-        deepsecrets_proc = subprocess.Popen(['deepsecrets', '--target-dir', '.', '--outfile',
-                                             'deepsecrets_rep.json'],
-                                            stdout=subprocess.DEVNULL,
-                                            stderr=subprocess.DEVNULL,
-                                            cwd=f'{constants.TEMP}/{self.repo_dir}')
+        scan_type = 'deepsecrets'
+        self.secrets[scan_type] = constants.AutoVivification()
+        try:
+            deep_com = 'deepsecrets --target-dir ' + self.repos_dir + ' --outfile ' + self.report_dir + scan_type + '_rep.json'
+            deepsecrets_proc = subprocess.run(deep_com, stdin=None, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                              shell=True, timeout=self.scan_time_limit, text=True)
+        except subprocess.TimeoutExpired:
+            logger.error(scan_type + ' timeout occured in repository %s %s %s', self.log_color, self.url,
+                         CLR["RESET"])
+            return 2
+        except Exception as ex:
+            logger.error(f'Error in repository %s %s %s {scan_type}: %s', self.log_color, self.url, CLR["RESET"],
+                         ex)
+            return 2
 
-        while deepsecrets_proc.poll() is None:
-            if time.perf_counter() - tr > self.scan_time_limit:
-                deepsecrets_proc.kill()
-                logger.info('Timeout occured')
-                if os.path.exists('deepsecrets_rep.json'):
-                    os.remove(f'deepsecrets_rep.json')
-                return 3
-            if os.path.exists(constants.COMMAND_FILE):
-                fd = open(constants.COMMAND_FILE, 'r')
-                command_line = fd.readline()
-                if command_line == 'skip' or command_line == 'skip\n':
-                    fd.close()
-                    open(constants.COMMAND_FILE, 'w').close()
-                    time.sleep(1)
-                    deepsecrets_proc.kill()
-                    if os.path.exists('deepsecrets_rep.json'):
-                        os.remove(f'deepsecrets_rep.json')
-                    return 3
-                elif command_line == 'stop' or command_line == 'stop\n':
-                    fd.close()
-                    open(constants.COMMAND_FILE, 'w').close()
-                    time.sleep(1)
-                    deepsecrets_proc.kill()
-                    logger.info('Send stop-command')
-                    if os.path.exists(f"{constants.TEMP}/{self.repo_dir}"):
-                        shutil.rmtree(
-                            f"{constants.TEMP}/{self.repo_dir}")
-                        shutil.rmtree(
-                            f"{constants.TEMP}/{self.repo_dir}---reports")
-                    return 1
-                else:
-                    fd.close()
-
-        if os.path.exists('deepsecrets_rep.json'):
-            with open('deepsecrets_rep.json', 'r') as file:
+        if os.path.exists(self.report_dir + scan_type + '_rep.json'):
+            with open(self.report_dir + scan_type + '_rep.json', 'r') as file:
                 js = json.load(file)
                 is_first = True
                 counter = 1
@@ -768,29 +615,20 @@ class Checker:
                         a = True
                         if not is_first:
                             for _, v in self.secrets['deepsecrets'].items():
-                                if str(j['line'][:120]) == v['Match']:
+                                if str(j['line'][:constants.MAX_LINE_LEAK_LEN]) == v['Match']:
                                     a = False
                                     break
                                 a = True
                         if a:
                             is_first = False
-                            self.secrets['deepsecrets'][f'Leak #{counter}'] \
-                                ['Match'] = str(j['line'][:120])
 
-                            self.secrets['deepsecrets'] \
-                                [f'Leak #{counter}'] \
-                                ['Name'] = self._pywhat_analyze_names(str(
-                                self.secrets['deepsecrets'] \
-                                    [f'Leak #{counter}']['Match'])
-                            )
+                            if len(j['line']) > constants.MAX_LINE_LEAK_LEN:
+                                j['line'] = j['line'][:constants.MAX_LINE_LEAK_LEN]
+                            self.secrets['deepsecrets'][f'Leak #{counter}']['Match'] = str(j['line'])
 
-                            self.secrets['deepsecrets'] \
-                                [f'Leak #{counter}']['File'] = str(i)
+                            self.secrets['deepsecrets'][f'Leak #{counter}']['File'] = str(i)
                             counter += 1
-            if self.secrets['deepsecrets'] is None:
-                self.secrets['deepsecrets'] = 'Not founded any leaks'
-            Path(f"{constants.TEMP}/{self.repo_dir}/deepsecrets_rep.json").rename(
-                f"{constants.TEMP}/{self.repo_dir}---reports/deepsecrets_rep.json")
+            logger.info(f'{scan_type} scan %s %s %s success', self.log_color, self.url, CLR["RESET"])
             return 0
         else:
             logger.error('File deepsecrets_rep.json not founded\n')
@@ -877,7 +715,7 @@ class Checker:
                                              stdin=subprocess.PIPE,
                                              stdout=subprocess.PIPE,
                                              stderr=subprocess.DEVNULL,
-                                             cwd=f'{constants.TEMP}/{self.repo_dir}')
+                                             cwd=self.repos_dir)
                         while ioc_extractor_proc.poll() is None:
                             if time.perf_counter() - tr > self.scan_time_limit:
                                 ioc_extractor_proc.kill()
@@ -930,6 +768,7 @@ class Checker:
             # self._pydriller_scan() TODO repair dependities
             self.scan()
             self.status |= SCANNED
+            time.sleep(2)  # for MultiThread control
             self._clean_repo_dirs()
 
         self.obj.stats.get_commits_stats()  # get stats this to optimize token usage

@@ -148,14 +148,14 @@ CREATE TABLE `related_accounts_leaks` (
 -- --------------------------------------------------------
 
 --
--- Table structure for table `row_report`
+-- Table structure for table `raw_report`
 --
 
-CREATE TABLE `row_report` (
+CREATE TABLE `raw_report` (
   `id` int(10) UNSIGNED NOT NULL,
   `leak_id` int(10) UNSIGNED NOT NULL,
   `report_name` char(255) NOT NULL,
-  `row_data` mediumtext NOT NULL
+  `raw_data` mediumtext NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
@@ -205,9 +205,9 @@ ALTER TABLE `related_accounts_leaks`
   ADD PRIMARY KEY (`id`);
 
 --
--- Indexes for table `row_report`
+-- Indexes for table `raw_report`
 --
-ALTER TABLE `row_report`
+ALTER TABLE `raw_report`
   ADD PRIMARY KEY (`id`);
 
 --
@@ -257,9 +257,9 @@ ALTER TABLE `related_accounts_leaks`
   MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
 
 --
--- AUTO_INCREMENT for table `row_report`
+-- AUTO_INCREMENT for table `raw_report`
 --
-ALTER TABLE `row_report`
+ALTER TABLE `raw_report`
   MODIFY `id` int(10) UNSIGNED NOT NULL AUTO_INCREMENT;
 COMMIT;
 
