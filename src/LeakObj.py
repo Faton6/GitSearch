@@ -86,7 +86,8 @@ class LeakObj(ABC):
                            f' звезды: {self.stats.repo_stats_leak_stats_table["stargazers_count"]},'
                            f' был ли скачен: {self.stats.repo_stats_leak_stats_table["has_downloads"]},'
                            f' кол-во issue: {self.stats.repo_stats_leak_stats_table["open_issues_count"]}')
-        if self.stats.repo_stats_leak_stats_table["description"] not in ["_", "", " "]:
+        if (self.stats.repo_stats_leak_stats_table["description"] is str and
+                self.stats.repo_stats_leak_stats_table["description"] not in ["_", "", " "]):
             if len(self.stats.repo_stats_leak_stats_table["description"]) > MAX_DESCRIPTION_LEN:
                 self.status.append(
                     f'Краткое описание: {self.stats.repo_stats_leak_stats_table["description"][:MAX_DESCRIPTION_LEN]}...')
@@ -102,52 +103,7 @@ class LeakObj(ABC):
         else:
             self.status.append(f'Обнаружены следующие коммитеры: {", ".join(founded_commiters)}')
 
-        '''if ('gitleaks' in self.secrets and type(self.secrets['gitleaks']) is constants.AutoVivification
-                and len(self.secrets['gitleaks'])):
-            max_leaks = MAX_LEAKS
-            for leak in self.secrets['gitleaks']:
-                if 12 < len(str(self.secrets['gitleaks'][leak])) < 200:
-                    self.status.append(f'Утечка в коде: {str(self.secrets["gitleaks"][leak])}.')
-                max_leaks -= 1
-                if max_leaks == 0:
-                    break
-        if ('gitsecrets' in self.secrets and type(self.secrets['gitsecrets']) is constants.AutoVivification
-                and len(self.secrets['gitsecrets'])):
-            max_leaks = MAX_LEAKS
-            for leak in self.secrets['gitsecrets']:
-                if 12 < len(str(self.secrets['gitsecrets'][leak])) < 200:
-                    self.status.append(f'Утечка в коде: {str(self.secrets["gitsecrets"][leak])}.')
-                max_leaks -= 1
-                if max_leaks == 0:
-                    break
 
-        if ('trufflehog' in self.secrets and type(self.secrets['trufflehog']) is constants.AutoVivification
-                and len(self.secrets['trufflehog'])):
-            max_leaks = MAX_LEAKS
-            for leak in self.secrets['trufflehog']:
-                if 12 < len(str(self.secrets['trufflehog'][leak])) < 200:
-                    self.status.append(f'Утечка в коде: {str(self.secrets["trufflehog"][leak])}.')
-                max_leaks -= 1
-                if max_leaks == 0:
-                    break
-        if ('deepsecrets' in self.secrets and type(self.secrets['deepsecrets']) is constants.AutoVivification
-                and len(self.secrets['deepsecrets'])):
-            max_leaks = MAX_LEAKS
-            for leak in self.secrets['deepsecrets']:
-                if 12 < len(str(self.secrets['deepsecrets'][leak])) < 200:
-                    self.status.append(f'Утечка в коде: {str(self.secrets["deepsecrets"][leak])}.')
-                max_leaks -= 1
-                if max_leaks == 0:
-                    break
-        if ('ioc_finder' in self.secrets and type(self.secrets['ioc_finder']) is constants.AutoVivification
-                and len(self.secrets['ioc_finder'])):
-            max_leaks = MAX_LEAKS
-            for leak in self.secrets['ioc_finder']:
-                if 12 < len(str(self.secrets['ioc_finder'][leak])) < 200:
-                    self.status.append(f'Утечка в коде: {str(self.secrets["ioc_finder"][leak])}.')
-                max_leaks -= 1
-                if max_leaks == 0:
-                    break'''
         # state 5
         scaners = [
             'gitleaks',
