@@ -1,5 +1,6 @@
 import logging
 import time
+from logging.handlers import TimedRotatingFileHandler
 
 '''
     Logging config.json file
@@ -27,9 +28,17 @@ file_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s in %(f
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(console_formatter)
 
-timestamp = time.strftime("%Y%m%d-%H%M")
-file_handler = logging.FileHandler(f'logs/log_{timestamp}.log', 'w')
+timestamp = time.strftime("%Y_%m_%d")
+#file_handler = logging.FileHandler(f'logs/log_{timestamp}.log', 'w')
+file_handler = TimedRotatingFileHandler(
+        filename=f'logs/log_{timestamp}.log',
+        when='midnight',        # Вращение логов происходит в полночь
+        interval=1,             # Интервал вращения (1 день)
+        backupCount=7,          # Хранить 7 резервных копий (7 дней)
+        encoding='utf-8',       
+        delay=False,            
+        utc=False               
+    )
 file_handler.setFormatter(file_formatter)
-
 logger.addHandler(console_handler)
 logger.addHandler(file_handler)
