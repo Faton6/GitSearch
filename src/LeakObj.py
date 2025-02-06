@@ -53,6 +53,7 @@ class LeakObj(ABC):
         self.stats = GitParserStats(self.repo_url)
 
         self.secrets = {'Not state': 'Not state'}
+        self.ai_report = {'Thinks': 'Not state'}
         self.status = []
         self.lvl = 0
         self.ready_to_send = False

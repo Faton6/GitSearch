@@ -90,3 +90,8 @@ def token_generator():
     while True:
         for token in token_tuple:
             yield token
+            
+AI_TYPE = {'Deepseek': 0, 'Qwen': 1, 'ChatGPT': 2}  
+AI_CONFIG = {'ai_enable': False, 'url': '', 'api_key_need': True,
+             'api_key': 'lm-studio', 'ai_type': AI_TYPE['Qwen'],
+             'token_limit': 15000}

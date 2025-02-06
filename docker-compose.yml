@@ -53,6 +53,18 @@ services:
           ipv4_address: 172.32.0.98
       depends_on:
         - db
+    
+    #appsmith:
+    #    image: index.docker.io/appsmith/appsmith-ee
+    #    container_name: appsmith2
+    #    ports:
+    #     - "8081:80"
+    #    volumes:
+    #     - ./stacks:/appsmith-stacks
+    #    restart: unless-stopped
+    #    networks:
+    #      gitsearch_network:
+    #        ipv4_address: 172.32.0.100
 
 
 networks:

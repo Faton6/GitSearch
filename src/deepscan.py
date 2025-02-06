@@ -22,7 +22,7 @@ def deep_scan():
 
     for url in url_to_deepscan.keys():
         mode_for_scan = 3
-        url_to_deepscan[url][1] = filters.Checker.run(url, 'None', mode_for_scan)
+        url_to_deepscan[url][1], url_to_deepscan[url][2] = filters.Checker.run(url, 'None', mode_for_scan, constants.AI_CONFIG)
     mode_for_dump_to_DB = 1
 
     for url in list(url_to_deepscan.keys()):

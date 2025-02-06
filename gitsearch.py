@@ -59,12 +59,15 @@ if __name__ == "__main__":
 
     # Github Gist scan
     logger.info('Start Gist scan')
-    GlistScan.run(filter_='updated', quantity=30)
+    #GlistScan.run(filter_='updated', quantity=30)
     filters.dumping_data()
 
     # Github scan
     logger.info('Start Github scan')
-
+    #constants.dork_dict.pop(1, None)
+    #constants.dork_dict.pop(2, None)
+    print(constants.dork_dict)
+    
     for org in constants.dork_dict:
         Scanner(org).gitscan()
     filters.dumping_data()

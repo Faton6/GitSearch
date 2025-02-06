@@ -1,7 +1,7 @@
 FROM python:3.11.2
 
-LABEL maintainer="Kirill Lygin"
-LABEL description="Gitsearch docker image"
+LABEL maintainer="Anton Fakhretdinov"
+LABEL description="Close-version Gitsearch docker image"
 LABEL version="1.0"
 LABEL name="gitsearch"
 

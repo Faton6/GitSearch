@@ -6,6 +6,7 @@ import time
 
 import requests
 import mariadb
+
 # Project lib's import
 from src import constants
 from src.logger import logger
@@ -34,6 +35,7 @@ from src.logger import logger
         res_human_check, founded_leak, res_check]
 
 """
+# TODO Change config to class Config
 
 requests.urllib3.disable_warnings()
 
@@ -63,7 +65,11 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
                         'report_name': constants.RESULT_MASS[scan_key][scanObj].repo_url,
                         'raw_data':
                             str(base64.b64encode(bz2.compress(json.dumps(constants.RESULT_MASS[scan_key][scanObj].
-                                                                         secrets, indent=4).encode('utf-8'))))[2:-1]
+                                                                         secrets, indent=4).encode('utf-8'))))[2:-1],
+                            
+                        'ai_report':
+                            str(base64.b64encode(bz2.compress(json.dumps(constants.RESULT_MASS[scan_key][scanObj].
+                                                                         ai_report, indent=4).encode('utf-8'))))[2:-1]
                     }
                 }
                 leak_stats_table, accounts_table, commiters_table = constants.RESULT_MASS[scan_key][scanObj].get_stats()
@@ -93,6 +99,9 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
                     'report_name': url,
                     'raw_data':
                         str(base64.b64encode(bz2.compress(json.dumps(result_deepscan[url][1],
+                                                                     indent=4).encode('utf-8'))))[2:-1],
+                    'ai_report':
+                        str(base64.b64encode(bz2.compress(json.dumps(result_deepscan[url][2],
                                                                      indent=4).encode('utf-8'))))[2:-1]
                 }
             }
@@ -191,8 +200,8 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
                 leak_id = cursor.lastrowid
 
                 data_row_report = backup_rep['scan'][i][1]['content']
-                cursor.execute("INSERT INTO raw_report (leak_id, report_name, raw_data) VALUES (?, ?, ?)",
-                               (leak_id, data_row_report['report_name'], data_row_report['raw_data']))
+                cursor.execute("INSERT INTO raw_report (leak_id, report_name, raw_data, ai_report) VALUES (?, ?, ?, ?)",
+                               (leak_id, data_row_report['report_name'], data_row_report['raw_data'], data_row_report['ai_report']))
                 conn.commit()
 
                 leak_stats_table = backup_rep['scan'][i][2]
@@ -200,12 +209,12 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
                 cursor.execute(
                     "INSERT INTO leak_stats (leak_id, size, stargazers_count, has_issues, has_projects, has_downloads,"
                     "has_wiki, has_pages, forks_count, open_issues_count, subscribers_count, topics, contributors_count, "
-                    "commits_count, commiters_count, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "commits_count, commiters_count, ai_result, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (leak_id, leak_stats_table['size'], leak_stats_table['stargazers_count'], leak_stats_table['has_issues'],
                      leak_stats_table['has_projects'], leak_stats_table['has_downloads'], leak_stats_table['has_wiki'],
                      leak_stats_table['has_pages'], leak_stats_table['forks_count'], leak_stats_table['open_issues_count'],
                      leak_stats_table['subscribers_count'], leak_stats_table['topics'], leak_stats_table['contributors_count'],
-                     leak_stats_table['commits_count'], leak_stats_table['commiters_count'], leak_stats_table['description']))
+                     leak_stats_table['commits_count'], leak_stats_table['commiters_count'], leak_stats_table['ai_result'], leak_stats_table['description']))
                 conn.commit()
 
                 accounts_table = backup_rep['scan'][i][3]
@@ -268,6 +277,22 @@ def dump_row_data_from_DB(target_leak_id):
     conn, cursor = connect_to_database()
     try:
         cursor.execute("SELECT raw_data FROM raw_report WHERE leak_id=target_leak_id")
+        conn.commit()
+        dumped_data = str(json.loads(bz2.decompress(base64.b64decode(cursor.fetchall()))))
+        return dumped_data
+    except mariadb.Error as e:
+        return logger.error(f"Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def dump_ai_report_from_DB(target_leak_id):
+    logger.info(f'Dumping leak {target_leak_id} from DB...')
+
+    conn, cursor = connect_to_database()
+    try:
+        cursor.execute("SELECT ai_report FROM raw_report WHERE leak_id=target_leak_id")
         conn.commit()
         dumped_data = str(json.loads(bz2.decompress(base64.b64decode(cursor.fetchall()))))
         return dumped_data

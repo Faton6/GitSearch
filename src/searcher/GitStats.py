@@ -44,12 +44,15 @@ class GitParserStats:
                                                   'contributors_count': 0,
                                                   'commits_count': 0,
                                                   'commiters_count': 0,
+                                                  'ai_result': -1, # 1 - ai found leak, 0 - ai not found leak, -1 - ai not used
                                                   'description': '_'
                                                   }
 
         self.contributors_stats_accounts_table: list = []
 
         self.commits_stats_commiters_table: list = []
+        
+        self.ai_result = None # 1 - ai found leak, 0 - ai not found leak, -1 - ai not used
 
         self.repo_stats_getted = False
         self.coll_stats_getted = False
@@ -59,7 +62,7 @@ class GitParserStats:
             raise ValueError("Attribute url is not overloaded!")
 
     # check repository stats:
-    def get_repo_stats(self):
+    def get_repo_stats(self): # TODO rename
         diff: float = self.rate_limit + self.last_request - time.time()
         if diff > 0.3:
             time.sleep(diff)
@@ -98,6 +101,7 @@ class GitParserStats:
                                                         'contributors_count': 0,
                                                         'commits_count': 0,
                                                         'commiters_count': 0,
+                                                        'ai_result': -1, # 1 - ai found leak, 0 - ai not found leak, -1 - ai not used
                                                         'description': response['description']
                                                         }
                 else:
@@ -115,6 +119,7 @@ class GitParserStats:
                                                         'contributors_count': 0,
                                                         'commits_count': 0,
                                                         'commiters_count': 0,
+                                                        'ai_result': -1, # 1 - ai found leak, 0 - ai not found leak, -1 - ai not used
                                                         'description': response['description']
                                                         }
             else:
@@ -122,7 +127,7 @@ class GitParserStats:
                              str(response), CLR["RESET"])
         self.repo_stats_getted = True
 
-    def get_contributors_stats(self):
+    def get_contributors_stats(self): # TODO rename
         if self.type == 'Gist':
             self.contributors_stats_accounts_table = [{'account': self.login_repo.split('/')[0],
                                                        'need_monitor': 0,
@@ -157,7 +162,7 @@ class GitParserStats:
                     self.repo_stats_leak_stats_table['contributors_count'] = len(self.contributors_stats_accounts_table)
             self.coll_stats_getted = True
 
-    def get_commits_stats(self):
+    def get_commits_stats(self): # TODO rename
         diff: float = self.rate_limit + self.last_request - time.time()
         if diff > 0.3:
             time.sleep(diff)
@@ -215,6 +220,12 @@ class GitParserStats:
 
         self.comm_stats_getted = True
 
+    def set_ai_result(self, ai_result):
+        self.repo_stats_leak_stats_table['ai_result'] = ai_result
+    
+    def get_repo_stats_leak_stats_table(self):
+        return self.get_repo_stats_leak_stats_table
+    
     def request_page(self, url) -> requests.Response:
         token = next(constants.token_generator())
         return requests.get(

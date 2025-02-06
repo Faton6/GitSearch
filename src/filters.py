@@ -292,6 +292,8 @@ class Checker:
         self.repos_dir = constants.TEMP_FOLDER + '/' + url.split('/')[-2] + '---' + url.split('/')[-1]
         self.report_dir = self.repos_dir + '---reports/'
         self.secrets = constants.AutoVivification()
+        self.ai_report = {'Thinks': 'AI not used'}
+        self.ai_results = -1
         self.repo: git.Repo
         self.status = INITED
         self.scan_time_limit = constants.MAX_TIME_TO_SCAN_BY_UTIL_DEEP if self.mode == 3 else constants.MAX_TIME_TO_SCAN_BY_UTIL_DEFAULT
@@ -310,6 +312,7 @@ class Checker:
             'grepscan': self.grep_scan,
             'deepsecrets': self.deepsecrets_scan,
             'ioc_finder': self.ioc_finder_scan,
+            'ai_deep_scan': self.ai_deep_scan,
             # ,'ioc_extractor': self._ioc_extractor
         }
 
@@ -750,6 +753,37 @@ class Checker:
         self.secrets['ioc_extractor'] = res_dict
         return 0
 
+    
+    @_exc_catcher
+    def ai_deep_scan(self):
+        #self.ai_report        
+        if not constants.AI_CONFIG['ai_enable']:
+            pass
+        return 0
+        
+        
+    @_exc_catcher
+    def ai_scan(self):
+        from src.AIObj import AIObj
+        
+        if not self.obj.stats.coll_stats_getted:
+            self.obj.stats.get_contributors_stats()
+        if not self.obj.stats.comm_stats_getted:
+            self.obj.stats.get_commits_stats()
+        contri = []
+        commi = []
+        (contri.append(cont['account']) for cont in self.obj.statscontributors_stats_accounts_table)
+        (commi.append('Name:' + comm['commiter_name'] + ', Email:' + comm['commiter_email']) for comm in self.obj.statscommits_stats_commiters_table)
+        
+        leak_info = {'author': self.obj.author_name, 'repo_name': self.obj.repo_name,
+                     'created_at': self.obj.stats.created_at, 'updated_at': self.obj.stats.updated_at,
+                     'dork': self.obj.dork, 'contributers': contri, 'commiters': commi}
+        ai_obj = AIObj(self.secrets, self.obj.stats.get_repo_stats_leak_stats_table(), leak_info)
+        ai_obj.ai_request()
+        self.obj.ai_report = ai_obj.get_ai_report()
+        self.obj.stats.ai_result = ai_obj.get_ai_result()
+        return 0
+        
     def run(self):
         """
         скачивает репозиторий по ссылке из url и проверяет с помощью сканеров TODO
@@ -773,4 +807,6 @@ class Checker:
 
         self.obj.stats.get_commits_stats()  # get stats this to optimize token usage
         self.obj.secrets = self.secrets
-        return self.secrets
+        if constants.AI_CONFIG['ai_enable']:
+            self.ai_scan()
+        return self.secrets, self.obj.ai_report

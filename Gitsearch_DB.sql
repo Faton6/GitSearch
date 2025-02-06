@@ -130,6 +130,7 @@ CREATE TABLE `leak_stats` (
   `contributors_count` int(11) NOT NULL,
   `commits_count` int(11) NOT NULL,
   `commiters_count` int(11) NOT NULL,
+  `ai_result` int(11) NOT NULL,
   `description` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_swedish_ci;
 
@@ -155,7 +156,8 @@ CREATE TABLE `raw_report` (
   `id` int(10) UNSIGNED NOT NULL,
   `leak_id` int(10) UNSIGNED NOT NULL,
   `report_name` char(255) NOT NULL,
-  `raw_data` mediumtext NOT NULL
+  `raw_data` mediumtext NOT NULL,
+  `ai_report` mediumtext NOT NULL,
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --

@@ -49,3 +49,5 @@ deepsecrets==1.1.4
 certifi
 mariadb
 gitpython
+openai
+tiktoken
