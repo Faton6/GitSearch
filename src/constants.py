@@ -6,6 +6,8 @@ import tracemalloc
 
 # Project lib's import
 # from src.logger import logger, CLR
+RUN_TESTS: bool = False
+
 
 __NAME__ = "GitSearch"
 DEFAULT_CONFIG_FILE = f".{__NAME__}.yml"
@@ -51,6 +53,14 @@ LOW_LVL_THRESHOLD = 5  # low lvl of leaks - from 0 to LVL_LOW_THRESHOLD - 1
 # medium lvl of leaks - from LVL_LOW_THRESHOLD to LVL_LOW_THRESHOLD - 1
 MEDIUM_LOW_THRESHOLD = 15
 LANGUAGE = 'ru'  # default language for messages
+
+COUNTRY_PROFILING: bool = True
+COMPANY_COUNTRY_MAP_DEFAULT: str = "ru"  # Default country for companies without specific mapping
+COMPANY_COUNTRY_MAP: dict[str, str] = {
+    "Yandex": "ru",
+    "Alpha-Bet": "en",
+}
+
 dork_dict_from_DB: dict = {}
 dork_list_from_file: list = []
 url_from_DB: dict = {}

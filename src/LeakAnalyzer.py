@@ -1,6 +1,7 @@
 import re
 from src.logger import logger
 from src import constants
+from src.Connector import get_company_name
 
 class LeakAnalyzer: 
     '''
@@ -8,32 +9,94 @@ class LeakAnalyzer:
     '''
     def __init__(self, leak_obj: any):
         self.leak_obj = leak_obj
-
+        self.company_name = get_company_name(leak_obj.company_id)
+    
+    def _company_tokens(self) -> list[str]:
+        """Return lower-case tokens derived from company name."""
+        if not self.company_name:
+            return []
+        tokens = re.split(r"[\s,._-]+", self.company_name.lower())
+        tokens.append(self.company_name.lower())
+        return list({t for t in tokens if t})
+    
     def calculate_organization_relevance_score(self) -> float:
         score = 0.0
-
+        dork = (self.leak_obj.dork or "").lower()
+        description = str(self.leak_obj.stats.repo_stats_leak_stats_table.get("description") or "")
+        company_tokens = self._company_tokens()
         # Factor 1: Dork relevance
         # If the dork is found in the repo name or description, it's highly relevant
-        if self.leak_obj.dork and self.leak_obj.repo_name and self.leak_obj.dork.lower() in self.leak_obj.repo_name.lower():
-            score += 0.3
-        if self.leak_obj.dork and self.leak_obj.stats.repo_stats_leak_stats_table.get("description") and \
-           self.leak_obj.dork.lower() in self.leak_obj.stats.repo_stats_leak_stats_table["description"].lower():
-            score += 0.2
+        if dork and self.leak_obj.repo_name and dork in self.leak_obj.repo_name.lower():
+            score += 0.25
+        if dork and description and dork in description.lower():
+            score += 0.15
 
         # Factor 2: Author/Committer relevance
         # Check if author or committers names/emails contain parts of the dork or company name
         if self.leak_obj.author_name and self.leak_obj.dork and self.leak_obj.dork.lower() in self.leak_obj.author_name.lower():
-            score += 0.2
+            score += 0.3
         
         # Check committers
         for committer in self.leak_obj.stats.commits_stats_commiters_table:
             committer_info = f'{committer.get("commiter_name", "")} {committer.get("commiter_email", "")}'
             if self.leak_obj.dork and self.leak_obj.dork.lower() in committer_info.lower():
                 score += 0.1 # Each relevant committer adds a small score
-
-        # Factor 3: AI assessment (if available and positive)
+                
+        # --- Company name heuristics ------------------------------------
+        if company_tokens:
+            repo_name_l = (self.leak_obj.repo_name or "").lower()
+            topics = str(self.leak_obj.stats.repo_stats_leak_stats_table.get("topics") or "").lower()
+            if any(tok in repo_name_l for tok in company_tokens):
+                score += 0.2
+            if description and any(tok in description.lower() for tok in company_tokens):
+                score += 0.1
+            if topics and any(tok in topics for tok in company_tokens):
+                score += 0.05            
+        # Factor 3: --- Country profiling -------------------------------------------
+        if constants.COUNTRY_PROFILING:
+            company_country = constants.COMPANY_COUNTRY_MAP_DEFAULT
+            if self.leak_obj.company_id in constants.COMPANY_COUNTRY_MAP:
+                company_country = constants.COMPANY_COUNTRY_MAP[self.leak_obj.company_id]
+                
+            if company_country == "ru":
+                # Cyrillic names or .ru emails/descriptions slightly increase relevance
+                if re.search(r"[А-Яа-я]", self.leak_obj.author_name or ""):
+                    score += 0.05
+                if re.search(r"[А-Яа-я]", description):
+                    score += 0.05
+                for committer in self.leak_obj.stats.commits_stats_commiters_table:
+                    if re.search(r"[А-Яа-я]", committer.get('commiter_name', '')):
+                        score += 0.03
+                    if committer.get('commiter_email', '').lower().endswith('.ru'):
+                        score += 0.03
+            elif company_country == "en":
+                if re.fullmatch(r"[A-Za-z ._-]+", self.leak_obj.author_name or ""):
+                    score += 0.03
+                if re.fullmatch(r"[A-Za-z0-9 ,._-]+", description.strip()):
+                    score += 0.03
+                for committer in self.leak_obj.stats.commits_stats_commiters_table:
+                    if re.fullmatch(r"[A-Za-z ._-]+", committer.get('commiter_name', '')):
+                        score += 0.02
+                    if re.search(r"@.+\.(com|org|net|io)$", committer.get('commiter_email', '').lower()):
+                        score += 0.02
+        
+        # Factor 4:--- Popularity penalty -----------------------------------------
+        stars = self.leak_obj.stats.repo_stats_leak_stats_table.get('stargazers_count', 0)
+        commiters = self.leak_obj.stats.repo_stats_leak_stats_table.get('commiters_count', 0)
+        if stars > 100:
+            score -= 0.1
+        if stars > 1000:
+            score -= 0.15
+        if commiters > 50:
+            score -= 0.05
+        if commiters > 200:
+            score -= 0.15
+            
+        # Factor 5: AI assessment (if available and positive)
         if self.leak_obj.stats.ai_result == 1: # Assuming 1 means AI believes it's related
-            score += 0.2
+            score += 0.3
+        if self.leak_obj.stats.ai_result == 0:
+            score -= 0.3
 
         # Cap the score at 1.0
         return min(score, 1.0)

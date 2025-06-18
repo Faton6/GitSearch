@@ -14,3 +14,8 @@ GitSearch utilizes Docker Compose to compile and launch all necessary Docker con
 docker-compose-up
 ```
 Don't forget to configure dorks, which are keywords that could be associated with your sensitive data.
+
+## ✅ Running tests
+To execute the unit test suite set ``RUN_TESTS = True`` in ``src/constants.py`` and
+run ``python gitsearch.py``.  The script will invoke ``pytest`` and exit without
+performing any scans.

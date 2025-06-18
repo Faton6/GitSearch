@@ -139,6 +139,41 @@ def test_dump_from_DB_db_error():
         mock_conn.close.assert_called_once()
         assert result == {}
 
+# Test get_company_name function
+def test_get_company_name_success():
+    with patch("src.Connector.connect_to_database") as mock_connect_db:
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_connect_db.return_value = (mock_conn, mock_cursor)
+
+        mock_cursor.fetchone.return_value = ("Acme",)
+
+        result = Connector.get_company_name(7)
+
+        mock_cursor.execute.assert_called_once_with("SELECT company_name FROM companies WHERE id=%s", (7,))
+        mock_conn.commit.assert_called_once()
+        mock_conn.close.assert_called_once()
+        assert result == "Acme"
+
+
+def test_get_company_name_no_connection():
+    with patch("src.Connector.connect_to_database", return_value=(None, None)):
+        assert Connector.get_company_name(1) == ""
+
+
+def test_get_company_name_db_error():
+    with patch("src.Connector.connect_to_database") as mock_connect_db:
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_connect_db.return_value = (mock_conn, mock_cursor)
+        mock_cursor.execute.side_effect = pymysql.Error("DB error")
+
+        result = Connector.get_company_name(1)
+
+        mock_conn.close.assert_called_once()
+        assert result == ""
+
+
 # Test dump_account_from_DB function
 def test_dump_account_from_DB_success():
     with patch("src.Connector.connect_to_database") as mock_connect_db:

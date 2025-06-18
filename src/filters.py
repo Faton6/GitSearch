@@ -26,9 +26,17 @@ with open(constants.MAIN_FOLDER_PATH / "src" / "exclude_list.txt", 'r') as fd:
 
 def count_nested_dict_len(input_dict):
     length = len(input_dict)
-    for key, value in input_dict.items():
-        if isinstance(value, dict) or isinstance(value, constants.AutoVivification):
-            length += count_nested_dict_len(value)
+    if isinstance(input_dict, tuple):
+        for value in input_dict:
+            if isinstance(value, dict) or isinstance(value, constants.AutoVivification):
+                length += count_nested_dict_len(value)
+    elif isinstance(input_dict, constants.AutoVivification) or isinstance(input_dict, dict):
+        for key, value in input_dict.items():
+            if isinstance(value, dict) or isinstance(value, constants.AutoVivification):
+                length += count_nested_dict_len(value)
+    else:
+        logger.error("count_nested_dict_len: input_dict is not an AutoVivification instance: %s", type(input_dict))
+        logger.error("input_dict: %s", str(input_dict))
     return length
 
 

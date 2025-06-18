@@ -130,13 +130,16 @@ def connect_to_database():
         cursor = conn.cursor()
         return conn, cursor
     except pymysql.Error as e:
-        print(f"Error connecting to MariaDB Platform: {e}")
+        logger.error(f"Error connecting to MariaDB Platform: {e}")
+        return None, None
 
 
 def dump_target_from_DB():
     logger.info(f'Dumping target words from DB...')
     dork_dict = {}
     conn, cursor = connect_to_database()
+    if not conn or not cursor:
+        return {}
     try:
         cursor.execute("SELECT dork, company_id FROM dorks")
         dumped_data = cursor.fetchall()
@@ -148,7 +151,8 @@ def dump_target_from_DB():
 
         return dork_dict
     except pymysql.Error as e:
-        return logger.error(f"Error: {e}")
+        logger.error(f"Error: {e}")
+        return {}
     finally:
         if conn:
             conn.close()
@@ -161,6 +165,8 @@ def dump_from_DB(mode=0):
     logger.info(f'Dumping data from DB...')
 
     conn, cursor = connect_to_database()
+    if not conn or not cursor:
+        return {}
     try:
         cursor.execute("SELECT id, url, result FROM leak")
         dumped_data = cursor.fetchall()
@@ -174,7 +180,8 @@ def dump_from_DB(mode=0):
                 checked_repos[i[1]] = i[2]  # checked_repos[i['url']] = i['result']
         return checked_repos
     except pymysql.Error as e:
-        return logger.error(f"Error: {e}")
+        logger.error(f"Error in dump_from_DB: {e}")
+        return {}
     finally:
         if conn:
             conn.close()
@@ -241,7 +248,7 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
         conn.commit()
 
     except pymysql.Error as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Error in dump_to_DB_req: {e}")
     finally:
         if conn:
             conn.close()
@@ -249,20 +256,38 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
     logger.info('End dump data to DB')
     logger.info('#' * 80)
 
+def get_company_name(company_id: int) -> str:
+    """Return company name for given id or empty string on failure."""
+    conn, cursor = connect_to_database()
+    if not conn or not cursor:
+        return ""
+    try:
+        cursor.execute("SELECT company_name FROM companies WHERE id=%s", (company_id,))
+        result = cursor.fetchone()
+        conn.commit()
+        if result:
+            return result[0]
+        return ""
+    except pymysql.Error as e:
+        logger.error(f"Error: {e}")
+        return ""
+    finally:
+        if conn:
+            conn.close()
+
 def dump_account_from_DB():
 
     conn, cursor = connect_to_database()
     try:
         cursor.execute("SELECT account FROM accounts")
         conn.commit()
-
+        if not conn or not cursor:
+            return []
         dumped_data = list(cursor.fetchall())
-        #id_account = {}
-        #for data in dumped_data:
-        #    id_account[data[0]] = data[1]
         return dumped_data
     except pymysql.Error as e:
-        return logger.error(f"Error: {e}")
+        logger.error(f"Error in dump_account_from_DB: {e}")
+        return []
     finally:
         if conn:
             conn.close()

@@ -22,7 +22,17 @@ def signal_shutdown():
 
 if __name__ == "__main__":
     subprocess.run(['git', 'config', '--global', '--add', 'safe.directory', '/app'])
-
+    # DEBUG TESTS:
+    if constants.RUN_TESTS:
+        logger.info('Running tests...')
+        # Install pytest if not already installed
+        if not subprocess.run(['pip', 'show', 'pytest'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+            logger.info('Installing pytest...')
+        subprocess.run(['pip', 'install', 'pytest'])
+        logger.info('Running pytest...')
+        subprocess.run([sys.executable, '-m', 'pytest', '-q'])
+        sys.exit(0)
+    
     if constants.token_tuple[0] == '-':
         logger.warning('Warning: Token not set. Open config.json and put token to token_list')
     if constants.url_DB != '-':
