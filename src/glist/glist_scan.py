@@ -1,6 +1,5 @@
 # Standart libs import
 import re
-
 import requests
 from bs4 import BeautifulSoup
 import time
@@ -17,8 +16,6 @@ GIST_LINK_HTML_CLASS = 'link-overlay'
 
 def _exc_catcher(func):
     def wrapper(*args, **kwargs):
-        # res = func(*args, **kwargs)
-        # return res
         try:
             res = func(*args, **kwargs)
         except Exception as exc:
@@ -62,26 +59,6 @@ class GlistScan:
                 href = 'https://gist.github.com' + href
                 gist_links.add(href)
         return tuple(gist_links)
-    '''
-    def _links_exfiltr(cls, html: str, quantity: int):
-        soup = BeautifulSoup(html, 'html.parser')
-        links = soup.find_all('a', href=True)
-        pattern = r'^/[A-Za-z0-9-]+/[A-Za-z0-9]+$'
-        gist_links = set()
-        for link in links:
-            href = link['href']
-            if re.match(pattern, href):
-                href = 'https://gist.github.com' + href
-                gist_links.add(href)
-
-        # a_elements = soup.find_all('a', class_=GIST_LINK_HTML_CLASS)
-        # logger.info(tuple(re.findall(r'<a href="/', a_elements)))
-        # hrefs = tuple(elem['href']
-        #              for i, elem in enumerate(a_elements)
-        #              if i < quantity)
-
-        return tuple(gist_links)
-    '''
 
 
     @classmethod
@@ -103,8 +80,8 @@ class GlistScan:
     def run(cls, filter_: str = '', quantity: int = 15):
         checked_list = {}
 
-        for organization in constants.dork_dict:
-            for i, dork in enumerate(constants.dork_dict[organization]):
+        for organization in constants.dork_dict_from_DB:
+            for i, dork in enumerate(constants.dork_dict_from_DB[organization]):
                 if constants.dork_search_counter > constants.MAX_SEARCH_BEFORE_DUMP and len(constants.RESULT_MASS):
                     filters.dumping_data()
 
@@ -134,16 +111,6 @@ class GlistScan:
                     for _ in range(len(glists_links)):
 
                         time.sleep(2)
-                        # Get date of gist creation
-                        token = next(constants.token_generator())
-                        if token != '-':
-                            header = {
-                                'Authorization': f'Token {token}'}
-                        else:
-                            time.sleep(2)
-                            header = {}
-
-                        get_date_gist_creation = requests.get(glists_links[_], headers=header)
                         # Create Gist obj
                         if glists_links[_] not in checked_list.keys():
                             checked_list[glists_links[_]] = GlistObj(glists_links[_], dork, organization)

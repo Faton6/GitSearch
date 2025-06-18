@@ -20,8 +20,7 @@ from src import Connector, constants
 from src.logger import logger, CLR
 
 exclusions: tuple[str]
-
-with open(f'{constants.MAIN_FOLDER_PATH}/src/exclude_list.txt', 'r') as fd:
+with open(constants.MAIN_FOLDER_PATH / "src" / "exclude_list.txt", 'r') as fd:
     exclusions = tuple(line.rstrip() for line in fd)
 
 
@@ -54,7 +53,7 @@ def trace_monitor():
     logger.info('Totall size: %d MB', size_count / 1048576)
     logger.info('Totall counter: %d files', counter)
     logger.info('-' * 50)
-    logger.info('Check TEMP_FOLDER directory')
+    logger.info('Checking TEMP_FOLDER directory')
     temp_dir_list = os.listdir(constants.TEMP_FOLDER)
     if len(temp_dir_list) > 2:
         if 'command_file' in temp_dir_list:
@@ -117,7 +116,7 @@ def pywhat_analyze(match, cwd):
 
 
 def exclude_list_update():
-    # add urls to exclude_list.txt, which were have in DB result euqal
+    # add urls to exclude_list.txt, which were have in DB result equal
     # 0 - leaks doesn't found, add to exclude list
     try:
         url_dump_from_db = constants.url_from_DB
@@ -135,26 +134,19 @@ def _add_repo_to_exclude(url):  # TODO: add check existing repo name
     try:
         if isinstance(url, str):
             url = convert_to_regex_pattern(url)
-            with open(f'{constants.MAIN_FOLDER_PATH}/src/exclude_list.txt', 'r') as file:
+            with open(constants.MAIN_FOLDER_PATH / "src" / "exclude_list.txt", "r+") as file:
                 url_from_exclude_list = [line.rstrip() for line in file]
-            if not (url in url_from_exclude_list):
-                url_from_exclude_list.append(url)
-                with open(f'{constants.MAIN_FOLDER_PATH}/src/exclude_list.txt', 'w') as file:
-                    for url_from_list in url_from_exclude_list:
-                        file.write(url_from_list + '\n')
+                if not (url in url_from_exclude_list):
+                    file.write(url + "\n")
         elif isinstance(url, list):
-            url = [convert_to_regex_pattern(str_to_regexp) for str_to_regexp in url]
-            with open(f'{constants.MAIN_FOLDER_PATH}/src/exclude_list.txt', 'r') as file:
+            with open(constants.MAIN_FOLDER_PATH / "src" / "exclude_list.txt", "r+") as file:
                 url_from_exclude_list = [line.rstrip() for line in file]
-            is_need_to_upd = False
-            for new_url in url:
-                if not new_url in url_from_exclude_list:
-                    url_from_exclude_list.append(new_url)
-                    is_need_to_upd = True
-            if is_need_to_upd:
-                with open(f'{constants.MAIN_FOLDER_PATH}/src/exclude_list.txt', 'w') as file:
-                    for url_from_list in url_from_exclude_list:
-                        file.write(url_from_list + '\n')
+                is_need_to_upd = False
+                for new_url in url:
+                    new_url = convert_to_regex_pattern(new_url)
+                    if not new_url in url_from_exclude_list:
+                        file.write(new_url + "\n")
+                        is_need_to_upd = True
         else:
             logger.error("Error in adding excludes in exclude_list.txt (_add_repo_to_exclude): Unknown data type!")
     except Exception as ex:
@@ -220,7 +212,7 @@ def filter_url_by_db(urls: list[str] | tuple[str] | str):
         else:
             url = 'https://github.com/' + temp_del.split('/')[0] + '/' + temp_del.split('/')[1]
         for url_from_db, value in url_dump_from_db.items():
-            if url == url_from_db and not value in constants.RESULT_CODES:
+            if url == url_from_db: # and not value in constants.RESULT_CODES:
                 to_add = False
                 break
 
@@ -256,12 +248,15 @@ def _exc_catcher(func):
 
 def _semantic_check_dork(string_check: str, dork: str):
     # Define a pattern to match meaningful occurrences of string_check
-    pattern = r'\b' + dork + r'[\w.-]*\b'
+    # This regex looks for the dork as a whole word or part of a word, allowing for common separators.
+    # It tries to be more flexible than just exact word match.
+    pattern = r'\b(?:' + re.escape(dork) + r')[\w.-]*\b'
     meaningful_pattern = re.compile(pattern, re.IGNORECASE)
 
-    # Define a pattern to exclude gibberish
-    pattern = r'[^a-zA-Z0-9\s]+' + dork + r'[^a-zA-Z0-9\s]+'
-    exclude_pattern = re.compile(pattern, re.IGNORECASE)
+    # Define a pattern to exclude gibberish or non-alphanumeric contexts around the dork.
+    # This pattern looks for the dork surrounded by non-word characters, which might indicate
+    # it's part of a hash, a random string, or other non-meaningful context.
+    exclude_pattern = re.compile(r'[^a-zA-Z0-9\s]+' + re.escape(dork) + r'[^a-zA-Z0-9\s]+', re.IGNORECASE)
 
     # Filter lines with meaningful occurrences of string_check
     if meaningful_pattern.search(string_check) and not exclude_pattern.search(string_check):
@@ -338,12 +333,12 @@ class Checker:
         if self.obj.stats.repo_stats_leak_stats_table['size'] > constants.REPO_MAX_SIZE:
             logger.info(
                 f'Repository %s %s %s oversize ({self.obj.stats.repo_stats_leak_stats_table["size"]} > {constants.REPO_MAX_SIZE} limit), code not analyze',
-                self.log_color, self.url, CLR["RESET"])
+                self.log_color, self.url, CLR["RESET"]) # TODO: in report write oversize instead of "not state"
             self.obj.status.append(
                 f'Repository {self.url} is oversize ({self.obj.stats.repo_stats_leak_stats_table["size"]}), code not analyze')
+            self.secrets = {'Scan error':f'Repository {self.url} is oversize ({self.obj.stats.repo_stats_leak_stats_table["size"]}), code not analyze'}
             self._clean_repo_dirs()
             self.status |= NOT_CLONED
-
         else:
             logger.info('Clonning %s %s %s', self.log_color, self.url, CLR["RESET"])
 
@@ -360,6 +355,7 @@ class Checker:
                     pass
             else:
                 logger.error('Failed to clone repo %s', self.url)
+                self.secrets = {'Scan error': f'Failed to clone repo {self.url}'}
                 self._clean_repo_dirs()
 
             self.status |= CLONED
@@ -372,7 +368,7 @@ class Checker:
             for ext in self.file_ignore:
                 if file_name.endswith(ext):
                     self.obj.status.append(f'File extension: {ext}')
-                    os.remove(f'{repo_path}/{file_name}')
+                    (repo_path / file_name).unlink()
 
     def scan(self):
         logger.info('Started scan: %s | %s %s %s ', self.dork, self.log_color,
@@ -402,7 +398,7 @@ class Checker:
         self.secrets[scan_type] = constants.AutoVivification()
         logger.info('Repository %s %s %s start grepscan', self.log_color, self.url, CLR["RESET"])
         try:
-            grep_command = 'grep -r \"' + self.dork + '\" ' + self.repos_dir
+            grep_command = ["grep", "-r", self.dork, str(self.repos_dir)]
             grep_proc = subprocess.run(grep_command, stdin=None, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                        shell=True, timeout=self.scan_time_limit, text=True)
 
@@ -420,14 +416,14 @@ class Checker:
                         ind + constants.MAX_LINE_LEAK_LEN / 2)] + '...'
                 self.secrets[scan_type][f'Leak #{index}']['Match'] = leak
                 self.secrets[scan_type][f'Leak #{index}']['File'] = str(fullpath)
-            logger.info('Repository %s %s %s grepscan finished success', self.log_color, self.url, CLR["RESET"])
+            logger.info('\t- Repository %s %s %s grepscan finished success', self.log_color, self.url, CLR["RESET"])
         except subprocess.TimeoutExpired:
             logger.error(f'{scan_type} timeout occured in repository %s %s %s', self.log_color, self.url, CLR["RESET"])
             return 2
         except Exception as ex:
             logger.error(f'Error in repository %s %s %s {scan_type}: %s', self.log_color, self.url, CLR["RESET"], ex)
             return 2
-        logger.info(f'{scan_type} scan %s %s %s success', self.log_color, self.url, CLR["RESET"])
+        logger.info(f'\t- {scan_type} scan %s %s %s success', self.log_color, self.url, CLR["RESET"])
         return 0
 
     # @_exc_catcher
@@ -484,7 +480,7 @@ class Checker:
                     self.secrets[scan_type][f'Leak #{index}'] = elem
                     self.secrets[scan_type][f'Leak #{index}']['meaningfull'] = _semantic_check_dork(elem['Match'],
                                                                                                     self.dork)
-            logger.info(f'{scan_type} scan %s %s %s success', self.log_color, self.url, CLR["RESET"])
+            logger.info(f'\t- {scan_type} scan %s %s %s success', self.log_color, self.url, CLR["RESET"])
         return 0
 
     @_exc_catcher
@@ -541,7 +537,7 @@ class Checker:
                     match_str = match_str[:constants.MAX_LINE_LEAK_LEN]
                 self.secrets['gitsecrets'][f'Leak #{index}']['Match'] = str(match_str)
                 self.secrets['gitsecrets'][f'Leak #{index}']['File'] = ''.join(line.split(':')[:2]).strip()
-            logger.info(f'{scan_type} scan %s %s %s success', self.log_color, self.url, CLR["RESET"])
+            logger.info(f'\t- {scan_type} scan %s %s %s success', self.log_color, self.url, CLR["RESET"])
         return 0
 
     @_exc_catcher
@@ -587,7 +583,7 @@ class Checker:
                 'Raw']
             self.secrets['trufflehog'][f'Leak #{index}'].pop('Raw')
             self.secrets['trufflehog'][f'Leak #{index}'].pop('RawV2')
-        logger.info(f'{scan_type} scan %s %s %s success', self.log_color, self.url, CLR["RESET"])
+        logger.info(f'\t- {scan_type} scan %s %s %s success', self.log_color, self.url, CLR["RESET"])
         return 0
 
     @_exc_catcher
@@ -631,7 +627,7 @@ class Checker:
 
                             self.secrets['deepsecrets'][f'Leak #{counter}']['File'] = str(i)
                             counter += 1
-            logger.info(f'{scan_type} scan %s %s %s success', self.log_color, self.url, CLR["RESET"])
+            logger.info(f'\t- {scan_type} scan %s %s %s success', self.log_color, self.url, CLR["RESET"])
             return 0
         else:
             logger.error('File deepsecrets_rep.json not founded\n')

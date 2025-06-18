@@ -1,8 +1,6 @@
 # Standart libs import
-# import signal
 import time
 from random import choice
-# from urllib.parse import unquote
 from concurrent.futures import ThreadPoolExecutor, Future, wait, FIRST_COMPLETED, ProcessPoolExecutor
 
 import src.constants as const
@@ -10,8 +8,6 @@ import src.constants as const
 # Project lib's import
 from src.filters import Connector, dumping_data, Checker, CLONED, SCANNED
 from src.logger import logger, CLR
-# from typing import Generator
-
 from src.searcher.parsers import (GitParserSearch, GitRepoParser, GitCodeParser, GitCommitParser)
 
 
@@ -34,7 +30,7 @@ class Scanner():
         Connector.dump_to_DB()
 
     def search(self):  # -> Generator[tuple[tuple[str], str]]:
-        for i, dork in enumerate(const.dork_dict[self.org]):
+        for i, dork in enumerate(const.dork_dict_from_DB[self.org]):
             # To optimize resources and decrease risk of problem with DB
             # we dump found data, clean RESULT_MASS and return to scan
             check_obj_pool_size()
@@ -48,6 +44,7 @@ class Scanner():
             for parser_cls in self.parsers:
                 parser = parser_cls(dork, self.org)
                 for obj_list in parser.get_pages():
+                    check_obj_pool_size()
                     yield obj_list, str(parser)
 
     def gitscan(self):
@@ -97,7 +94,6 @@ class Scanner():
                         for fs in done_fs:
                             # if obj.repo_name in const.RESULT_MASS[scan_name]:
                             #    continue
-                            check_obj_pool_size()
                             checker = targets[fs]
                             try:
                                 result = fs.result()
@@ -121,7 +117,7 @@ class Scanner():
                                     #self.checked[checker.obj.repo_name] = result
                             elif checker.status & CLONED > 0:
                                 targets[scan_exec.submit(checker.run)] = checker
-
+                    check_obj_pool_size()
                     if result == 1:
                         logger.info('8' * 80)
                         return

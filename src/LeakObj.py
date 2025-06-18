@@ -7,9 +7,10 @@ from src import constants
 from src import filters
 from src.searcher.GitStats import GitParserStats
 from src.logger import logger
+from src.LeakAnalyzer import LeakAnalyzer
 
 
-# TODO Need to translate
+
 class LeakObj(ABC):
     """
         Class LeakObj:
@@ -58,54 +59,57 @@ class LeakObj(ABC):
         self.lvl = 0
         self.ready_to_send = False
         constants.quantity_obj_before_send += 1
-        # logger.info(f'Object {constants.quantity_obj_before_send}/{constants.MAX_OBJ_BEFORE_SEND} before dump.')
-
+        
+        self.profitability_scores = None
+        
+    def _get_message(self, key: str, lang: str = "ru", **kwargs) -> str:
+        return constants.LEAK_OBJ_MESSAGES.get(lang, constants.LEAK_OBJ_MESSAGES["en"]).get(key, "")
+    
     def _check_status(self):
-        # state 1
         self._check_stats()
-        self.status.insert(0, f'Обнаружена утечка в разделе {self.obj_type} по поиску {self.dork}')
-        # state 2
+        lang = constants.LANGUAGE # Assuming LANGUAGE is defined in constants.py
+
+        self.status.insert(0, self._get_message("leak_found_in_section", lang, obj_type=self.obj_type, dork=self.dork))
+        
         if 'status' in self.secrets:
             for i in self.secrets['status']:
                 self.status.append(i)
-        # state 3
-        founded_commiters = [comm['commiter_name'] + '/' + comm['commiter_email'] for comm in
-                             self.stats.commits_stats_commiters_table]
+        founded_commiters = [f'{comm["commiter_name"]}/{comm["commiter_email"]}' for comm in self.stats.commits_stats_commiters_table]
         for leak_type in constants.leak_check_list:
             if leak_type in self.author_name:
-                self.status.append(f'Утечка в имени автора, найдена по слову: {leak_type}, утечка: {self.author_name}')
+                self.status.append(self._get_message("leak_in_author_name", lang, leak_type=leak_type, author_name=self.author_name))
             if leak_type in ", ".join(founded_commiters):
-                self.status.append(f'Утечка в имени/почте коммитеров, найдена по слову: {leak_type}')
+                self.status.append(self._get_message("leak_in_committers", lang, leak_type=leak_type))
             if leak_type in self.repo_name:
-                self.status.append(
-                    f'Утечка в имени репозитория, найдена по слову: {leak_type}, утечка: {self.repo_name}')
-        # state 4
-        MAX_COMMITERS_DISPLAY = 5
-        MAX_DESCRIPTION_LEN = 50
-        self.status.append(f'Статистика по репозиторию: \nРазмер: {self.stats.repo_stats_leak_stats_table["size"]},'
-                           f' форки: {self.stats.repo_stats_leak_stats_table["forks_count"]},'
-                           f' звезды: {self.stats.repo_stats_leak_stats_table["stargazers_count"]},'
-                           f' был ли скачен: {self.stats.repo_stats_leak_stats_table["has_downloads"]},'
-                           f' кол-во issue: {self.stats.repo_stats_leak_stats_table["open_issues_count"]}')
+                self.status.append(self._get_message("leak_in_repo_name", lang, leak_type=leak_type, repo_name=self.repo_name))
+        
+        self.status.append(self._get_message("repo_stats", lang,
+                                             size=self.stats.repo_stats_leak_stats_table["size"],
+                                             forks=self.stats.repo_stats_leak_stats_table["forks_count"],
+                                             stars=self.stats.repo_stats_leak_stats_table["stargazers_count"],
+                                             has_downloads=self.stats.repo_stats_leak_stats_table["has_downloads"],
+                                             issues=self.stats.repo_stats_leak_stats_table["open_issues_count"]))
         if (self.stats.repo_stats_leak_stats_table["description"] is str and
                 self.stats.repo_stats_leak_stats_table["description"] not in ["_", "", " "]):
-            if len(self.stats.repo_stats_leak_stats_table["description"]) > MAX_DESCRIPTION_LEN:
-                self.status.append(
-                    f'Краткое описание: {self.stats.repo_stats_leak_stats_table["description"][:MAX_DESCRIPTION_LEN]}...')
+            if len(self.stats.repo_stats_leak_stats_table["description"]) > constants.MAX_DESCRIPTION_LEN:
+                description = self.stats.repo_stats_leak_stats_table["description"]
+            if len(description) > constants.MAX_DESCRIPTION_LEN:
+                self.status.append(self._get_message("short_description", lang, description=description[:constants.MAX_DESCRIPTION_LEN] + "..."))
             else:
-                self.status.append(f'Краткое описание: {self.stats.repo_stats_leak_stats_table["description"]}')
+                self.status.append(self._get_message("short_description", lang, description=description))
         else:
-            self.status.append(f'Краткое описание: отсутствует')
-        self.status.append(
-            f'Топики: {self.stats.repo_stats_leak_stats_table["topics"] if self.stats.repo_stats_leak_stats_table["topics"] not in ["_", "", " "] else "отсутствуют"}')
-        if len(founded_commiters) > MAX_COMMITERS_DISPLAY:
-            self.status.append(
-                f'Обнаружены следующие коммитеры: {", ".join(founded_commiters[:MAX_COMMITERS_DISPLAY])}. Еще есть {len(founded_commiters) - MAX_COMMITERS_DISPLAY} коммитеров')
+            self.status.append(self._get_message("no_description", lang))
+        topics = self.stats.repo_stats_leak_stats_table["topics"]
+        self.status.append(self._get_message("topics", lang, topics=topics if topics not in ["_", "", " "] else self._get_message("no_topics", lang)))
+        
+        if len(founded_commiters) > constants.MAX_COMMITERS_DISPLAY:
+            self.status.append(self._get_message("committers_found", lang,
+                                                 committers=", ".join(founded_commiters[:constants.MAX_COMMITERS_DISPLAY]),
+                                                 remaining=len(founded_commiters) - constants.MAX_COMMITERS_DISPLAY))
         else:
-            self.status.append(f'Обнаружены следующие коммитеры: {", ".join(founded_commiters)}')
+            self.status.append(self._get_message("committers_all", lang, committers=", ".join(founded_commiters)))
 
 
-        # state 5
         scaners = [
             'gitleaks',
             'gitsecrets',
@@ -113,34 +117,47 @@ class LeakObj(ABC):
             'grepscan',
             'deepsecrets'
         ]
-        if ('grepscan' in self.secrets and type(self.secrets['grepscan']) is constants.AutoVivification
+        if ('grepscan' in self.secrets and isinstance(self.secrets['grepscan'], constants.AutoVivification)
                 and len(self.secrets['grepscan'])):
-            self.status.append(
-                f'Первая строка, найденная grepscan: {list(self.secrets["grepscan"].values())[0]["Match"]}')
+            first_match = list(self.secrets["grepscan"].values())[0]["Match"]
+            self.status.append(self._get_message("first_grepscan_line", lang, match=first_match))
 
         sum_leaks_count = 0
         for scan_type in scaners:
-            if (scan_type in self.secrets and type(self.secrets[scan_type]) is constants.AutoVivification
+            if (scan_type in self.secrets and isinstance(self.secrets[scan_type], constants.AutoVivification)
                     and len(self.secrets[scan_type])):
                 sum_leaks_count += len(self.secrets[scan_type])
-                self.status.append(
-                    f'Найдено {len(self.secrets[scan_type])} утечек {scan_type} сканером')
+                self.status.append(self._get_message("leaks_found_by_scanner", lang, count=len(self.secrets[scan_type]), scanner=scan_type))
 
-        self.status.append(f'Всего обнаружено утечек: {sum_leaks_count}')
-        self.status.append(f'Длина полного отчета: {filters.count_nested_dict_len(self.secrets)}')
-        # state 6
+        self.status.append(self._get_message("total_leaks_found", lang, total_count=sum_leaks_count))
+        self.status.append(self._get_message("full_report_length", lang, length=filters.count_nested_dict_len(self.secrets)))
+        
+        self.profitability_scores = LeakAnalyzer(self).calculate_profitability()
+        
+        if self.profitability_scores:
+            self.profitability_scores = LeakAnalyzer(self).calculate_profitability()
+            self.status.append(self._get_message("profitability_scores", lang, 
+                                                 org_rel=self.profitability_scores['org_relevance'],
+                                                 sens_data=self.profitability_scores['sensitive_data'],
+                                                 tp=self.profitability_scores['true_positive_chance'],
+                                                 fp=self.profitability_scores['false_positive_chance']))
+                                                 
+            true_positive_chance = self.profitability_scores["true_positive_chance"]
+        else:
+            true_positive_chance = len(self.status) / 15.0 if len(self.status) > 0 else 0.0
+        
+        if true_positive_chance < 0.3: # Example thresholds, can be adjusted
+            self.lvl = 0  # 'Low'
+        elif 0.3 <= true_positive_chance < 0.7:
+            self.lvl = 1  # 'Medium'
+        else:
+            self.lvl = 2  # 'High'
+        
         temp = []
         for i in self.status:
             if i not in temp:
                 temp.append(i)
         self.status = temp
-        counter = len(self.status)
-        if counter < constants.LOW_LVL_THRESHOLD:
-            self.lvl = 0  # 'Low'
-        if constants.LOW_LVL_THRESHOLD <= counter < constants.MEDIUM_LOW_THRESHOLD:
-            self.lvl = 1  # 'Medium'
-        if counter >= constants.MEDIUM_LOW_THRESHOLD:
-            self.lvl = 2  # 'High'
         self.status = '\n- '.join(self.status)
         self.ready_to_send = True
 
@@ -190,33 +207,6 @@ class LeakObj(ABC):
 
         }
         return ret_mass
-
-    def write_to_mail(self):
-        if (self.created_date == 'Not checked' and 'created_at' in self.secrets.keys()
-                and filters.is_time_format(self.secrets['created_at']) and filters.is_time_format(
-                    self.secrets['updated_at'])):
-            self.created_date = self.secrets['created_at']
-            self.updated_date = self.secrets['updated_at']
-        elif self.created_date == 'Not checked':
-            self.created_date = 'не обнаружена'
-            self.updated_date = 'не обнаружена'
-        if not self.ready_to_send:
-            self._check_status()
-        if type(self.status) is str and len(self.status) > 10000:
-            status_list = str(self.status)[:10000] + '...'
-        else:
-            status_list = self.status
-        status_string = "\n\t".join(status_list)
-        result_str = (f'Обнаружена утечка в Github разделе {self.obj_type} по поиску {self.dork}:\n'
-                      f'Уровень утечки: {self.lvl}\n'
-                      f'Ссылка на репозиторий: {self.repo_url}\n'
-                      f'Автор/ы утечки: {self.author_name}\n'
-                      f'Дата создания репозитория: {self.created_date}\n'
-                      f'Дата последнего обновления репозитория: {self.updated_date}\n'
-                      f'Дата обнаружения: {self.found_time}\n'
-                      f'Найдены упоминания следующих утечек:\n\t{status_string}\n'
-                      f'Дополнительная информация в отчете об утечке.\n')
-        return result_str
 
     def _check_stats(self):
         if not self.stats.coll_stats_getted:
@@ -273,7 +263,7 @@ class CommitObj(LeakObj):
         self.commit = self.responce['commit']['message']
         self.commit_date = self.responce['commit']['author']['date']
         self.commit_hash = self.responce['sha']
-        self.status.append(f'Описание коммита: {self.commit}')
+        self.status.append(self._get_message("commit_description", constants.LANGUAGE, commit=self.commit))
 
     def __str__(self) -> str:
         return 'Commits'

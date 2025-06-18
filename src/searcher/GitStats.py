@@ -52,7 +52,7 @@ class GitParserStats:
 
         self.commits_stats_commiters_table: list = []
         
-        self.ai_result = None # 1 - ai found leak, 0 - ai not found leak, -1 - ai not used
+        self.ai_result = -1 # 1 - ai found leak, 0 - ai not found leak, -1 - ai not used
 
         self.repo_stats_getted = False
         self.coll_stats_getted = False

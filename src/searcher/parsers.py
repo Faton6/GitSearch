@@ -22,11 +22,11 @@ class GitParserSearch(ABC):
     T: callable
 
     # limits
-    timeout: int = 1000
-    cooldown: float = 60.0
-    rate_limit: float = 10.0
-    repo_count_limit: int = 1000  # Github api restriction https://docs.github.com/rest/search/search#search-code
-    per_page: int = 100
+    timeout: int = constants.MAX_TIME_TO_SEARCH_GITHUB_REQUEST
+    cooldown: float = constants.GITHUB_REQUEST_COOLDOWN
+    rate_limit: float = constants.GITHUB_REQUEST_RATE_LIMIT
+    repo_count_limit: int = constants.GITHUB_REPO_COUNT_AT_REQUEST_LIMIT
+    per_page: int = constants.GITHUB_REQUEST_REPO_PER_PAGE
 
     def __init__(self, dork: str, organization: int):
         self.dork: str = dork
@@ -50,7 +50,7 @@ class GitParserSearch(ABC):
                             self.dork.encode().decode('utf-8'),
                             self.organization)
                      for repo in json_resp['items']
-                     if len(filter_url_by_db(repo['html_url'])) == 1  # debug if len(filter_url_by_db(repo['login_repo']))
+                     if len(filter_url_by_db(repo['html_url'])) == 1
                      and len(filter_url_by_repo(repo['html_url'])) == 1
                      )
 
@@ -64,7 +64,6 @@ class GitParserSearch(ABC):
             timeout=self.timeout)
 
     def get_pages(self):  # -> Generator[tuple[T]]:
-        # for page in range(1, self._pages + 1):
         page: int = 1
 
         while page <= self.pages:
@@ -97,7 +96,7 @@ class GitParserSearch(ABC):
             yield self.to_obj(json_resp)
 
             page += 1
-            constants.dork_search_counter += 1  # why, 1 dork can have many pages
+            constants.dork_search_counter += 1  # BECAUSE, 1 dork can have many pages
 
 
 class GitCodeParser(GitParserSearch):

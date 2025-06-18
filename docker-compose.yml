@@ -7,11 +7,14 @@ services:
         restart: always
         volumes:
             - ".:/app"
+        environment:
+            DB_USER: ${DB_USER:-root}
+            DB_PASSWORD: ${DB_PASSWORD:-changeme}
         deploy:
           resources:
             limits:
-              cpus: "4.0"
-              memory: 8G
+              cpus: "1.0"
+              memory: 1G
         networks:
           gitsearch_network:
             ipv4_address: 172.32.0.99
@@ -19,12 +22,12 @@ services:
           - db
 
     db:
-      image: mariadb:10.3
+      image: mariadb:10.6
       container_name: db
       restart: always
       environment:
         MYSQL_DATABASE: Gitsearch
-        MYSQL_ROOT_PASSWORD: changeme
+        MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-changeme}
       ports:
         - "3306:3306"
       volumes:
@@ -44,9 +47,9 @@ services:
         - 8080:80
       environment:
         PMA_ARBITRARY: "1"
-        PMA_HOST: "172.32.0.97"
+        PMA_HOST: "db"
         PMA_PORT: "3306"
-        MYSQL_ROOT_PASSWORD: changeme
+        MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-changeme}
         UPLOAD_LIMIT: 100000000
       networks:
         gitsearch_network:
@@ -54,18 +57,6 @@ services:
       depends_on:
         - db
     
-    #appsmith:
-    #    image: index.docker.io/appsmith/appsmith-ee
-    #    container_name: appsmith2
-    #    ports:
-    #     - "8081:80"
-    #    volumes:
-    #     - ./stacks:/appsmith-stacks
-    #    restart: unless-stopped
-    #    networks:
-    #      gitsearch_network:
-    #        ipv4_address: 172.32.0.100
-
 
 networks:
   gitsearch_network:

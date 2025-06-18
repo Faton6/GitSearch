@@ -7,4 +7,9 @@ __pycache__
 /temp/*
 config.json
 logs/*
-config.json
+data
+docker-compose_private.yml
+db_gitsearch_old_vk_tink.7z
+Gitsearch_DB_private — копия.sql
+stacks
+Gitsearch_DB_private.sql

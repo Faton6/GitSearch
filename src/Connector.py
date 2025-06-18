@@ -3,9 +3,9 @@ import base64
 import bz2
 import json
 import time
-
+import os
 import requests
-import mariadb
+import pymysql
 
 # Project lib's import
 from src import constants
@@ -120,16 +120,16 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
 
 def connect_to_database():
     try:
-        conn = mariadb.connect(
-            user="root",
-            password="changeme",
+        conn = pymysql.connect( # Changed from mariadb.connect
+            user=os.getenv('DB_USER', 'root'),
+            password=os.getenv('DB_PASSWORD', 'changeme'),
             host=constants.url_DB,
             port=3306,
             database="Gitsearch"
         )
         cursor = conn.cursor()
         return conn, cursor
-    except mariadb.Error as e:
+    except pymysql.Error as e:
         print(f"Error connecting to MariaDB Platform: {e}")
 
 
@@ -143,10 +143,11 @@ def dump_target_from_DB():
         conn.commit()
 
         for i in dumped_data:
-            dork_dict[i[1]] = base64.b64decode(i[0].encode('utf-8')).decode('utf-8').split(', ')
+            #dork_dict[i[1]] = base64.b64decode(i[0].encode('utf-8')).decode('utf-8').split(', ')
+            dork_dict[i[1]] = base64.b64decode(i[0]).decode('utf-8').split(', ')
 
         return dork_dict
-    except mariadb.Error as e:
+    except pymysql.Error as e:
         return logger.error(f"Error: {e}")
     finally:
         if conn:
@@ -172,7 +173,7 @@ def dump_from_DB(mode=0):
             for i in dumped_data:
                 checked_repos[i[1]] = i[2]  # checked_repos[i['url']] = i['result']
         return checked_repos
-    except mariadb.Error as e:
+    except pymysql.Error as e:
         return logger.error(f"Error: {e}")
     finally:
         if conn:
@@ -183,39 +184,39 @@ def dump_from_DB(mode=0):
 def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add only report in DB
     with open(filename, 'r') as file:
         backup_rep = json.load(file)
-
-    for i in backup_rep['scan'].keys():
-        if mode == 0:
-            content = backup_rep['scan'][i][0]['content']
-            leak_id = None
-            try:
-                conn, cursor = connect_to_database()
+    try:
+        conn, cursor = connect_to_database()
+    except Exception as e:
+        logger.error(f"Error in conn to DB: {e}")
+    if not conn:
+        return
+    try:
+        for i in backup_rep['scan'].keys():
+            if mode == 0:
+                content = backup_rep['scan'][i][0]['content']
+                leak_id = None
                 cursor.execute(
                     "INSERT INTO leak (url, level, author_info, found_at, created_at, updated_at, approval," \
-                    " leak_type, result, company_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " leak_type, result, company_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (content['url'], content['level'], content['author_info'], content['found_at'],
                      content['created_at'], content['updated_at'], content['approval'], content['leak_type'],
                      content['result'], content['company_id']))
-                conn.commit()
                 leak_id = cursor.lastrowid
 
                 data_row_report = backup_rep['scan'][i][1]['content']
-                cursor.execute("INSERT INTO raw_report (leak_id, report_name, raw_data, ai_report) VALUES (?, ?, ?, ?)",
+                cursor.execute("INSERT INTO raw_report (leak_id, report_name, raw_data, ai_report) VALUES (%s, %s, %s, %s)",
                                (leak_id, data_row_report['report_name'], data_row_report['raw_data'], data_row_report['ai_report']))
-                conn.commit()
 
                 leak_stats_table = backup_rep['scan'][i][2]
-
                 cursor.execute(
-                    "INSERT INTO leak_stats (leak_id, size, stargazers_count, has_issues, has_projects, has_downloads,"
-                    "has_wiki, has_pages, forks_count, open_issues_count, subscribers_count, topics, contributors_count, "
-                    "commits_count, commiters_count, ai_result, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO leak_stats (leak_id, size, stargazers_count, has_issues, has_projects, has_downloads,"\
+                    "has_wiki, has_pages, forks_count, open_issues_count, subscribers_count, topics, contributors_count, "\
+                    "commits_count, commiters_count, ai_result, description) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (leak_id, leak_stats_table['size'], leak_stats_table['stargazers_count'], leak_stats_table['has_issues'],
                      leak_stats_table['has_projects'], leak_stats_table['has_downloads'], leak_stats_table['has_wiki'],
                      leak_stats_table['has_pages'], leak_stats_table['forks_count'], leak_stats_table['open_issues_count'],
                      leak_stats_table['subscribers_count'], leak_stats_table['topics'], leak_stats_table['contributors_count'],
                      leak_stats_table['commits_count'], leak_stats_table['commiters_count'], leak_stats_table['ai_result'], leak_stats_table['description']))
-                conn.commit()
 
                 accounts_table = backup_rep['scan'][i][3]
                 accounts_from_DB = dump_account_from_DB()
@@ -223,32 +224,28 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
                 for account in accounts_table:
                     if account['account'] not in accounts_from_DB:
                         cursor.execute(
-                            "INSERT INTO accounts (account, need_monitor, related_company_id) VALUES (?, ?, ?)",
+                            "INSERT INTO accounts (account, need_monitor, related_company_id) VALUES (%s, %s, %s)",
                             (account['account'], account['need_monitor'], account['related_company_id']))
-                        conn.commit()
                         accounts_ids.append(cursor.lastrowid)
-                # conn.commit()
-                # account_id = cursor.lastrowid
 
                 for account_id in list(accounts_ids):
                     cursor.execute(
-                        "INSERT INTO related_accounts_leaks (leak_id, account_id) VALUES (?, ?)",
+                        "INSERT INTO related_accounts_leaks (leak_id, account_id) VALUES (%s, %s)",
                         (leak_id, account_id))
-                    conn.commit()
                 commiters_table = backup_rep['scan'][i][4]
                 for commiter in commiters_table:
                     cursor.execute(
-                        "INSERT INTO commiters (leak_id, commiter_name, commiter_email, need_monitor, related_account_id) VALUES (?, ?, ?, ?, ?)",
+                        "INSERT INTO commiters (leak_id, commiter_name, commiter_email, need_monitor, related_account_id) VALUES (%s, %s, %s, %s, %s)",
                         (leak_id, commiter['commiter_name'], commiter['commiter_email'],
                          commiter['need_monitor'], commiter['related_account_id']))
-                    conn.commit()
+        conn.commit()
 
-            except mariadb.Error as e:
-                return logger.error(f"Error: {e}")
-            finally:
-                if conn:
-                    conn.close()
-
+    except pymysql.Error as e:
+        logger.error(f"Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+            
     logger.info('End dump data to DB')
     logger.info('#' * 80)
 
@@ -264,7 +261,7 @@ def dump_account_from_DB():
         #for data in dumped_data:
         #    id_account[data[0]] = data[1]
         return dumped_data
-    except mariadb.Error as e:
+    except pymysql.Error as e:
         return logger.error(f"Error: {e}")
     finally:
         if conn:
@@ -273,31 +270,46 @@ def dump_account_from_DB():
 
 def dump_row_data_from_DB(target_leak_id):
     logger.info(f'Dumping leak {target_leak_id} from DB...')
-
     conn, cursor = connect_to_database()
+    if not conn:
+        return None
     try:
-        cursor.execute("SELECT raw_data FROM raw_report WHERE leak_id=target_leak_id")
+        cursor.execute("SELECT raw_data FROM raw_report WHERE leak_id=%s", (target_leak_id,))
+        result = cursor.fetchone()
         conn.commit()
-        dumped_data = str(json.loads(bz2.decompress(base64.b64decode(cursor.fetchall()))))
-        return dumped_data
-    except mariadb.Error as e:
-        return logger.error(f"Error: {e}")
+        if result and result[0]:
+            return json.loads(bz2.decompress(base64.b64decode(result[0])))
+        return None
+    except pymysql.Error as e:
+        logger.error(f"Error: {e}")
+        return None
+    except (json.JSONDecodeError, Exception, base64.binascii.Error) as e:
+        logger.error(f"Data decoding/decompression error for leak_id {target_leak_id}: {e}")
+        return None
     finally:
         if conn:
             conn.close()
 
 
+
 def dump_ai_report_from_DB(target_leak_id):
     logger.info(f'Dumping leak {target_leak_id} from DB...')
-
     conn, cursor = connect_to_database()
+    if not conn:
+        return None
     try:
-        cursor.execute("SELECT ai_report FROM raw_report WHERE leak_id=target_leak_id")
+        cursor.execute("SELECT ai_report FROM raw_report WHERE leak_id=%s", (target_leak_id,))
+        result = cursor.fetchone()
         conn.commit()
-        dumped_data = str(json.loads(bz2.decompress(base64.b64decode(cursor.fetchall()))))
-        return dumped_data
-    except mariadb.Error as e:
-        return logger.error(f"Error: {e}")
+        if result and result[0]:
+            return json.loads(bz2.decompress(base64.b64decode(result[0])))
+        return None
+    except pymysql.Error as e:
+        logger.error(f"Error: {e}")
+        return None
+    except (json.JSONDecodeError, Exception, base64.binascii.Error) as e:
+        logger.error(f"Data decoding/decompression error for leak_id {target_leak_id}: {e}")
+        return None
     finally:
         if conn:
             conn.close()

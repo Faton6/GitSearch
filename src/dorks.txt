@@ -48,8 +48,6 @@ auth
 secure
 login
 ssh
-mailgun
-mailchimp
 bashrc
 teamcity
 kubernetes

@@ -1,11 +1,11 @@
 import os
-import sys
-from src.logger import logger
 
+from src.logger import logger
 from src import Connector
 from src import constants
 from src.LeakObj import RepoObj
 from src import filters
+from src.searcher.scanner import Scanner
 
 checked_list = {}
 
@@ -13,12 +13,10 @@ checked_list = {}
 def deep_scan():
     url_to_deepscan = constants.AutoVivification()
     mode_for_dump_from_DB = 1  # type of returned dump_from_DB data
-    url_dump = constants.dork_dict  # list with dict: {url:final_resul}
+    url_dump = constants.dork_dict_from_DB  # list with dict: {url:final_resul}
     for url_from_DB in url_dump.keys():
         if type(url_dump[url_from_DB][0]) is str and int(url_dump[url_from_DB][0]) == constants.RESULT_CODE_TO_DEEPSCAN:
             url_to_deepscan[url_from_DB] = [url_dump[url_from_DB][1], None]
-            # url_to_deepscan[url_from_DB] = [ leak_id, Obj]
-            # url_dump[url_from_DB][1] - id in DB, url_dump[url_from_DB][2] - leak_id in DB, [] - obj
 
     for url in url_to_deepscan.keys():
         mode_for_scan = 3
@@ -47,70 +45,58 @@ OR you can input github url to /temp/list_to_scan.txt
 '''
 
 
-def list_search():  # TODO: add gist.github
-    if len(sys.argv) > 1:
-        logger.info(f'Got {len(sys.argv)}')
-        if os.path.exists(f'{sys.argv[1]}'):
-            with open(f'{sys.argv[1]}', 'r') as list_file:
-                url_list = [line.rstrip() for line in list_file]
-            url_list = list(set(url_list))
-            if len(url_list) > 0:
-                _list_scan(url_list)
-    else:
-        if os.path.exists(f'{constants.MAIN_FOLDER_PATH}/temp/list_to_scan.txt'):
-            with open(f'{constants.MAIN_FOLDER_PATH}/temp/list_to_scan.txt', 'r') as list_file:
-                url_list = [line.rstrip() for line in list_file]
-            res_url_list = list()
-            for i in range(len(url_list)):
-                if url_list[i][:2] != '//' and url_list[i] != '':
-                    res_url_list.append(url_list[i])
+def list_search(input_file_path: str = None):  # TODO: add gist.github
+    """
+    Scans GitHub repositories from a list of URLs provided in a file.
+    If input_file_path is not provided, it defaults to constants.MAIN_FOLDER_PATH/temp/list_to_scan.txt.
+    """
+    target_file = input_file_path if input_file_path else str(constants.MAIN_FOLDER_PATH / "temp" / "list_to_scan.txt")
 
-            if res_url_list:
-                _list_scan(res_url_list)
+    if not os.path.exists(target_file):
+        logger.info(f"List scan file not found: {target_file}")
+        return
 
-            for i in range(len(url_list)):
-                if url_list[i][:2] != '//':
-                    url_list[i] = '//' + url_list[i]
+    with open(target_file, 'r') as list_file:
+        url_list = [line.rstrip() for line in list_file if line.strip() and not line.strip().startswith('//')]
 
-            with open(f'{constants.MAIN_FOLDER_PATH}/temp/list_to_scan.txt', 'w') as list_file:
-                for url in url_list:
-                    list_file.write(url)
-                    list_file.write('\n')
+    if not url_list:
+        logger.info("No valid URLs found in the list scan file.")
+        return
+
+    _list_scan(url_list)
+
+    # Mark processed URLs by prefixing with '//'
+    with open(target_file, 'w') as list_file:
+        for url in url_list:
+            list_file.write(f"//{url}\n")
 
 
 def _list_scan(url_list):
-    rep_obj_list = []
+    logger.info(f"Starting list scan for {len(url_list)} URLs.")
+    
+    # use a specific one if applicable
+    if url_list[0] not in constants.dork_dict:
+        constants.dork_dict[url_list[0]] = []
 
-    # url_list = filters.filter_url_by_repo(url_list)
-    url_list = list(set(url_list))
-    if len(url_list) == 0:
-        logger.info(f'Not founded any new urls')
-        return
-    for obj in url_list:
-        responce_repo = {'full_name': obj, 'owner': {'login': obj.split('/')[-2]}}
-        rep_obj_list.append(RepoObj(obj, responce_repo, 'None dork'))
-    for obj in rep_obj_list:
-        if obj.repo_name not in checked_list:
-            checked_list.update({f'{obj.repo_name}': ''})
-        logger.info(f'Current repository: {obj.repo_url}')
-        obj.stats.get_repo_stats()
-        if checked_list[obj.repo_name] == '':
-            mode_for_scan = 1
+    # Convert URLs to RepoObj and add to a temporary dork_dict entry for Scanner
+    repo_objs = []
+    for url in url_list:
+        # Extract owner/repo from URL for RepoObj. This might need more robust parsing.
+        try:
+            parts = url.split('/')
+            owner_repo = f"{parts[3]}/{parts[4]}" # Assuming github.com/owner/repo format
+            repo_objs.append(RepoObj(url, {'full_name': owner_repo, 'owner': {'login': parts[3]}}, 'list_scan_dork'))
+        except IndexError:
+            logger.warning(f"Could not parse URL for RepoObj: {url}")
+            continue
 
-            checker = filters.Checker(obj.repo_url, obj.dork, obj, 1)
-            checker.clone()
-            check_repo_res = checker.run()
-            if type(check_repo_res) == int and check_repo_res == 1:
-                for j in rep_obj_list:
-                    constants.RESULT_MASS['Repo_res'][j.repo_name] = j
-                return []
-            elif type(check_repo_res) == constants.AutoVivification:
-                obj.secrets = check_repo_res
-                checked_list[obj.repo_name] = check_repo_res
-        else:
-            obj.secrets = checked_list[obj.repo_name]
+    # Temporarily add these RepoObjs to dork_dict for the Scanner to process
+    # This is a simplification; a more robust solution might involve a dedicated Scanner method
+    # that accepts a list of RepoObjs directly.
+    constants.dork_dict[url_list[0]].extend([obj.repo_url for obj in repo_objs])
 
-    for j in rep_obj_list:
-        if type(j) is RepoObj:
-            constants.RESULT_MASS['Repo_res'][j.repo_name] = j
+    # Use the existing Scanner to process the repositories
+    scanner = Scanner(url_list[0])
+    scanner.gitscan() # This will now process the URLs added to dork_dict
+
     filters.dumping_data()

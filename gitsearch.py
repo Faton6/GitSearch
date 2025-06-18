@@ -28,22 +28,25 @@ if __name__ == "__main__":
     if constants.url_DB != '-':
         constants.url_from_DB = Connector.dump_from_DB()
         filters.exclude_list_update()
-        constants.dork_dict = Connector.dump_target_from_DB()
-        # sys.exit(0)
+        constants.dork_dict_from_DB = Connector.dump_target_from_DB()
     else:
         constants.url_from_DB = '-'
-        constants.dork_dict = constants.config['target_list']
+        constants.dork_dict_from_DB = constants.config['target_list']
 
     constants.all_dork_counter = 0  # quantity of all dorks
     with open(f'{constants.MAIN_FOLDER_PATH}/src/dorks.txt', 'r') as dorks_file:
-        constants.dorks = [line.rstrip() for line in dorks_file]
-        for company in constants.dork_dict:
-            for j in range(len(constants.dork_dict[company])):
-                constants.all_dork_counter += 1
-                for i in constants.dorks:
+        constants.dork_list_from_file = [line.rstrip() for line in dorks_file]
+    for company in constants.dork_dict_from_DB:
+        initial_company_dorks = list(constants.dork_dict_from_DB[company])[3:] # Create a copy to iterate over
+        for initial_dork in initial_company_dorks:
+            constants.all_dork_counter += 1
+            for base_dork in constants.dork_list_from_file:
+                combined_dork = f"{initial_dork} {base_dork}"
+                if combined_dork not in constants.dork_dict_from_DB[company]: # Avoid duplicates
+                    constants.dork_dict_from_DB[company].append(combined_dork)
                     constants.all_dork_counter += 1
-                    constants.dork_dict[company].append(constants.dork_dict[company][j] + ' ' + i)
-                    constants.leak_check_list.append(i)
+                    constants.leak_check_list.append(base_dork) # Assuming base_dorks are also leak_check_list items
+
     constants.all_dork_counter *= 2
 
     signal.signal(signal.SIGINT, signal_shutdown)
@@ -59,16 +62,14 @@ if __name__ == "__main__":
 
     # Github Gist scan
     logger.info('Start Gist scan')
-    #GlistScan.run(filter_='updated', quantity=30)
+    GlistScan.run(filter_='updated', quantity=30)
     filters.dumping_data()
 
     # Github scan
     logger.info('Start Github scan')
-    #constants.dork_dict.pop(1, None)
-    #constants.dork_dict.pop(2, None)
-    print(constants.dork_dict)
+    print(constants.dork_dict_from_DB)
     
-    for org in constants.dork_dict:
+    for org in constants.dork_dict_from_DB:
         Scanner(org).gitscan()
     filters.dumping_data()
 

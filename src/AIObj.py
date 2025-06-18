@@ -46,9 +46,11 @@ class AIObj(ABC):
         self.ai_result = -1
         self.ai_report = {'Thinks': 'Not state'}
         
-        if len(secrets) > constants.AI_CONFIG['token_limit']-1000:
-            secrets = secrets[:constants.AI_CONFIG['token_limit']-1000]
-            secrets += '...Cutted, token limit reached.'
+        # Truncate secrets if they exceed token limit
+        secrets_str = json.dumps(secrets) if secrets else "-"
+        if len(self.tokenizer.encode(secrets_str)) > constants.AI_CONFIG['token_limit'] - 1000:
+            secrets_str = self.tokenizer.decode(self.tokenizer.encode(secrets_str)[:constants.AI_CONFIG['token_limit'] - 1000])
+            secrets_str += '...Cutted, token limit reached.'
 
         if secrets:
             raw_report_str = "\n".join(str(item) for item in secrets)
@@ -94,7 +96,7 @@ class AIObj(ABC):
         ctx_size: int = 8192,
         max_new_tokens: int = 1024,
         safety_margin: int = 256
-    ) -> str:
+    ) -> tuple[str, int]:
         
         prompt_tokens = self.tokenizer.encode(prompt)
         
@@ -114,7 +116,7 @@ class AIObj(ABC):
         else:
             return prompt, max_tokens
 
-    def lm_studio_request(self, prompt: str, client: str, max_tokens: int = 1024, temperature: float = 0.01):
+    def lm_studio_request(self, prompt: str, client: str, max_tokens: int, temperature: float, model: str):
         system_prompt = (            
                 "### Instruction:\n"
                 "You are a data leak detection expert. Analyze the data and respond ONLY with '1' (leak found) or '0' (no leak).\n"
@@ -152,7 +154,7 @@ class AIObj(ABC):
         ]
         try:
             response = client.chat.completions.create(
-                model="bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF",
+                model=model,
                 messages=[{"role": "system", "content": system_prompt},
                         {"role": "user", "content": prompt}],
                 temperature=temperature,
@@ -162,6 +164,7 @@ class AIObj(ABC):
             )
         except Exception as ex:
             logger.error(f'Api request error: {ex}')
+            return None
 
         return response
     
@@ -169,33 +172,44 @@ class AIObj(ABC):
         if self.ai_requested:
             return
         
-        
         result_promt, max_tokens = self.safe_generate(prompt=self.base_prompt_text,
                                                       ctx_size=constants.AI_CONFIG['token_limit'])
+        if not result_promt:
+            self.ai_result = -1 # Indicate failure or no processing
+            self.ai_requested = True
+            return
+
         try:
             client = OpenAI(base_url=constants.AI_CONFIG['url'], api_key=constants.AI_CONFIG['api_key'])
         except Exception as ex:
             logger.error(f'Error in connection to AI API: {ex}')
+            self.ai_requested = True
+            return
         
         try:
             ai_response = self.lm_studio_request(prompt=result_promt, 
                                                 client=client,
                                                 max_tokens=max_tokens,
-                                                temperature=constants.AI_CONFIG['temperature'])
-            self.ai_report = ai_response.choices[0].message.content.strip()
-            if len(ai_response) >= 2:
-                if '0' in self.ai_report[-2:-1]:
+                                                temperature=constants.AI_CONFIG['temperature'],
+                                                model=constants.AI_CONFIG['model'])
+            if ai_response and ai_response.choices:
+                self.ai_report = ai_response.choices[0].message.content.strip()
+                # Robust parsing for '0' or '1'
+                if self.ai_report == '0':
                     self.ai_result = 0
-                elif '1' in self.ai_report[-2:-1]:
+                elif self.ai_report == '1':
                     self.ai_result = 1
-            elif len(ai_response) == 1:
-                if '0' in self.ai_report:
-                    self.ai_result = 0
-                elif '1' in self.ai_report:
-                    self.ai_result = 1
+                else:
+                    logger.warning(f"AI returned unexpected output: {self.ai_report}")
+                    self.ai_result = -1 # Indicate unexpected output
+            else:
+                logger.warning("AI response was empty or malformed.")
+                self.ai_result = -1
             self.ai_requested = True
         except Exception as ex:
             logger.error(f'Error in AI API request: {ex}')
+            self.ai_requested = True
+        
         
         
         
