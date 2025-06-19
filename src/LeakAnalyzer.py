@@ -1,7 +1,7 @@
 import re
 from src.logger import logger
 from src import constants
-from src.Connector import get_company_name
+from src import Connector
 
 class LeakAnalyzer: 
     '''
@@ -9,7 +9,7 @@ class LeakAnalyzer:
     '''
     def __init__(self, leak_obj: any):
         self.leak_obj = leak_obj
-        self.company_name = get_company_name(leak_obj.company_id)
+        self.company_name = Connector.get_company_name(leak_obj.company_id)
     
     def _company_tokens(self) -> list[str]:
         """Return lower-case tokens derived from company name."""
@@ -41,13 +41,14 @@ class LeakAnalyzer:
             committer_info = f'{committer.get("commiter_name", "")} {committer.get("commiter_email", "")}'
             if self.leak_obj.dork and self.leak_obj.dork.lower() in committer_info.lower():
                 score += 0.1 # Each relevant committer adds a small score
-                
+            if company_tokens and any(tok in committer_info.lower() for tok in company_tokens):
+                score += 0.15   
         # --- Company name heuristics ------------------------------------
         if company_tokens:
             repo_name_l = (self.leak_obj.repo_name or "").lower()
             topics = str(self.leak_obj.stats.repo_stats_leak_stats_table.get("topics") or "").lower()
             if any(tok in repo_name_l for tok in company_tokens):
-                score += 0.2
+                score += 0.3
             if description and any(tok in description.lower() for tok in company_tokens):
                 score += 0.1
             if topics and any(tok in topics for tok in company_tokens):
@@ -66,9 +67,11 @@ class LeakAnalyzer:
                     score += 0.05
                 for committer in self.leak_obj.stats.commits_stats_commiters_table:
                     if re.search(r"[А-Яа-я]", committer.get('commiter_name', '')):
-                        score += 0.03
+                        score += 0.05
                     if committer.get('commiter_email', '').lower().endswith('.ru'):
-                        score += 0.03
+                        score += 0.05
+                    if re.search(r"@.+\.(com|org|net|io)$", committer.get('commiter_email', '').lower()):
+                        score -= 0.02
             elif company_country == "en":
                 if re.fullmatch(r"[A-Za-z ._-]+", self.leak_obj.author_name or ""):
                     score += 0.03
@@ -99,6 +102,8 @@ class LeakAnalyzer:
             score -= 0.3
 
         # Cap the score at 1.0
+        score = max(score, 0.0)  # Ensure score is not negative
+        score = round(score, 2)  # Round to 2 decimal places for consistency
         return min(score, 1.0)
 
     def calculate_sensitive_data_score(self) -> float:

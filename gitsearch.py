@@ -13,6 +13,7 @@ from src.searcher import Scanner
 from src.glist.glist_scan import GlistScan
 from src import deepscan
 from src import filters
+from src import reports
 
 def signal_shutdown():
     logger.info('Stopping gently. Ctrl+C again to force')
@@ -33,16 +34,25 @@ if __name__ == "__main__":
         subprocess.run([sys.executable, '-m', 'pytest', '-q'])
         sys.exit(0)
     
+    if constants.CONFIG_FILE['create_report'] == 'yes':        
+        logger.info('Creating report from config')
+        reports.generate_report_from_config()
+        logger.info('Report created')
+        sys.exit(0)   
+    
     if constants.token_tuple[0] == '-':
         logger.warning('Warning: Token not set. Open config.json and put token to token_list')
+    
     if constants.url_DB != '-':
         constants.url_from_DB = Connector.dump_from_DB()
         filters.exclude_list_update()
         constants.dork_dict_from_DB = Connector.dump_target_from_DB()
     else:
         constants.url_from_DB = '-'
-        constants.dork_dict_from_DB = constants.config['target_list']
+        constants.dork_dict_from_DB = constants.CONFIG_FILE['target_list']
 
+
+    
     constants.all_dork_counter = 0  # quantity of all dorks
     with open(f'{constants.MAIN_FOLDER_PATH}/src/dorks.txt', 'r') as dorks_file:
         constants.dork_list_from_file = [line.rstrip() for line in dorks_file]

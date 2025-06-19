@@ -69,8 +69,8 @@ class GitParserStats:
         try:
             response = self.request_page(self.repo_url).json()
             self.last_request = time.time()
-            logger.info(f'Performed Github api request to {self.type} stats of %s %s %s {self.type}',
-                        self.log_color, self.repo_url, CLR["RESET"])
+            #logger.info(f'Performed Github api request to {self.type} stats of %s %s %s {self.type}',
+            #            self.log_color, self.repo_url, CLR["RESET"])
         except requests.RequestException as ex:
             logger.error(f'Request Error in getting {self.type} stats of %s %s %s {self.type}: %s %s %s',
                          self.log_color, self.repo_url, CLR["RESET"], self.log_color, ex,
@@ -142,8 +142,8 @@ class GitParserStats:
             try:
                 response = self.request_page(self.contributors_url).json()
                 self.last_request = time.time()
-                logger.info(f'Performed Github api request to {self.type} contributors of %s %s %s ',
-                            self.log_color, self.contributors_url, CLR["RESET"])
+                #logger.info(f'Performed Github api request to {self.type} contributors of %s %s %s ',
+                #            self.log_color, self.contributors_url, CLR["RESET"])
             except requests.RequestException as ex:
                 logger.error(f'Request Error in getting contributors stats of %s %s %s {self.type}: %s %s %s',
                              self.log_color, self.contributors_url, CLR["RESET"], self.log_color, ex,
@@ -170,8 +170,8 @@ class GitParserStats:
             response = self.request_page(self.commits_url).json()
             self.last_request = time.time()
 
-            logger.info(f'Performed Github api request to {self.type} commits of %s %s %s ',
-                        self.log_color, self.commits_url, CLR["RESET"])
+            #logger.info(f'Performed Github api request to {self.type} commits of %s %s %s ',
+            #            self.log_color, self.commits_url, CLR["RESET"])
         except requests.RequestException as ex:
             logger.error(f'Request Error in getting commits stats of %s %s %s {self.type}: %s %s %s',
                          self.log_color, self.commits_url, CLR["RESET"], self.log_color, ex,
@@ -237,3 +237,4 @@ class GitParserStats:
     def prepare_stats(self):
         self.get_contributors_stats()
         self.get_commits_stats()
+        logger.info(f'Prepared stats of %s %s %s ', self.log_color, self.repo_url, CLR["RESET"])

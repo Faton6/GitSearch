@@ -346,7 +346,3 @@ def test_dump_to_DB_mode_0_success(mock_strftime, mock_json_dump, mock_open, moc
     # Clean up constants.RESULT_MASS for other tests
     constants.RESULT_MASS = constants.AutoVivification()
     constants.url_DB = "-"
-
-
-
-

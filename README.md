@@ -19,3 +19,9 @@ Don't forget to configure dorks, which are keywords that could be associated wit
 To execute the unit test suite set ``RUN_TESTS = True`` in ``src/constants.py`` and
 run ``python gitsearch.py``.  The script will invoke ``pytest`` and exit without
 performing any scans.
+
+## 📊 Generating reports
+Two HTML report formats can be produced from previously stored scan results.
+Open ``config.json`` and set create_report to "yes", start-date, end-date and type of report - technical or business.
+
+After this run gitsearch container and you will get report at the  ``src.reports`` folder.

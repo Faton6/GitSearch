@@ -3,5 +3,9 @@
     "leak_check_list": ["dork"],
     "url_DB": "172.32.0.97",
     "token_DB": "-",
-    "token_list": ["-"]
+    "token_list": ["-"],
+    "create_report": "no",
+    "start_date": "2025-06-19",
+    "end_date": "2025-06-19",
+    "report_type": "business"
 }

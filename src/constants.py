@@ -82,13 +82,28 @@ tracemalloc.start()
 snap_backup = tracemalloc.take_snapshot()
 # Load configuration from config.json
 with open(f'{MAIN_FOLDER_PATH}/config.json') as config_file:
-    config = json.load(config_file)
-leak_check_list = config['leak_check_list']
-url_DB = config['url_DB']
-token_DB = config['token_DB']
+    CONFIG_FILE = json.load(config_file)
+
+def load_env_variables(file_path=f'{MAIN_FOLDER_PATH}/.env'):
+    env_variables = {}
+    with open(file_path, 'r') as f:
+        for line in f.readlines():
+            key, value = line.strip().split('=')
+            env_variables[key] = value
+    return env_variables
+
+leak_check_list = CONFIG_FILE['leak_check_list']
+url_DB = CONFIG_FILE['url_DB']
+token_DB = CONFIG_FILE['token_DB']
+if CONFIG_FILE['token_list'] != ['-']:
+    token_tuple = tuple(CONFIG_FILE["token_list"])
+elif os.path.exists(f'{MAIN_FOLDER_PATH}/.env'):
+    env_variables = load_env_variables()
+    token_tuple = tuple([value for key, value in env_variables.items() if key.startswith('GITHUB_TOKEN')])
+
+    
 
 
-token_tuple = tuple(config["token_list"]) if config["token_list"] else ("-",)
 
 LEAK_OBJ_MESSAGES = {
     "en": {
@@ -130,6 +145,8 @@ LEAK_OBJ_MESSAGES = {
         "profitability_scores": "Оценка рентабельности утечки: Релевантность организации: {org_rel:.2f}, Чувствительные данные: {sens_data:.2f}, Истинно-положительный: {tp:.2f}, Ложно-положительный: {fp:.2f}"
     }
 }
+
+
 
 def token_generator():
     while True:

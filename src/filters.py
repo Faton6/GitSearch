@@ -30,10 +30,12 @@ def count_nested_dict_len(input_dict):
         for value in input_dict:
             if isinstance(value, dict) or isinstance(value, constants.AutoVivification):
                 length += count_nested_dict_len(value)
-    elif isinstance(input_dict, constants.AutoVivification) or isinstance(input_dict, dict):
+    elif isinstance(input_dict, constants.AutoVivification):
         for key, value in input_dict.items():
             if isinstance(value, dict) or isinstance(value, constants.AutoVivification):
                 length += count_nested_dict_len(value)
+    elif isinstance(input_dict, dict):
+        pass
     else:
         logger.error("count_nested_dict_len: input_dict is not an AutoVivification instance: %s", type(input_dict))
         logger.error("input_dict: %s", str(input_dict))
@@ -390,7 +392,7 @@ class Checker:
                 if res == 1:
                     return 1
                 if res == 2:
-                    logger.error('Excepted error in scan, check log file!')
+                    logger.error('Excepted error in scan, check privious log!')
                 elif res == 3:
                     logger.info(f'Canceling scan in repo: {"/".join(self.url.split("/")[-2:])}')
 
@@ -404,7 +406,7 @@ class Checker:
     def grep_scan(self):
         scan_type = 'grepscan'
         self.secrets[scan_type] = constants.AutoVivification()
-        logger.info('Repository %s %s %s start grepscan', self.log_color, self.url, CLR["RESET"])
+        logger.info('\t- Repository %s %s %s start grepscan', self.log_color, self.url, CLR["RESET"])
         try:
             grep_command = ["grep", "-r", self.dork, str(self.repos_dir)]
             grep_proc = subprocess.run(grep_command, stdin=None, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -426,10 +428,10 @@ class Checker:
                 self.secrets[scan_type][f'Leak #{index}']['File'] = str(fullpath)
             logger.info('\t- Repository %s %s %s grepscan finished success', self.log_color, self.url, CLR["RESET"])
         except subprocess.TimeoutExpired:
-            logger.error(f'{scan_type} timeout occured in repository %s %s %s', self.log_color, self.url, CLR["RESET"])
+            logger.error(f'\t- {scan_type} timeout occured in repository %s %s %s', self.log_color, self.url, CLR["RESET"])
             return 2
         except Exception as ex:
-            logger.error(f'Error in repository %s %s %s {scan_type}: %s', self.log_color, self.url, CLR["RESET"], ex)
+            logger.error(f'\t- Error in repository %s %s %s {scan_type}: %s', self.log_color, self.url, CLR["RESET"], ex)
             return 2
         logger.info(f'\t- {scan_type} scan %s %s %s success', self.log_color, self.url, CLR["RESET"])
         return 0
@@ -451,10 +453,10 @@ class Checker:
 
             os.chdir(ll)
         except subprocess.TimeoutExpired:
-            logger.error(scan_type + ' timeout occured in repository %s %s %s', self.log_color, self.url, CLR["RESET"])
+            logger.error('\t- ' + scan_type + ' timeout occured in repository %s %s %s', self.log_color, self.url, CLR["RESET"])
             return 2
         except Exception as ex:
-            logger.error(f'Error in repository %s %s %s {scan_type}: %s', self.log_color, self.url, CLR["RESET"], ex)
+            logger.error(f'\t- Error in repository %s %s %s {scan_type}: %s', self.log_color, self.url, CLR["RESET"], ex)
             return 2
         if os.path.exists(self.report_dir + scan_type + '_rep.json'):
             with open(self.report_dir + scan_type + '_rep.json', 'r') as file:
@@ -519,11 +521,11 @@ class Checker:
 
             os.chdir(old_dir)
         except subprocess.TimeoutExpired:
-            logger.error(f'{scan_type} timeout occured in repository %s %s %s', self.log_color, self.url, CLR["RESET"])
+            logger.error(f'\t- {scan_type} timeout occured in repository %s %s %s', self.log_color, self.url, CLR["RESET"])
             return 2
         except Exception as ex:
             print(f'ERROR: {ex}')
-            logger.error(f'Error in repository %s %s %s {scan_type}: %s', self.log_color, self.url, CLR["RESET"], ex)
+            logger.error(f'\t- Error in repository %s %s %s {scan_type}: %s', self.log_color, self.url, CLR["RESET"], ex)
             return 2
 
         with open(self.report_dir + scan_type + '_rep.json', 'w') as file:
@@ -557,10 +559,10 @@ class Checker:
             trufflehog_proc = subprocess.run(truf_com, stdin=None, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                              shell=True, timeout=self.scan_time_limit, text=True)
         except subprocess.TimeoutExpired:
-            logger.error(scan_type + ' timeout occured in repository %s %s %s', self.log_color, self.url, CLR["RESET"])
+            logger.error('\t- ' + scan_type + ' timeout occured in repository %s %s %s', self.log_color, self.url, CLR["RESET"])
             return 2
         except Exception as ex:
-            logger.error(f'Error in repository %s %s %s {scan_type}: %s', self.log_color, self.url, CLR["RESET"], ex)
+            logger.error(f'\t- Error in repository %s %s %s {scan_type}: %s', self.log_color, self.url, CLR["RESET"], ex)
             return 2
 
         with open(self.report_dir + scan_type + '_rep.txt', 'w') as file:
@@ -603,11 +605,11 @@ class Checker:
             deepsecrets_proc = subprocess.run(deep_com, stdin=None, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                               shell=True, timeout=self.scan_time_limit, text=True)
         except subprocess.TimeoutExpired:
-            logger.error(scan_type + ' timeout occured in repository %s %s %s', self.log_color, self.url,
+            logger.error('\t- ' + scan_type + ' timeout occured in repository %s %s %s', self.log_color, self.url,
                          CLR["RESET"])
             return 2
         except Exception as ex:
-            logger.error(f'Error in repository %s %s %s {scan_type}: %s', self.log_color, self.url, CLR["RESET"],
+            logger.error(f'\t- Error in repository %s %s %s {scan_type}: %s', self.log_color, self.url, CLR["RESET"],
                          ex)
             return 2
 
@@ -638,7 +640,7 @@ class Checker:
             logger.info(f'\t- {scan_type} scan %s %s %s success', self.log_color, self.url, CLR["RESET"])
             return 0
         else:
-            logger.error('File deepsecrets_rep.json not founded\n')
+            logger.error('\t- File deepsecrets_rep.json not founded\n')
             return 2
 
     @_exc_catcher
@@ -698,7 +700,7 @@ class Checker:
             self.secrets['ioc_finder'] = res_dict
             return 0
         except Exception as ex:
-            logger.error('Error in ioc_finder: %s', ex)
+            logger.error('\t- Error in ioc_finder: %s', ex)
             return 2
 
     @_exc_catcher
@@ -737,7 +739,7 @@ class Checker:
                                     all_iocs[key].append(i)
 
         except Exception as ex:
-            logger.error('Exception in ioc_extractor: %s', ex)
+            logger.error('\t- Exception in ioc_extractor: %s', ex)
             return 2
 
         res_dict = constants.AutoVivification()

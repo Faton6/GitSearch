@@ -120,7 +120,7 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
 
 def connect_to_database():
     try:
-        conn = pymysql.connect( # Changed from mariadb.connect
+        conn = pymysql.connect(
             user=os.getenv('DB_USER', 'root'),
             password=os.getenv('DB_PASSWORD', 'changeme'),
             host=constants.url_DB,
@@ -245,7 +245,11 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
                         "INSERT INTO commiters (leak_id, commiter_name, commiter_email, need_monitor, related_account_id) VALUES (%s, %s, %s, %s, %s)",
                         (leak_id, commiter['commiter_name'], commiter['commiter_email'],
                          commiter['need_monitor'], commiter['related_account_id']))
-        conn.commit()
+                try:
+                    conn.commit()
+                except pymysql.Error as e:
+                    logger.error(f"Error dump_to_DB_req while committing transaction: {e}")
+                    conn.rollback()
 
     except pymysql.Error as e:
         logger.error(f"Error in dump_to_DB_req: {e}")
@@ -276,7 +280,6 @@ def get_company_name(company_id: int) -> str:
             conn.close()
 
 def dump_account_from_DB():
-
     conn, cursor = connect_to_database()
     try:
         cursor.execute("SELECT account FROM accounts")

@@ -66,3 +66,5 @@ def test_company_name_heuristics():
     leak = DummyLeakObj("search", "acme-tool", "AcmeBot", stats)
     score = LeakAnalyzer(leak).calculate_organization_relevance_score()
     assert score > 0.4
+    
+    
