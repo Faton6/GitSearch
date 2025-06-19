@@ -403,10 +403,9 @@ class Checker:
         return self.secrets
 
     @_exc_catcher
-    def grep_scan(self):
+    def grep_scan(self):  # TODO : check is this work correctly, add semantic check,
         scan_type = 'grepscan'
         self.secrets[scan_type] = constants.AutoVivification()
-        logger.info('\t- Repository %s %s %s start grepscan', self.log_color, self.url, CLR["RESET"])
         try:
             grep_command = ["grep", "-r", self.dork, str(self.repos_dir)]
             grep_proc = subprocess.run(grep_command, stdin=None, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -426,7 +425,6 @@ class Checker:
                         ind + constants.MAX_LINE_LEAK_LEN / 2)] + '...'
                 self.secrets[scan_type][f'Leak #{index}']['Match'] = leak
                 self.secrets[scan_type][f'Leak #{index}']['File'] = str(fullpath)
-            logger.info('\t- Repository %s %s %s grepscan finished success', self.log_color, self.url, CLR["RESET"])
         except subprocess.TimeoutExpired:
             logger.error(f'\t- {scan_type} timeout occured in repository %s %s %s', self.log_color, self.url, CLR["RESET"])
             return 2

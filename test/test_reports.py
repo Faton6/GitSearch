@@ -40,6 +40,10 @@ def db_connection(tmp_path):
             raw_data TEXT,
             ai_report TEXT
         );
+        CREATE TABLE companies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_name TEXT
+        );
     ''')
     # Insert sample data
     cur.execute("INSERT INTO leak (url, level, author_info, found_at, created_at, approval, leak_type, result, done_by, company_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -66,7 +70,10 @@ def test_generate_business_report(tmp_path, db_connection):
     assert data['total_leaks'] == 2
     assert isinstance(data['status_breakdown'], list)
     assert isinstance(data['daily_counts'], list)
-    # ensure file created
+    assert 'top_leaks' in data
+    assert 'top_leak_types' in data
+    assert data['unique_companies'] == 1
+    assert len(data['top_companies']) == 1
     assert os.path.exists(data['path'])
 
 
@@ -75,6 +82,10 @@ def test_generate_empty_period(tmp_path, db_connection):
     assert data['total_leaks'] == 0
     assert data['status_breakdown'] == []
     assert data['daily_counts'] == []
+    assert data['top_leaks'] == []
+    assert data['top_leak_types'] == []
+    assert data['unique_companies'] == 0
+    assert data['top_companies'] == []
 
 
 def test_generate_technical_report(tmp_path, db_connection):
@@ -82,3 +93,5 @@ def test_generate_technical_report(tmp_path, db_connection):
     assert 'level_breakdown' in data
     assert 'serious_leaks' in data
     assert any(l[2] >= 1 for l in data['serious_leaks'])
+    assert 'top_leaks' in data
+    assert 'top_companies' in data

@@ -32,7 +32,6 @@ if __name__ == "__main__":
         subprocess.run(['pip', 'install', 'pytest'])
         logger.info('Running pytest...')
         subprocess.run([sys.executable, '-m', 'pytest', '-q'])
-        sys.exit(0)
     
     if constants.CONFIG_FILE['create_report'] == 'yes':        
         logger.info('Creating report from config')
@@ -87,7 +86,6 @@ if __name__ == "__main__":
 
     # Github scan
     logger.info('Start Github scan')
-    print(constants.dork_dict_from_DB)
     
     for org in constants.dork_dict_from_DB:
         Scanner(org).gitscan()

@@ -2,6 +2,8 @@ import pytest
 from unittest.mock import patch, MagicMock
 import pymysql # Changed from mariadb
 import os
+import sys
+from pathlib import Path
 import json
 import base64
 import bz2
@@ -9,6 +11,10 @@ import time # Import time for mocking
 
 from src import Connector
 from src import constants
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 # Mock environment variables for database connection
 @pytest.fixture(autouse=True)
@@ -346,3 +352,63 @@ def test_dump_to_DB_mode_0_success(mock_strftime, mock_json_dump, mock_open, moc
     # Clean up constants.RESULT_MASS for other tests
     constants.RESULT_MASS = constants.AutoVivification()
     constants.url_DB = "-"
+    
+    
+def test_load_existing_leak_urls():
+    with patch("src.Connector.connect_to_database") as mock_connect:
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_connect.return_value = (mock_conn, mock_cursor)
+        mock_cursor.fetchall.return_value = [(1, "url1"), (2, "url2")]
+
+        res = Connector.load_existing_leak_urls()
+
+        mock_cursor.execute.assert_called_once_with("SELECT id, url FROM leak")
+        assert res == {"url1": 1, "url2": 2}
+
+
+def test_merge_reports_deduplication():
+    old = {"gitleaks": {"Leak #1": {"Match": "foo", "File": "f"}}}
+    new = {"gitleaks": {"0": {"Match": "foo", "File": "f"}, "1": {"Match": "bar", "File": "f2"}}}
+    merged = Connector.merge_reports(old, new)
+    assert len(merged["gitleaks"]) == 2
+
+
+@patch("src.Connector.dump_account_from_DB", return_value=["acc0"])
+@patch("src.Connector.get_accounts_from_DB", return_value=["acc0"])
+@patch("src.Connector.get_commiters_from_DB", return_value=[("Old", "o@x.com")])
+@patch("src.Connector.connect_to_database")
+def test_update_existing_leak(mock_connect, mock_get_comm, mock_get_acc, mock_dump_acc):
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_connect.return_value = (mock_conn, mock_cursor)
+    mock_cursor.fetchone.side_effect = [None]
+
+    class DummyStats:
+        def __init__(self):
+            self.commits_stats_commiters_table = [
+                {"commiter_name": "Alice", "commiter_email": "alice@ex.com"}
+            ]
+            self.contributors_stats_accounts_table = [
+                {"account": "acc1", "need_monitor": 0, "related_company_id": 1}
+            ]
+            self.repo_stats_leak_stats_table = {"contributors_count": 1, "commits_count": 1}
+
+    leak_obj = MagicMock()
+    leak_obj.stats = DummyStats()
+    leak_obj.repo_url = "url1"
+    leak_obj.secrets = {}
+    leak_obj.ai_report = {}
+    leak_obj.write_obj.return_value = {
+        "level": 1,
+        "author_info": "bob",
+        "leak_type": "t",
+        "result": 4,
+        "updated_at": "2024-01-02",
+    }
+
+    Connector.update_existing_leak(5, leak_obj)
+
+    assert mock_cursor.execute.call_count > 0
+    mock_conn.commit.assert_called_once()
+

@@ -63,7 +63,13 @@ class LeakObj(ABC):
         self.profitability_scores = None
         
     def _get_message(self, key: str, lang: str = "ru", **kwargs) -> str:
-        return constants.LEAK_OBJ_MESSAGES.get(lang, constants.LEAK_OBJ_MESSAGES["en"]).get(key, "")
+        template = constants.LEAK_OBJ_MESSAGES.get(
+            lang, constants.LEAK_OBJ_MESSAGES["en"]
+        ).get(key, "")
+        try:
+            return template.format(**kwargs)
+        except Exception:
+            return template
     
     def _check_status(self):
         self._check_stats()
@@ -83,14 +89,12 @@ class LeakObj(ABC):
             if leak_type in self.repo_name:
                 self.status.append(self._get_message("leak_in_repo_name", lang, leak_type=leak_type, repo_name=self.repo_name))
         
-        self.status.append(self._get_message("repo_stats", lang,
-                                             size=self.stats.repo_stats_leak_stats_table["size"],
-                                             forks=self.stats.repo_stats_leak_stats_table["forks_count"],
-                                             stars=self.stats.repo_stats_leak_stats_table["stargazers_count"],
-                                             has_downloads=self.stats.repo_stats_leak_stats_table["has_downloads"],
-                                             issues=self.stats.repo_stats_leak_stats_table["open_issues_count"]))
-        if (self.stats.repo_stats_leak_stats_table["description"] is str and
-                self.stats.repo_stats_leak_stats_table["description"] not in ["_", "", " "]):
+        description_value = self.stats.repo_stats_leak_stats_table.get("description")
+        if isinstance(description_value, str) and description_value.strip() not in ["_", "", " "]:
+            description = description_value
+            if len(description) > constants.MAX_DESCRIPTION_LEN:
+                description = description[:constants.MAX_DESCRIPTION_LEN] + "..."
+            self.status.append(self._get_message("short_description", lang, description=description))
             if len(self.stats.repo_stats_leak_stats_table["description"]) > constants.MAX_DESCRIPTION_LEN:
                 description = self.stats.repo_stats_leak_stats_table["description"]
             if len(description) > constants.MAX_DESCRIPTION_LEN:

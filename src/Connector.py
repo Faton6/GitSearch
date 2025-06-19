@@ -45,16 +45,19 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
     counter = 1
     dumped_repo_list = []
     if mode == 0:
+        existing_urls = load_existing_leak_urls()
         for scan_key in constants.RESULT_MASS.keys():
             for scanObj in constants.RESULT_MASS[scan_key].keys():
-                if (constants.RESULT_MASS[scan_key][scanObj].write_obj()['leak_type'] == 'None'
-                        or constants.RESULT_MASS[scan_key][scanObj].repo_url in dumped_repo_list):
+                leak_obj = constants.RESULT_MASS[scan_key][scanObj]
+                leak_id_existing = existing_urls.get(leak_obj.repo_url)
+                if leak_id_existing:
+                    update_existing_leak(leak_id_existing, leak_obj)
                     continue
                 data_leak = {
                     'tname': 'leak',
                     'dname': 'GitLeak',
                     'action': 'add',
-                    'content': constants.RESULT_MASS[scan_key][scanObj].write_obj()
+                    'content': leak_obj.write_obj()
                 }
                 data_row_report = {
                     'tname': 'raw_report',
@@ -62,20 +65,14 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
                     'action': 'add',
                     'content': {
                         'leak_id': counter,
-                        'report_name': constants.RESULT_MASS[scan_key][scanObj].repo_url,
-                        'raw_data':
-                            str(base64.b64encode(bz2.compress(json.dumps(constants.RESULT_MASS[scan_key][scanObj].
-                                                                         secrets, indent=4).encode('utf-8'))))[2:-1],
-                            
-                        'ai_report':
-                            str(base64.b64encode(bz2.compress(json.dumps(constants.RESULT_MASS[scan_key][scanObj].
-                                                                         ai_report, indent=4).encode('utf-8'))))[2:-1]
+                        'report_name': leak_obj.repo_url,
+                        'raw_data': str(base64.b64encode(bz2.compress(json.dumps(leak_obj.secrets, indent=4).encode('utf-8'))))[2:-1],
+                        'ai_report': str(base64.b64encode(bz2.compress(json.dumps(leak_obj.ai_report, indent=4).encode('utf-8'))))[2:-1]
                     }
                 }
-                leak_stats_table, accounts_table, commiters_table = constants.RESULT_MASS[scan_key][scanObj].get_stats()
+                leak_stats_table, accounts_table, commiters_table = leak_obj.get_stats()
 
-
-                dumped_repo_list.append(constants.RESULT_MASS[scan_key][scanObj].repo_url)
+                dumped_repo_list.append(leak_obj.repo_url)
                 res_backup[counter] = [data_leak, data_row_report, leak_stats_table, accounts_table, commiters_table]
                 counter += 1
     elif mode == 1:
@@ -281,13 +278,14 @@ def get_company_name(company_id: int) -> str:
 
 def dump_account_from_DB():
     conn, cursor = connect_to_database()
+    if not conn or not cursor:
+        return []
     try:
         cursor.execute("SELECT account FROM accounts")
         conn.commit()
-        if not conn or not cursor:
-            return []
-        dumped_data = list(cursor.fetchall())
-        return dumped_data
+        dumped_data = cursor.fetchall()
+        conn.commit()
+        return [row[0] for row in dumped_data]
     except pymysql.Error as e:
         logger.error(f"Error in dump_account_from_DB: {e}")
         return []
@@ -338,6 +336,189 @@ def dump_ai_report_from_DB(target_leak_id):
     except (json.JSONDecodeError, Exception, base64.binascii.Error) as e:
         logger.error(f"Data decoding/decompression error for leak_id {target_leak_id}: {e}")
         return None
+    finally:
+        if conn:
+            conn.close()
+
+def get_leak_id_by_url(url: str):
+    conn, cursor = connect_to_database()
+    if not conn or not cursor:
+        return None
+    try:
+        cursor.execute("SELECT id FROM leak WHERE url=%s", (url,))
+        res = cursor.fetchone()
+        conn.commit()
+        return res[0] if res else None
+    except pymysql.Error as e:
+        logger.error(f"Error fetching leak id: {e}")
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
+def load_existing_leak_urls() -> dict:
+    """Return mapping of URL to leak id."""
+    conn, cursor = connect_to_database()
+    if not conn or not cursor:
+        return {}
+    try:
+        cursor.execute("SELECT id, url FROM leak")
+        rows = cursor.fetchall()
+        conn.commit()
+        return {row[1]: row[0] for row in rows}
+    except pymysql.Error as e:
+        logger.error(f"Error fetching existing leaks: {e}")
+        return {}
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_commiters_from_DB(leak_id: int):
+    conn, cursor = connect_to_database()
+    if not conn or not cursor:
+        return []
+    try:
+        cursor.execute("SELECT commiter_name, commiter_email FROM commiters WHERE leak_id=%s", (leak_id,))
+        res = cursor.fetchall()
+        conn.commit()
+        return [(r[0], r[1]) for r in res]
+    except pymysql.Error as e:
+        logger.error(f"Error fetching commiters: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_accounts_from_DB(leak_id: int):
+    conn, cursor = connect_to_database()
+    if not conn or not cursor:
+        return []
+    try:
+        cursor.execute(
+            "SELECT a.account FROM accounts a JOIN related_accounts_leaks r ON a.id=r.account_id WHERE r.leak_id=%s",
+            (leak_id,),
+        )
+        res = cursor.fetchall()
+        conn.commit()
+        return [r[0] for r in res]
+    except pymysql.Error as e:
+        logger.error(f"Error fetching accounts: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def merge_reports(old: dict, new: dict) -> dict:
+    if not isinstance(old, dict):
+        old = {}
+    if not isinstance(new, dict):
+        return old
+    for scan, leaks in new.items():
+        if scan not in old or not isinstance(old.get(scan), dict):
+            old[scan] = leaks
+            continue
+        if not isinstance(leaks, dict):
+            old[scan] = leaks
+            continue
+        existing = old[scan]
+        for leak in leaks.values():
+            match = leak.get('Match')
+            file_ = leak.get('File')
+            dup = False
+            for ex in existing.values():
+                if ex.get('Match') == match and ex.get('File') == file_:
+                    dup = True
+                    break
+            if not dup:
+                key = f"Leak #{len(existing) + 1}"
+                existing[key] = leak
+    return old
+
+
+def update_existing_leak(leak_id: int, leak_obj):
+    conn, cursor = connect_to_database()
+    if not conn or not cursor:
+        return
+    try:
+        leak_data = leak_obj.write_obj()
+
+        existing_comm = set(get_commiters_from_DB(leak_id))
+        new_comm = set((c.get('commiter_name'), c.get('commiter_email')) for c in leak_obj.stats.commits_stats_commiters_table)
+        for name, email in new_comm - existing_comm:
+            cursor.execute(
+                "INSERT INTO commiters (leak_id, commiter_name, commiter_email, need_monitor, related_account_id) VALUES (%s, %s, %s, %s, %s)",
+                (leak_id, name, email, 0, 0),
+            )
+
+        existing_accounts = set(get_accounts_from_DB(leak_id))
+        accounts_from_db = set(dump_account_from_DB())
+        for acc in leak_obj.stats.contributors_stats_accounts_table:
+            acc_name = acc['account']
+            if acc_name not in accounts_from_db:
+                cursor.execute(
+                    "INSERT INTO accounts (account, need_monitor, related_company_id) VALUES (%s, %s, %s)",
+                    (acc_name, acc['need_monitor'], acc['related_company_id']),
+                )
+                acc_id = cursor.lastrowid
+                cursor.execute("INSERT INTO related_accounts_leaks (leak_id, account_id) VALUES (%s, %s)", (leak_id, acc_id))
+                accounts_from_db.add(acc_name)
+            elif acc_name not in existing_accounts:
+                cursor.execute("SELECT id FROM accounts WHERE account=%s", (acc_name,))
+                acc_id = cursor.fetchone()[0]
+                cursor.execute("INSERT INTO related_accounts_leaks (leak_id, account_id) VALUES (%s, %s)", (leak_id, acc_id))
+
+        cursor.execute("SELECT raw_data, ai_report FROM raw_report WHERE leak_id=%s", (leak_id,))
+        res = cursor.fetchone()
+        if res:
+            old_raw = json.loads(bz2.decompress(base64.b64decode(res[0])))
+            old_ai = json.loads(bz2.decompress(base64.b64decode(res[1])))
+        else:
+            old_raw = {}
+            old_ai = {}
+
+        merged_raw = merge_reports(old_raw, leak_obj.secrets)
+        merged_ai = merge_reports(old_ai, leak_obj.ai_report)
+        enc_raw = base64.b64encode(bz2.compress(json.dumps(merged_raw).encode('utf-8')))
+        enc_ai = base64.b64encode(bz2.compress(json.dumps(merged_ai).encode('utf-8')))
+
+        if res:
+            cursor.execute("UPDATE raw_report SET raw_data=%s, ai_report=%s WHERE leak_id=%s", (enc_raw, enc_ai, leak_id))
+        else:
+            cursor.execute(
+                "INSERT INTO raw_report (leak_id, report_name, raw_data, ai_report) VALUES (%s, %s, %s, %s)",
+                (leak_id, leak_obj.repo_url, enc_raw, enc_ai),
+            )
+
+        commiters_count = len(existing_comm | new_comm)
+        contributors_count = max(
+            leak_obj.stats.repo_stats_leak_stats_table.get('contributors_count', 0),
+            len(existing_accounts | {a['account'] for a in leak_obj.stats.contributors_stats_accounts_table}),
+        )
+        cursor.execute(
+            "UPDATE leak_stats SET contributors_count=%s, commiters_count=%s WHERE leak_id=%s",
+            (contributors_count, commiters_count, leak_id),
+        )
+
+        cursor.execute(
+            "UPDATE leak SET level=%s, author_info=%s, leak_type=%s, result=%s, updated_at=%s WHERE id=%s",
+            (
+                leak_data['level'],
+                leak_data['author_info'],
+                leak_data['leak_type'],
+                leak_data['result'],
+                leak_data['updated_at'],
+                leak_id,
+            ),
+        )
+
+        conn.commit()
+    except pymysql.Error as e:
+        logger.error(f"Error updating leak: {e}")
+        conn.rollback()
     finally:
         if conn:
             conn.close()

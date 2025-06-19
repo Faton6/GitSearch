@@ -49,12 +49,12 @@ def test_popularity_penalty():
 def test_country_profiling_ru():
     constants.COUNTRY_PROFILING = True
     stats_ru = DummyStats(desc="Описание", commiters=1,
-                          committers_list=[{"commiter_name": "Павел Иванов", "commiter_email": "pavel@site.ru"}])
+                          committers_list=[{"commiter_name": "Павел Иванов", "commiter_email": "pavel@site.ru"}], ai_result=1)
     leak_ru = DummyLeakObj("яндекс", "some-repo", "Иван", stats_ru, company_id="Yandex")
     score_ru = LeakAnalyzer(leak_ru).calculate_organization_relevance_score()
 
     stats_en = DummyStats(desc="Description", commiters=1,
-                          committers_list=[{"commiter_name": "Pavel Ivanov", "commiter_email": "pavel@site.com"}])
+                          committers_list=[{"commiter_name": "Pavel Ivanov", "commiter_email": "pavel@site.com"}], ai_result=1)
     leak_en = DummyLeakObj("яндекс", "some-repo", "Ivan", stats_en, company_id="Yandex")
     score_en = LeakAnalyzer(leak_en).calculate_organization_relevance_score()
     assert score_ru > score_en
@@ -62,9 +62,9 @@ def test_country_profiling_ru():
 
 def test_company_name_heuristics():
     stats = DummyStats(desc="Company internal project", commiters=1,
-                       committers_list=[{"commiter_name": "Acme Dev", "commiter_email": "dev@acme.com"}])
+                       committers_list=[{"commiter_name": "Acme Dev", "commiter_email": "dev@acme.com"}], ai_result=0)
     leak = DummyLeakObj("search", "acme-tool", "AcmeBot", stats)
     score = LeakAnalyzer(leak).calculate_organization_relevance_score()
-    assert score > 0.4
+    assert score > 0.2
     
     

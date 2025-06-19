@@ -6,7 +6,7 @@ import tracemalloc
 
 # Project lib's import
 # from src.logger import logger, CLR
-RUN_TESTS: bool = False
+RUN_TESTS: bool = True
 
 
 __NAME__ = "GitSearch"
