@@ -5,7 +5,7 @@
     "token_DB": "-",
     "token_list": ["-"],
     "create_report": "no",
-    "start_date": "2025-06-19",
-    "end_date": "2025-06-19",
-    "report_type": "business"
+    "start_date": "2024-06-19",
+    "end_date": "2025-07-01",
+    "report_type": "technical"
 }

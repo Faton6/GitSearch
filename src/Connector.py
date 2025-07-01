@@ -35,7 +35,7 @@ from src.logger import logger
         res_human_check, founded_leak, res_check]
 
 """
-# TODO Change config to class Config
+
 
 requests.urllib3.disable_warnings()
 
