@@ -768,24 +768,11 @@ class Checker:
         
     @_exc_catcher
     def ai_scan(self):
-        from src.AIObj import AIObj
-        
-        if not self.obj.stats.coll_stats_getted:
-            self.obj.stats.get_contributors_stats()
-        if not self.obj.stats.comm_stats_getted:
-            self.obj.stats.get_commits_stats()
-        contri = []
-        commi = []
-        (contri.append(cont['account']) for cont in self.obj.statscontributors_stats_accounts_table)
-        (commi.append('Name:' + comm['commiter_name'] + ', Email:' + comm['commiter_email']) for comm in self.obj.statscommits_stats_commiters_table)
-        
-        leak_info = {'author': self.obj.author_name, 'repo_name': self.obj.repo_name,
-                     'created_at': self.obj.stats.created_at, 'updated_at': self.obj.stats.updated_at,
-                     'dork': self.obj.dork, 'contributers': contri, 'commiters': commi}
-        ai_obj = AIObj(self.secrets, self.obj.stats.get_repo_stats_leak_stats_table(), leak_info)
-        ai_obj.ai_request()
-        self.obj.ai_report = ai_obj.get_ai_report()
-        self.obj.stats.ai_result = ai_obj.get_ai_result()
+        # AI анализ теперь выполняется напрямую в LeakObj
+        # Эта функция оставлена для обратной совместимости
+        if constants.AI_CONFIG['ai_enable']:
+            self.obj.ai_report = {'Thinks': 'AI analysis performed in LeakObj'}
+            # AI анализ будет выполнен в LeakObj при записи объекта
         return 0
         
     def run(self):

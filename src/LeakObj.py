@@ -1,20 +1,21 @@
 # Standart libs import
 import time
 from abc import ABC
+import asyncio
+import json
 
 # Project lib's import
 from src import constants
 from src import filters
-from src.searcher.GitStats import GitParserStats
 from src.logger import logger
 from src.LeakAnalyzer import LeakAnalyzer
+# Lazy import для AIObj во избежание циклического импорта
 
 
 
 class LeakObj(ABC):
     """
         Class LeakObj:
-            TODO Need to update
             Fields:
             Url - link to repository
             responce - responce json
@@ -51,10 +52,16 @@ class LeakObj(ABC):
         self.repo_name = self.repo_url.split('github.com/')[1]
 
         self.found_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+        
+        # Отложенный импорт для избежания циклических импортов
+        from src.searcher.GitStats import GitParserStats
         self.stats = GitParserStats(self.repo_url)
 
         self.secrets = {'Not state': 'Not state'}
         self.ai_report = {'Thinks': 'Not state'}
+        self.ai_analysis = None  # Will store AI analysis results
+        self.company_info = None  # Will store company information for analysis
+        self.ai_obj = None  # AIObj instance for analysis
         self.status = []
         self.lvl = 0
         self.ready_to_send = False
@@ -70,6 +77,144 @@ class LeakObj(ABC):
             return template.format(**kwargs)
         except Exception:
             return template
+    
+    def set_company_info(self, company_info: dict):
+        """Set company information for AI analysis"""
+        self.company_info = company_info
+    
+    def _create_ai_obj(self):
+        """Создание объекта AIObj для анализа"""
+        if self.ai_obj is None:
+            # Lazy import для избежания циклического импорта
+            from src.AIObj import AIObj
+            
+            # Подготовка данных для AIObj
+            stats_data = {}
+            leak_info = {
+                "repo_name": self.repo_name,
+                "author": self.author_name,
+                "dork": self.dork,
+                "created_at": getattr(self.stats, 'created_at', 'Unknown'),
+                "updated_at": getattr(self.stats, 'updated_at', 'Unknown'),
+                "contributers": getattr(self.stats, 'contributors_stats_accounts_table', []),
+                "commiters": getattr(self.stats, 'commits_stats_commiters_table', [])
+            }
+            
+            # Статистика репозитория
+            if hasattr(self.stats, 'repo_stats_leak_stats_table'):
+                stats_data = self.stats.repo_stats_leak_stats_table
+            
+            self.ai_obj = AIObj(
+                secrets=self.secrets,
+                stats_data=stats_data,
+                leak_info=leak_info,
+                company_info=self.company_info
+            )
+    
+    async def run_ai_analysis(self, force: bool = False):
+        """Run AI analysis on the leak"""
+        if not constants.AI_ANALYSIS_ENABLED:
+            logger.debug("AI analysis not enabled")
+            return
+        
+        if self.ai_analysis and not force:
+            logger.debug("AI analysis already completed")
+            return
+        
+        try:
+            logger.info(f"Starting AI analysis for {self.repo_name}")
+            
+            # Создаем AIObj если еще не создан
+            self._create_ai_obj()
+            
+            # Запускаем комплексный анализ
+            self.ai_analysis = self.ai_obj.analyze_leak_comprehensive()
+            
+            # Обновляем ai_report для обратной совместимости
+            if self.ai_analysis:
+                self.ai_report = {
+                    'analysis_completed': True,
+                    'company_related': self.ai_analysis.get('company_relevance', {}).get('is_related', False),
+                    'severity': self.ai_analysis.get('severity_assessment', {}).get('level', 'unknown'),
+                    'summary': self.ai_analysis.get('summary', 'No summary available'),
+                    'recommendations': self.ai_analysis.get('recommendations', {}),
+                    'full_analysis': self.ai_analysis
+                }
+                logger.info(f"AI analysis completed for {self.repo_name}")
+            else:
+                logger.error(f"AI analysis failed for {self.repo_name}")
+                
+        except Exception as e:
+            logger.error(f"Error during AI analysis for {self.repo_name}: {str(e)}")
+            self.ai_report = {'analysis_error': str(e)}
+    
+    def run_ai_analysis_sync(self, force: bool = False):
+        """Synchronous wrapper for AI analysis"""
+        if not constants.AI_ANALYSIS_ENABLED:
+            return
+        
+        try:
+            logger.info(f"Starting AI analysis for {self.repo_name}")
+            
+            # Создаем AIObj если еще не создан
+            self._create_ai_obj()
+            
+            # Запускаем комплексный анализ
+            self.ai_analysis = self.ai_obj.analyze_leak_comprehensive()
+            
+            # Обновляем ai_report для обратной совместимости
+            if self.ai_analysis:
+                self.ai_report = {
+                    'analysis_completed': True,
+                    'company_related': self.ai_analysis.get('company_relevance', {}).get('is_related', False),
+                    'severity': self.ai_analysis.get('severity_assessment', {}).get('level', 'unknown'),
+                    'summary': self.ai_analysis.get('summary', 'No summary available'),
+                    'recommendations': self.ai_analysis.get('recommendations', {}),
+                    'full_analysis': self.ai_analysis
+                }
+                logger.info(f"AI analysis completed for {self.repo_name}")
+            else:
+                logger.error(f"AI analysis failed for {self.repo_name}")
+                
+        except Exception as e:
+            logger.error(f"Error during AI analysis for {self.repo_name}: {str(e)}")
+            self.ai_report = {'analysis_error': str(e)}
+    
+    def _add_ai_analysis_to_status(self):
+        """Add AI analysis results to status"""
+        if not self.ai_analysis:
+            return
+        
+        lang = constants.LANGUAGE
+        
+        try:
+            # Company relevance
+            company_rel = self.ai_analysis.get('company_relevance', {})
+            if company_rel.get('is_related'):
+                confidence = company_rel.get('confidence', 0.0)
+                self.status.append(self._get_message("ai_analysis_company_related", lang, confidence=confidence))
+            else:
+                confidence = company_rel.get('confidence', 0.0)
+                self.status.append(self._get_message("ai_analysis_company_unrelated", lang, confidence=confidence))
+            
+            # Severity assessment
+            severity = self.ai_analysis.get('severity_assessment', {})
+            if severity.get('level') in ['high', 'critical']:
+                score = severity.get('score', 0.0)
+                self.status.append(self._get_message("ai_analysis_high_severity", lang, score=score))
+            
+            # Summary
+            summary = self.ai_analysis.get('summary', '')
+            if summary and len(summary.strip()) > 0:
+                # Truncate summary if too long
+                if len(summary) > 200:
+                    summary = summary[:200] + "..."
+
+                self.status.append(self._get_message("ai_analysis_summary", lang, summary=summary))
+                
+        except Exception as e:
+            logger.error(f"Error adding AI analysis to status: {str(e)}")
+            self.status.append(self._get_message("ai_analysis_error", lang))
     
     def _check_status(self):
         self._check_stats()
@@ -150,6 +295,18 @@ class LeakObj(ABC):
         else:
             true_positive_chance = len(self.status) / 15.0 if len(self.status) > 0 else 0.0
         
+        # Run AI analysis if available
+        if constants.AI_ANALYSIS_ENABLED:
+            self.run_ai_analysis_sync()
+            self._add_ai_analysis_to_status()
+            
+            # Update true_positive_chance based on AI analysis
+            if self.ai_analysis:
+                ai_tp_prob = self.ai_analysis.get('classification', {}).get('true_positive_probability', 0.0)
+                if ai_tp_prob > 0:
+                    # Combine traditional scoring with AI assessment
+                    true_positive_chance = (true_positive_chance + ai_tp_prob) / 2.0
+        
         if true_positive_chance < 0.3: # Example thresholds, can be adjusted
             self.lvl = 0  # 'Low'
         elif 0.3 <= true_positive_chance < 0.7:
@@ -208,7 +365,10 @@ class LeakObj(ABC):
             'leak_type': founded_leak,
             'result': res_check,
             'company_id': self.company_id,
-
+            'ai_analysis': json.dumps(self.ai_analysis) if self.ai_analysis else None,
+            'ai_company_related': self.ai_analysis.get('company_relevance', {}).get('is_related', False) if self.ai_analysis else None,
+            'ai_severity_score': self.ai_analysis.get('severity_assessment', {}).get('score', 0.0) if self.ai_analysis else None,
+            'ai_true_positive_prob': self.ai_analysis.get('classification', {}).get('true_positive_probability', 0.0) if self.ai_analysis else None
         }
         return ret_mass
 

@@ -198,6 +198,13 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
         for i in backup_rep['scan'].keys():
             if mode == 0:
                 content = backup_rep['scan'][i][0]['content']
+                
+                # Проверяем существование компании для leak записи
+                company_id = content.get('company_id', 0)
+                if company_id and not company_exists(company_id):
+                    logger.warning(f"Company with id {company_id} does not exist for leak {content['url']}, setting to 0")
+                    content['company_id'] = 0
+                
                 leak_id = None
                 cursor.execute(
                     "INSERT INTO leak (url, level, author_info, found_at, created_at, updated_at, approval," \
@@ -227,9 +234,15 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
                 accounts_ids = []
                 for account in accounts_table:
                     if account['account'] not in accounts_from_DB:
+                        # Проверяем существование компании перед вставкой
+                        company_id = account.get('related_company_id', 0)
+                        if company_id and not company_exists(company_id):
+                            logger.warning(f"Company with id {company_id} does not exist, setting to 0 for account {account['account']}")
+                            company_id = 0
+                        
                         cursor.execute(
                             "INSERT INTO accounts (account, need_monitor, related_company_id) VALUES (%s, %s, %s)",
-                            (account['account'], account['need_monitor'], account['related_company_id']))
+                            (account['account'], account['need_monitor'], company_id))
                         accounts_ids.append(cursor.lastrowid)
 
                 for account_id in list(accounts_ids):
@@ -238,10 +251,16 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
                         (leak_id, account_id))
                 commiters_table = backup_rep['scan'][i][4]
                 for commiter in commiters_table:
+                    # Проверяем существование связанного аккаунта перед вставкой
+                    related_account_id = commiter.get('related_account_id', 0)
+                    if related_account_id and not account_exists(related_account_id):
+                        logger.warning(f"Account with id {related_account_id} does not exist, setting to 0 for commiter {commiter['commiter_name']}")
+                        related_account_id = 1
+                    
                     cursor.execute(
                         "INSERT INTO commiters (leak_id, commiter_name, commiter_email, need_monitor, related_account_id) VALUES (%s, %s, %s, %s, %s)",
                         (leak_id, commiter['commiter_name'], commiter['commiter_email'],
-                         commiter['need_monitor'], commiter['related_account_id']))
+                         commiter['need_monitor'], related_account_id))
                 try:
                     conn.commit()
                 except pymysql.Error as e:
@@ -256,6 +275,42 @@ def dump_to_DB_req(filename, mode=0):  # mode=0 - add obj to DB, mode=1 - add on
             
     logger.info('End dump data to DB')
     logger.info('#' * 80)
+
+def account_exists(account_id: int) -> bool:
+    """Проверяет существование аккаунта с указанным ID в базе данных."""
+    conn, cursor = connect_to_database()
+    if not conn or not cursor:
+        return False
+    try:
+        cursor.execute("SELECT COUNT(*) FROM accounts WHERE id=%s", (account_id,))
+        result = cursor.fetchone()
+        conn.commit()
+        return result[0] > 0 if result else False
+    except pymysql.Error as e:
+        logger.error(f"Error checking account existence: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def company_exists(company_id: int) -> bool:
+    """Проверяет существование компании с указанным ID в базе данных."""
+    conn, cursor = connect_to_database()
+    if not conn or not cursor:
+        return False
+    try:
+        cursor.execute("SELECT COUNT(*) FROM companies WHERE id=%s", (company_id,))
+        result = cursor.fetchone()
+        conn.commit()
+        return result[0] > 0 if result else False
+    except pymysql.Error as e:
+        logger.error(f"Error checking company existence: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
 
 def get_company_name(company_id: int) -> str:
     """Return company name for given id or empty string on failure."""
@@ -459,9 +514,15 @@ def update_existing_leak(leak_id: int, leak_obj):
         for acc in leak_obj.stats.contributors_stats_accounts_table:
             acc_name = acc['account']
             if acc_name not in accounts_from_db:
+                # Проверяем существование компании перед вставкой
+                company_id = acc.get('related_company_id', 0)
+                if company_id and not company_exists(company_id):
+                    logger.warning(f"Company with id {company_id} does not exist, setting to 0 for account {acc_name}")
+                    company_id = 0
+                
                 cursor.execute(
                     "INSERT INTO accounts (account, need_monitor, related_company_id) VALUES (%s, %s, %s)",
-                    (acc_name, acc['need_monitor'], acc['related_company_id']),
+                    (acc_name, acc['need_monitor'], company_id),
                 )
                 acc_id = cursor.lastrowid
                 cursor.execute("INSERT INTO related_accounts_leaks (leak_id, account_id) VALUES (%s, %s)", (leak_id, acc_id))

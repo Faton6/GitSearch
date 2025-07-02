@@ -57,25 +57,19 @@ LANGUAGE = 'ru'  # default language for messages
 COUNTRY_PROFILING: bool = True
 COMPANY_COUNTRY_MAP_DEFAULT: str = "ru"  # Default country for companies without specific mapping
 COMPANY_COUNTRY_MAP: dict[str, str] = {
-    "Yandex": "ru",
-    "Alpha-Bet": "en",
-}
+    "VTB": "ru",
+    "INNO": "ru",
+    "ALFA": "ru",
+    "SBER": "ru",
+} # TODO
 
-dork_dict_from_DB: dict = {}
-dork_list_from_file: list = []
-url_from_DB: dict = {}
 
-AI_TYPE = {'Deepseek': 0, 'Qwen': 1, 'ChatGPT': 2}  
-AI_CONFIG = {
-    "model": "Qwen/Qwen2-14B-Chat",
-    "ai_enable": False,
-    "url": "",
-    "api_key_need": True,
-    "api_key": "lm-studio",
-    "ai_type": AI_TYPE["Qwen"],
-    "token_limit": 15000,
-    "temperature": 0.01 # Added default temperature
-}
+# AI Analysis configuration
+AI_ANALYSIS_ENABLED = True
+AI_ANALYSIS_TIMEOUT = 30  # seconds
+AI_MAX_CONTEXT_LENGTH = 4000  # characters
+AI_COMPANY_RELEVANCE_THRESHOLD = 0.5
+AI_TRUE_POSITIVE_THRESHOLD = 0.6
 
 
 tracemalloc.start()
@@ -86,22 +80,39 @@ with open(f'{MAIN_FOLDER_PATH}/config.json') as config_file:
 
 def load_env_variables(file_path=f'{MAIN_FOLDER_PATH}/.env'):
     env_variables = {}
-    with open(file_path, 'r') as f:
-        for line in f.readlines():
-            key, value = line.strip().split('=')
-            env_variables[key] = value
+    try:
+        with open(file_path, 'r') as f:
+            for line in f.readlines():
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    env_variables[key.strip()] = value.strip()
+    except FileNotFoundError:
+        pass  # .env файл не найден, используем значения по умолчанию
+    except Exception as e:
+        print(f"Ошибка чтения .env файла: {e}")
     return env_variables
 
 leak_check_list = CONFIG_FILE['leak_check_list']
-url_DB = CONFIG_FILE['url_DB']
-token_DB = CONFIG_FILE['token_DB']
+
+# Инициализация token_tuple всегда
 if CONFIG_FILE['token_list'] != ['-']:
     token_tuple = tuple(CONFIG_FILE["token_list"])
-elif os.path.exists(f'{MAIN_FOLDER_PATH}/.env'):
-    env_variables = load_env_variables()
-    token_tuple = tuple([value for key, value in env_variables.items() if key.startswith('GITHUB_TOKEN')])
+else:
+    token_tuple = tuple()
 
-    
+# Загрузка переменных окружения
+env_variables = load_env_variables()
+
+if env_variables:
+    url_DB = env_variables.get('URL_DB', CONFIG_FILE['url_DB'])
+    token_DB = env_variables.get('TOKEN_DB', CONFIG_FILE['token_DB'])
+    # Добавляем GitHub токены из .env
+    github_tokens = [value for key, value in env_variables.items() if key.startswith('GITHUB_TOKEN')]
+    token_tuple = token_tuple + tuple(github_tokens)
+else:
+    url_DB = CONFIG_FILE['url_DB']
+    token_DB = CONFIG_FILE['token_DB']
 
 
 
@@ -123,7 +134,12 @@ LEAK_OBJ_MESSAGES = {
         "total_leaks_found": "Total leaks found: {total_count}",
         "full_report_length": "Full report length: {length}",
         "commit_description": "Commit description: {commit}",
-        "profitability_scores": "Leak Profitability Scores: Org Relevance: {org_rel:.2f}, Sensitive Data: {sens_data:.2f}, True Positive: {tp:.2f}, False Positive: {fp:.2f}"
+        "profitability_scores": "Leak Profitability Scores: Org Relevance: {org_rel:.2f}, Sensitive Data: {sens_data:.2f}, True Positive: {tp:.2f}, False Positive: {fp:.2f}",
+        "ai_analysis_company_related": "🤖 AI Analysis: Company-related leak detected (confidence: {confidence:.2f})",
+        "ai_analysis_company_unrelated": "🤖 AI Analysis: Not company-related (confidence: {confidence:.2f})",
+        "ai_analysis_high_severity": "🤖 AI Analysis: High severity leak detected (score: {score:.2f})",
+        "ai_analysis_error": "🤖 AI Analysis: Error occurred during analysis",
+        "ai_analysis_summary": "🤖 AI Summary: {summary}"
     },
     "ru": {
         "leak_found_in_section": "Обнаружена утечка в разделе {obj_type} по поиску {dork}",
@@ -142,7 +158,12 @@ LEAK_OBJ_MESSAGES = {
         "total_leaks_found": "Всего обнаружено утечек: {total_count}",
         "full_report_length": "Длина полного отчета: {length}",
         "commit_description": "Описание коммита: {commit}",
-        "profitability_scores": "Оценка рентабельности утечки: Релевантность организации: {org_rel:.2f}, Чувствительные данные: {sens_data:.2f}, Истинно-положительный: {tp:.2f}, Ложно-положительный: {fp:.2f}"
+        "profitability_scores": "Оценка рентабельности утечки: Релевантность организации: {org_rel:.2f}, Чувствительные данные: {sens_data:.2f}, Истинно-положительный: {tp:.2f}, Ложно-положительный: {fp:.2f}",
+        "ai_analysis_company_related": "🤖 ИИ Анализ: Обнаружена утечка, связанная с компанией (уверенность: {confidence:.2f})",
+        "ai_analysis_company_unrelated": "🤖 ИИ Анализ: Не связано с компанией (уверенность: {confidence:.2f})",
+        "ai_analysis_high_severity": "🤖 ИИ Анализ: Обнаружена утечка высокой степени серьезности (оценка: {score:.2f})",
+        "ai_analysis_error": "🤖 ИИ Анализ: Произошла ошибка во время анализа",
+        "ai_analysis_summary": "🤖 ИИ Резюме: {summary}"
     }
 }
 
@@ -170,4 +191,54 @@ class AutoVivification(dict):
 
 
 RESULT_MASS = AutoVivification()  # array with results of scans
+
+# AI_CONFIG для обратной совместимости с существующим AIObj
+AI_CONFIG = {
+    "ai_enable": env_variables.get('AI_ANALYSIS_ENABLED', 'true').lower() == 'true',
+    "token_limit": int(env_variables.get('AI_MAX_CONTEXT_LENGTH', '4000')),
+    "temperature": 0.99,
+    "url": "https://api.together.xyz/v1",  # default to together
+    "api_key": env_variables.get('TOGETHER_API_KEY', ''),
+    "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free"
+}
+
+# LLM Providers configuration
+LLM_PROVIDERS = [
+    {
+        "name": "together",
+        "base_url": "https://api.together.xyz/v1",
+        "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
+        "api_key_env": env_variables.get('TOGETHER_API_KEY', ''),
+        "daily_limit": 1000000,
+        "rpm": 60,
+        "context": 120000
+    },
+    {
+        "name": "openrouter", 
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "moonshotai/kimi-dev-72b:free",
+        "api_key_env": env_variables.get('OPENROUTER_API_KEY', ''),
+        "daily_limit": 200000,
+        "rpm": 60,
+        "context": 120000
+    },
+    {
+        "name": "fireworks",
+        "base_url": "https://api.fireworks.ai/inference/v1", 
+        "model": "accounts/fireworks/models/deepseek-r1-distill-llama-70b",
+        "api_key_env": env_variables.get('FIREWORKS_API_KEY', ''),
+        "daily_limit": 200000,
+        "rpm": 60,
+        "context": 120000
+    },
+    {
+        "name": "huggingface",
+        "base_url": "https://api.endpoints.huggingface.cloud",
+        "model": "MiniMaxAI/MiniMax-M1-80k", 
+        "api_key_env": env_variables.get('HUGGINGFACE_API_KEY', ''),
+        "daily_limit": 30000,
+        "rpm": 30,
+        "context": 80000
+    }
+]
 

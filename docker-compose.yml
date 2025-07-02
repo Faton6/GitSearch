@@ -31,7 +31,10 @@ services:
       volumes:
         - "./Gitsearch_DB.sql:/docker-entrypoint-initdb.d/Gitsearch_DB2.sql"
         - "./data:/var/lib/mysql"
-
+      healthcheck:
+        test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+        timeout: 20s
+        retries: 10
       networks:
         gitsearch_network:
           ipv4_address: 172.32.0.97

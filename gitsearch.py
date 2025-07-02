@@ -9,11 +9,10 @@ from src import constants
 from src import Connector
 from src.logger import logger
 from src.searcher import Scanner
-
 from src.glist.glist_scan import GlistScan
 from src import deepscan
 from src import filters
-from src import reports
+
 
 def signal_shutdown():
     logger.info('Stopping gently. Ctrl+C again to force')
@@ -35,7 +34,8 @@ if __name__ == "__main__":
     
     if constants.CONFIG_FILE['create_report'] == 'yes':        
         logger.info('Creating report from config')
-        reports.generate_report_from_config()
+        from src.report_generator import generate_report_from_config
+        generate_report_from_config()
         logger.info('Report created')
         sys.exit(0)   
     

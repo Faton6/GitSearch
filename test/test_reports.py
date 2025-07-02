@@ -1,6 +1,6 @@
 import sqlite3
 import os
-from src import reports
+from src import report_generator as reports
 
 # Setup in-memory SQLite database with minimal schema
 import pytest

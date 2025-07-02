@@ -1,4 +1,4 @@
-FROM python:3.11.2
+FROM python:3.12-slim
 
 LABEL maintainer="Anton Fakhretdinov"
 LABEL description="Open-version Gitsearch docker image"

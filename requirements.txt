@@ -7,3 +7,4 @@ tiktoken
 ioc_finder==7.3.0
 pywhat==5.1.0
 deepsecrets
+detect-secrets
