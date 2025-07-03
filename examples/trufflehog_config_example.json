@@ -1,0 +1,134 @@
+{
+  "detectors": [
+    {
+      "name": "universal-secrets",
+      "keywords": [
+        "password",
+        "pwd", 
+        "pass",
+        "secret",
+        "key",
+        "token",
+        "auth",
+        "api",
+        "credential",
+        "cred",
+        "access",
+        "private",
+        "confidential",
+        "sensitive"
+      ],
+      "regex": {
+        "secret": "(?i)(?:password|pwd|pass|secret|key|token|auth|api|credential|cred|access|private)[_\\-\\s]*[:=]\\s*([\"']?)([a-zA-Z0-9@#$%^&*()_+\\-=\\[\\]{};:,.<>?/~`|\\\\!]{6,})\\1",
+        "base64_secret": "(?i)(?:password|pwd|pass|secret|key|token|auth|api)[_\\-\\s]*[:=]\\s*([\"']?)([A-Za-z0-9+/]{20,}={0,2})\\1",
+        "hex_secret": "(?i)(?:password|pwd|pass|secret|key|token|auth|api)[_\\-\\s]*[:=]\\s*([\"']?)([a-fA-F0-9]{16,})\\1"
+      },
+      "entropy": 2.0,
+      "exclude_words": [
+        "example",
+        "test",
+        "demo", 
+        "sample",
+        "placeholder",
+        "dummy",
+        "fake",
+        "password",
+        "secret",
+        "key",
+        "token",
+        "123456",
+        "password123",
+        "admin123",
+        "root123",
+        "test123"
+      ]
+    },
+    {
+      "name": "config-files-secrets",
+      "keywords": [
+        "config",
+        "env",
+        "settings",
+        "database",
+        "db",
+        "server",
+        "host",
+        "url",
+        "uri",
+        "endpoint",
+        "connection",
+        "dsn"
+      ],
+      "regex": {
+        "config_value": "(?i)(?:database|db|server|host|url|uri|endpoint|connection|dsn)[_\\-\\s]*[:=]\\s*([\"']?)([a-zA-Z0-9@._\\-:\\/]{5,})\\1",
+        "env_var": "(?i)[A-Z_]{2,}[_]?(?:PASSWORD|PWD|PASS|SECRET|KEY|TOKEN|AUTH|API)[_A-Z0-9]*\\s*[:=]\\s*([\"']?)([a-zA-Z0-9@#$%^&*()_+\\-=\\[\\]{};:,.<>?/~`|\\\\!]{6,})\\1"
+      },
+      "entropy": 1.5,
+      "exclude_words": [
+        "localhost",
+        "127.0.0.1",
+        "example.com",
+        "test.com",
+        "demo.com",
+        "your_host_here",
+        "your_database_here"
+      ]
+    },
+    {
+      "name": "company-credentials-example",
+      "keywords": [
+        "example",
+        "corp",
+        "password",
+        "pwd",
+        "pass",
+        "secret",
+        "key",
+        "token",
+        "auth",
+        "api"
+      ],
+      "regex": {
+        "credential": "(?i)(?:example|corp)[_\\-\\s]*(?:password|pwd|pass|secret|key|token|auth|api)[_\\-\\s]*[:=]\\s*([\"']?)([a-zA-Z0-9@#$%^&*()_+\\-=\\[\\]{};:,.<>?/~`|\\\\!]{6,})\\1"
+      },
+      "entropy": 2.5,
+      "exclude_words": [
+        "example",
+        "test",
+        "demo",
+        "sample",
+        "placeholder",
+        "your_password_here",
+        "change_me",
+        "replace_me",
+        "password123",
+        "admin123",
+        "root123"
+      ]
+    },
+    {
+      "name": "company-api-keys-example",
+      "keywords": [
+        "example",
+        "corp",
+        "api",
+        "key",
+        "token",
+        "access",
+        "secret"
+      ],
+      "regex": {
+        "api_key": "(?i)(?:example|corp)[_\\-\\s]*(?:api[_\\-\\s]*key|access[_\\-\\s]*token|secret[_\\-\\s]*key)[_\\-\\s]*[:=]\\s*([\"']?)([a-zA-Z0-9]{15,})\\1"
+      },
+      "entropy": 2.5,
+      "exclude_words": [
+        "example",
+        "test",
+        "demo",
+        "sample",
+        "placeholder",
+        "your_api_key_here"
+      ]
+    }
+  ]
+}

@@ -59,13 +59,8 @@ class LeakAnalyzer:
             }
         }
         
-        # Corporate domain patterns for different companies
-        self.corporate_domain_patterns = {
-            "vtb": [r"vtb\.ru$", r"vtb24\.ru$", r"vtbcapital\.ru$"],
-            "sber": [r"sberbank\.ru$", r"sber\.ru$", r"sbrf\.ru$"],
-            "alfa": [r"alfabank\.ru$", r"alfa\.ru$"],
-            "inno": [r"innopolis\.ru$", r"innopolis\.university$"]
-        }
+        # Corporate domain patterns will be generated dynamically
+        self.corporate_domain_patterns = self._generate_corporate_domain_patterns()
     
     def _company_tokens(self) -> list[str]:
         """Return lower-case tokens derived from company name."""
@@ -74,6 +69,60 @@ class LeakAnalyzer:
         tokens = re.split(r"[\s,._-]+", self.company_name.lower())
         tokens.append(self.company_name.lower())
         return list({t for t in tokens if t})
+    
+    def _generate_corporate_domain_patterns(self) -> dict:
+        """Generate corporate domain patterns based on company name and dork."""
+        patterns = {}
+        
+        # Get company tokens
+        company_tokens = self._company_tokens()
+        
+        # Add dork as additional token if it exists
+        dork_tokens = []
+        if self.leak_obj.dork:
+            dork_tokens = re.split(r"[\s,._-]+", self.leak_obj.dork.lower())
+            dork_tokens = [t for t in dork_tokens if t and len(t) > 2]  # Filter short tokens
+        
+        # Combine all relevant tokens
+        all_tokens = list(set(company_tokens + dork_tokens))
+        
+        # Generate patterns for each token
+        for token in all_tokens:
+            if len(token) < 3:  # Skip very short tokens
+                continue
+                
+            token_patterns = []
+            
+            # Common domain patterns
+            common_tlds = [r"\.com$", r"\.ru$", r"\.org$", r"\.net$", r"\.io$", r"\.gov$"]
+            
+            # Direct domain patterns
+            for tld in common_tlds:
+                token_patterns.append(f"{re.escape(token)}{tld}")
+            
+            # Subdomain patterns
+            for tld in common_tlds:
+                token_patterns.append(f"\.{re.escape(token)}{tld}")
+            
+            # Common corporate variations
+            variations = [
+                f"{token}corp", f"{token}group", f"{token}ltd", f"{token}inc",
+                f"{token}bank", f"{token}tech", f"{token}dev", f"{token}it"
+            ]
+            
+            for variation in variations:
+                for tld in common_tlds:
+                    token_patterns.append(f"{re.escape(variation)}{tld}")
+            
+            # Hyphenated versions
+            if len(token) > 4:
+                for tld in common_tlds:
+                    token_patterns.append(f"{re.escape(token)}-.*{tld}")
+                    token_patterns.append(f".*-{re.escape(token)}{tld}")
+            
+            patterns[token] = token_patterns
+        
+        return patterns
     
     def _extract_file_paths_from_secrets(self) -> list[str]:
         """Extract file paths from found secrets across all scanners."""

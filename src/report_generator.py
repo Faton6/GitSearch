@@ -25,7 +25,20 @@ def _execute(cursor, query: str, params: Tuple[Any, Any]):
     try:
         cursor.execute(query, params)
     except Exception:
-        cursor.execute(query.replace("%s", "?"), params)
+        # Replace MySQL specific functions with SQLite equivalents
+        sqlite_query = query.replace("%s", "?")
+        sqlite_query = sqlite_query.replace("DATE_FORMAT(l.created_at, '%%Y-%%m-%%d')", "strftime('%Y-%m-%d', l.created_at)")
+        sqlite_query = sqlite_query.replace("DATE_FORMAT(created_at, '%%Y-%%m')", "strftime('%Y-%m', created_at)")
+        sqlite_query = sqlite_query.replace("HOUR(created_at)", "strftime('%H', created_at)")
+        sqlite_query = sqlite_query.replace("MINUTE(created_at)", "strftime('%M', created_at)")
+        sqlite_query = sqlite_query.replace("SECOND(created_at)", "strftime('%S', created_at)")
+        sqlite_query = sqlite_query.replace("DAY(l.created_at)", "strftime('%d', l.created_at)")
+        # Handle different variations of TIMESTAMPDIFF
+        sqlite_query = sqlite_query.replace("TIMESTAMPDIFF(SECOND, l.created_at, l.updated_at)", "(strftime('%s', l.updated_at) - strftime('%s', l.created_at))")
+        sqlite_query = sqlite_query.replace("TIMESTAMPDIFF(HOUR, created_at, updated_at)", "((strftime('%s', updated_at) - strftime('%s', created_at)) / 3600)")
+        sqlite_query = sqlite_query.replace("TIMESTAMPDIFF(MINUTE, created_at, updated_at)", "((strftime('%s', updated_at) - strftime('%s', created_at)) / 60)")
+        sqlite_query = sqlite_query.replace("TIMESTAMPDIFF(DAY, created_at, updated_at)", "((strftime('%s', updated_at) - strftime('%s', created_at)) / 86400)")
+        cursor.execute(sqlite_query, params)
 
 
 def _decode_report_data(encoded_data: str) -> dict:
@@ -154,6 +167,9 @@ class ReportGenerator:
         )
         data["company_breakdown"] = self.cursor.fetchall()
 
+        # Add top_companies for backward compatibility with tests
+        data["top_companies"] = data["company_breakdown"]
+
         return data
     
     def collect_enhanced_metrics(self, start_date: str, end_date: str, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -174,30 +190,21 @@ class ReportGenerator:
         )
         data["critical_incidents"] = self.cursor.fetchone()[0]
 
-        # Detect database type and use appropriate HOUR function
-        try:
-            # Try MariaDB/MySQL syntax first
-            _execute(
-                self.cursor,
-                "SELECT HOUR(created_at) AS hour, COUNT(*) FROM leak WHERE DATE(created_at) BETWEEN %s AND %s GROUP BY hour ORDER BY COUNT(*) DESC LIMIT 1",
-                (start_date, end_date),
-            )
-        except Exception:
-            # Fallback for SQLite (used in tests)
+        # Peak hour calculation
+        _execute(
+            self.cursor,
+            "SELECT HOUR(created_at) AS hour, COUNT(*) FROM leak WHERE DATE(created_at) BETWEEN %s AND %s GROUP BY hour ORDER BY COUNT(*) DESC LIMIT 1",
+            (start_date, end_date),
+        )
+        peak_hour_result = self.cursor.fetchone()
+        if peak_hour_result and peak_hour_result[0] is not None:
             try:
-                _execute(
-                    self.cursor,
-                    "SELECT strftime('%%H', created_at) AS hour, COUNT(*) FROM leak WHERE DATE(created_at) BETWEEN ? AND ? GROUP BY hour ORDER BY COUNT(*) DESC LIMIT 1",
-                    (start_date, end_date),
-                )
-            except Exception:
-                # Final fallback - just set peak hour to 0
+                data["peak_hour"] = int(peak_hour_result[0])
+            except (ValueError, TypeError):
+                # Handles cases where the result is not a valid integer
                 data["peak_hour"] = 0
-                peak_hour_result = None
-        
-        if 'peak_hour' not in data:
-            peak_hour_result = self.cursor.fetchone()
-            data["peak_hour"] = int(peak_hour_result[0]) if peak_hour_result else 0
+        else:
+            data["peak_hour"] = 0
 
         _execute(
             self.cursor,
@@ -329,23 +336,7 @@ class ReportGenerator:
             ORDER BY month""",
             (start_date, end_date),
         )
-        try:
-            monthly_raw = self.cursor.fetchall()
-        except:
-            # Fallback for SQLite
-            _execute(
-                self.cursor,
-                """SELECT 
-                    strftime('%%Y-%%m', created_at) as month,
-                    COUNT(*) as incidents,
-                    SUM(CASE WHEN result = 'success' THEN 1 ELSE 0 END) as resolved
-                FROM leak 
-                WHERE DATE(created_at) BETWEEN ? AND ? 
-                GROUP BY month 
-                ORDER BY month""",
-                (start_date, end_date),
-            )
-            monthly_raw = self.cursor.fetchall()
+        monthly_raw = self.cursor.fetchall()
         
         data["monthly_trends"] = []
         month_names = {
@@ -466,7 +457,7 @@ class ReportGenerator:
         
         _execute(
             self.cursor,
-            """SELECT url, COUNT(*) as issues, MAX(level) as max_severity
+            """SELECT url, COUNT(*) as issues, MAX(level) as max_severity, MAX(found_at) as last_scan_date
                FROM leak 
                WHERE DATE(created_at) BETWEEN %s AND %s 
                GROUP BY url 
@@ -487,11 +478,22 @@ class ReportGenerator:
         for url, issues, max_sev, last_scan_date in risky_repos_raw:
             severity = 'critical' if max_sev >= 3 else ('high' if max_sev >= 2 else 'medium')
             repo_name = url.split('/')[-1] if '/' in url else url
+            
+            # Handle last_scan_date formatting - it might be a string or datetime object
+            if last_scan_date:
+                if hasattr(last_scan_date, 'strftime'):
+                    last_scan_str = last_scan_date.strftime('%Y-%m-%d')
+                else:
+                    # If it's already a string, use as is
+                    last_scan_str = str(last_scan_date)
+            else:
+                last_scan_str = "N/A"
+            
             data["repository_stats"]["top_risky_repos"].append({
                 "name": repo_name,
                 "issues": issues,
                 "severity": severity,
-                "last_scan": last_scan_date.strftime('%Y-%m-%d') if last_scan_date else "N/A"
+                "last_scan": last_scan_str
             })
 
         # Analyst workflow analysis
@@ -549,7 +551,23 @@ class ReportGenerator:
         # Group by month for timeline
         monthly_timeline = {}
         for day, count in daily_counts:
-            month_key = f"{day.year}-{day.month:02d}-01"
+            # Handle both string dates and datetime objects
+            if hasattr(day, 'year'):
+                # It's a datetime object
+                month_key = f"{day.year}-{day.month:02d}-01"
+            else:
+                # It's a string date, parse it
+                try:
+                    from datetime import datetime
+                    if isinstance(day, str):
+                        # Try to parse string date (YYYY-MM-DD format)
+                        day_obj = datetime.strptime(day, '%Y-%m-%d')
+                        month_key = f"{day_obj.year}-{day_obj.month:02d}-01"
+                    else:
+                        month_key = "unknown"
+                except:
+                    month_key = "unknown"
+            
             if month_key not in monthly_timeline:
                 monthly_timeline[month_key] = {"scans": 0, "detections": 0, "false_positives": 0}
             

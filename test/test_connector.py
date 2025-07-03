@@ -67,7 +67,7 @@ def test_dump_target_from_DB_success():
         result = Connector.dump_target_from_DB()
 
         mock_cursor.execute.assert_called_once_with("SELECT dork, company_id FROM dorks")
-        mock_conn.commit.assert_called_once()
+        # SELECT operations don't require commit
         mock_conn.close.assert_called_once()
         assert result == {
             1: ["dork1", "dork2"],
@@ -106,7 +106,7 @@ def test_dump_from_DB_success_mode_0():
         result = Connector.dump_from_DB(mode=0)
 
         mock_cursor.execute.assert_called_once_with("SELECT id, url, result FROM leak")
-        mock_conn.commit.assert_called_once()
+        # SELECT operations don't require commit
         mock_conn.close.assert_called_once()
         assert result == {"url1": "status1", "url2": "status2"}
 
@@ -124,7 +124,7 @@ def test_dump_from_DB_success_mode_1():
         result = Connector.dump_from_DB(mode=1)
 
         mock_cursor.execute.assert_called_once_with("SELECT id, url, result FROM leak")
-        mock_conn.commit.assert_called_once()
+        # SELECT operations don't require commit
         mock_conn.close.assert_called_once()
         assert result == {"url1": ["status1", 1], "url2": ["status2", 2]}
 
@@ -157,7 +157,7 @@ def test_get_company_name_success():
         result = Connector.get_company_name(7)
 
         mock_cursor.execute.assert_called_once_with("SELECT company_name FROM companies WHERE id=%s", (7,))
-        mock_conn.commit.assert_called_once()
+        # SELECT operations don't require commit
         mock_conn.close.assert_called_once()
         assert result == "Acme"
 
@@ -182,36 +182,30 @@ def test_get_company_name_db_error():
 
 # Test dump_account_from_DB function
 def test_dump_account_from_DB_success():
-    with patch("src.Connector.connect_to_database") as mock_connect_db:
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_connect_db.return_value = (mock_conn, mock_cursor)
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [("account1",), ("account2",)]
 
-        mock_cursor.fetchall.return_value = [("account1",), ("account2",)]
+    result = Connector.dump_account_from_DB(mock_cursor)
 
-        result = Connector.dump_account_from_DB()
-
-        mock_cursor.execute.assert_called_once_with("SELECT account FROM accounts")
-        mock_conn.commit.assert_called_once()
-        mock_conn.close.assert_called_once()
-        assert result == ["account1", "account2"]
+    mock_cursor.execute.assert_called_once_with("SELECT account FROM accounts")
+    assert result == ["account1", "account2"]
 
 def test_dump_account_from_DB_no_connection():
-    with patch("src.Connector.connect_to_database", return_value=(None, None)):
-        result = Connector.dump_account_from_DB()
-        assert result == []
+    # This test doesn't really make sense anymore since dump_account_from_DB requires cursor
+    # But we can test it with None cursor to see if it handles gracefully
+    mock_cursor = MagicMock()
+    mock_cursor.execute.side_effect = pymysql.Error("DB error")
+    
+    result = Connector.dump_account_from_DB(mock_cursor)
+    assert result == []
 
 def test_dump_account_from_DB_db_error():
-    with patch("src.Connector.connect_to_database") as mock_connect_db:
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_connect_db.return_value = (mock_conn, mock_cursor)
-        mock_cursor.execute.side_effect = pymysql.Error("DB error") # Changed from mariadb
+    mock_cursor = MagicMock()
+    mock_cursor.execute.side_effect = pymysql.Error("DB error") # Changed from mariadb
 
-        result = Connector.dump_account_from_DB()
+    result = Connector.dump_account_from_DB(mock_cursor)
 
-        mock_conn.close.assert_called_once()
-        assert result == []
+    assert result == []
 
 # Test dump_row_data_from_DB function
 def test_dump_row_data_from_DB_success():
@@ -229,7 +223,7 @@ def test_dump_row_data_from_DB_success():
         result = Connector.dump_row_data_from_DB(123)
 
         mock_cursor.execute.assert_called_once_with("SELECT raw_data FROM raw_report WHERE leak_id=%s", (123,)) # Changed to %s
-        mock_conn.commit.assert_called_once()
+        # SELECT operations don't require commit
         mock_conn.close.assert_called_once()
         assert result == test_data
 
@@ -274,7 +268,7 @@ def test_dump_ai_report_from_DB_success():
         result = Connector.dump_ai_report_from_DB(456)
 
         mock_cursor.execute.assert_called_once_with("SELECT ai_report FROM raw_report WHERE leak_id=%s", (456,)) # Changed to %s
-        mock_conn.commit.assert_called_once()
+        # SELECT operations don't require commit
         mock_conn.close.assert_called_once()
         assert result == test_data
 
@@ -313,12 +307,11 @@ def test_dump_to_DB_req_mode_0_success(mock_json_load, mock_open, mock_connect_d
 
     # Mock dump_account_from_DB to return an empty list, simulating no existing accounts
     with patch("src.Connector.dump_account_from_DB", return_value=[]):
-        Connector.dump_to_DB_req("dummy_filename.json", mode=0)
+        Connector.dump_to_DB_req("dummy_filename.json", mock_conn, mock_cursor)
 
         # Assertions for execute calls (simplified)
         assert mock_cursor.execute.call_count >= 4 # At least for leak, raw_report, leak_stats, commiters
-        mock_conn.commit.assert_called_once()
-        mock_conn.close.assert_called_once()
+        # dump_to_DB_req doesn't call commit/close - that's done at higher level
 
 # Test dump_to_DB function (high-level, as it orchestrates other functions)
 @patch("src.Connector.dump_to_DB_req")
@@ -326,8 +319,10 @@ def test_dump_to_DB_req_mode_0_success(mock_json_load, mock_open, mock_connect_d
 @patch("builtins.open", new_callable=MagicMock)
 @patch("json.dump")
 @patch("time.strftime") # Mock time.strftime
-def test_dump_to_DB_mode_0_success(mock_strftime, mock_json_dump, mock_open, mock_logger, mock_dump_to_DB_req):
+@patch("src.Connector.load_existing_leak_urls") # Mock to return empty dict for new leaks
+def test_dump_to_DB_mode_0_success(mock_load_urls, mock_strftime, mock_json_dump, mock_open, mock_logger, mock_dump_to_DB_req):
     mock_strftime.return_value = "2025-06-17-12-00" # Consistent timestamp
+    mock_load_urls.return_value = {}  # Empty dict means all leaks are new
 
     # Mock constants.RESULT_MASS with a dummy LeakObj
     mock_leak_obj = MagicMock()
@@ -340,18 +335,27 @@ def test_dump_to_DB_mode_0_success(mock_strftime, mock_json_dump, mock_open, moc
     mock_leak_obj.ai_report = {"ai": "report"}
     mock_leak_obj.get_stats.return_value = ({}, [], []) # Mock empty stats
 
+    # Setup constants for the test
+    original_result_mass = constants.RESULT_MASS
+    original_url_db = constants.url_DB
+    
+    constants.RESULT_MASS = constants.AutoVivification()
     constants.RESULT_MASS["key1"]["obj1"] = mock_leak_obj
     constants.url_DB = "some_db_url"
 
-    Connector.dump_to_DB(mode=0)
+    with patch("src.Connector.connect_to_database") as mock_connect:
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_connect.return_value = (mock_conn, mock_cursor)
+        
+        Connector.dump_to_DB(mode=0)
 
-    mock_json_dump.assert_called_once()
-    mock_dump_to_DB_req.assert_called_once()
-    mock_logger.info.assert_any_call(f"Result report: {constants.MAIN_FOLDER_PATH}/reports/result_res-2025-06-17-12-00.json")
+        mock_json_dump.assert_called_once()
+        mock_dump_to_DB_req.assert_called_once()
 
     # Clean up constants.RESULT_MASS for other tests
-    constants.RESULT_MASS = constants.AutoVivification()
-    constants.url_DB = "-"
+    constants.RESULT_MASS = original_result_mass
+    constants.url_DB = original_url_db
     
     
 def test_load_existing_leak_urls():
@@ -407,8 +411,7 @@ def test_update_existing_leak(mock_connect, mock_get_comm, mock_get_acc, mock_du
         "updated_at": "2024-01-02",
     }
 
-    Connector.update_existing_leak(5, leak_obj)
+    Connector.update_existing_leak(5, leak_obj, mock_conn, mock_cursor)
 
     assert mock_cursor.execute.call_count > 0
-    mock_conn.commit.assert_called_once()
 

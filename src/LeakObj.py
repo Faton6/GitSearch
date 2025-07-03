@@ -268,8 +268,14 @@ class LeakObj(ABC):
         ]
         if ('grepscan' in self.secrets and isinstance(self.secrets['grepscan'], constants.AutoVivification)
                 and len(self.secrets['grepscan'])):
-            first_match = list(self.secrets["grepscan"].values())[0]["Match"]
-            self.status.append(self._get_message("first_grepscan_line", lang, match=first_match))
+            try:
+                grepscan_values = list(self.secrets["grepscan"].values())
+                if grepscan_values and isinstance(grepscan_values[0], dict) and "Match" in grepscan_values[0]:
+                    first_match = grepscan_values[0]["Match"]
+                    self.status.append(self._get_message("first_grepscan_line", lang, match=first_match))
+            except (IndexError, KeyError, TypeError) as e:
+                # Gracefully handle malformed grepscan results
+                self.status.append(self._get_message("grepscan_parsing_error", lang, error=str(e)))
 
         sum_leaks_count = 0
         for scan_type in scaners:

@@ -208,7 +208,7 @@ LLM_PROVIDERS = [
         "name": "together",
         "base_url": "https://api.together.xyz/v1",
         "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
-        "api_key_env": env_variables.get('TOGETHER_API_KEY', ''),
+        "api_key_env": "TOGETHER_API_KEY",
         "daily_limit": 1000000,
         "rpm": 60,
         "context": 120000
@@ -217,7 +217,7 @@ LLM_PROVIDERS = [
         "name": "openrouter", 
         "base_url": "https://openrouter.ai/api/v1",
         "model": "moonshotai/kimi-dev-72b:free",
-        "api_key_env": env_variables.get('OPENROUTER_API_KEY', ''),
+        "api_key_env": "OPENROUTER_API_KEY",
         "daily_limit": 200000,
         "rpm": 60,
         "context": 120000
@@ -226,7 +226,7 @@ LLM_PROVIDERS = [
         "name": "fireworks",
         "base_url": "https://api.fireworks.ai/inference/v1", 
         "model": "accounts/fireworks/models/deepseek-r1-distill-llama-70b",
-        "api_key_env": env_variables.get('FIREWORKS_API_KEY', ''),
+        "api_key_env": "FIREWORKS_API_KEY",
         "daily_limit": 200000,
         "rpm": 60,
         "context": 120000
@@ -235,7 +235,7 @@ LLM_PROVIDERS = [
         "name": "huggingface",
         "base_url": "https://api.endpoints.huggingface.cloud",
         "model": "MiniMaxAI/MiniMax-M1-80k", 
-        "api_key_env": env_variables.get('HUGGINGFACE_API_KEY', ''),
+        "api_key_env": "HUGGINGFACE_API_KEY",
         "daily_limit": 30000,
         "rpm": 30,
         "context": 80000
