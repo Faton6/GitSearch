@@ -35,6 +35,7 @@ from src import Connector
 from src import constants
 from src.LeakObj import RepoObj
 from src import filters
+from src import utils
 from src.searcher.scanner import Scanner
 
 # Deep scan configuration constants
@@ -440,7 +441,7 @@ class ListScanManager:
         self._scan_repositories(repo_objs)
         
         # Step 4: Dump results and mark URLs as processed
-        filters.dumping_data()
+        utils.dumping_data()
         self._mark_urls_as_processed(url_list)
         
         logger.info("List scan process completed")

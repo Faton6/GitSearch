@@ -102,7 +102,7 @@ class LeakAnalyzer:
             
             # Subdomain patterns
             for tld in common_tlds:
-                token_patterns.append(f"\.{re.escape(token)}{tld}")
+                token_patterns.append(f"\\.{re.escape(token)}{tld}")
             
             # Common corporate variations
             variations = [

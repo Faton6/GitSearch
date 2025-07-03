@@ -6,7 +6,7 @@ import json
 
 # Project lib's import
 from src import constants
-from src import filters
+from src import utils
 from src.logger import logger
 from src.LeakAnalyzer import LeakAnalyzer
 # Lazy import для AIObj во избежание циклического импорта
@@ -285,7 +285,7 @@ class LeakObj(ABC):
                 self.status.append(self._get_message("leaks_found_by_scanner", lang, count=len(self.secrets[scan_type]), scanner=scan_type))
 
         self.status.append(self._get_message("total_leaks_found", lang, total_count=sum_leaks_count))
-        self.status.append(self._get_message("full_report_length", lang, length=filters.count_nested_dict_len(self.secrets)))
+        self.status.append(self._get_message("full_report_length", lang, length=utils.count_nested_dict_len(self.secrets)))
         
         self.profitability_scores = LeakAnalyzer(self).calculate_profitability()
         

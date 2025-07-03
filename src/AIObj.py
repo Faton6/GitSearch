@@ -10,7 +10,6 @@ from openai import OpenAI
 import os
 
 from src import constants
-from src import filters
 from src.searcher.GitStats import GitParserStats
 from src.logger import logger
 

@@ -11,7 +11,7 @@ from src.logger import logger
 from src.searcher import Scanner
 from src.glist.glist_scan import GlistScan
 from src import deepscan
-from src import filters
+from src import utils
 
 
 def signal_shutdown():
@@ -44,7 +44,7 @@ if __name__ == "__main__":
     
     if constants.url_DB != '-':
         constants.url_from_DB = Connector.dump_from_DB()
-        filters.exclude_list_update()
+        utils.exclude_list_update()
         constants.dork_dict_from_DB = Connector.dump_target_from_DB()
     else:
         constants.url_from_DB = '-'
@@ -82,14 +82,14 @@ if __name__ == "__main__":
     # Github Gist scan
     logger.info('Start Gist scan')
     GlistScan.run(filter_='updated', quantity=30)
-    filters.dumping_data()
+    utils.dumping_data()
 
     # Github scan
     logger.info('Start Github scan')
     
     for org in constants.dork_dict_from_DB:
         Scanner(org).gitscan()
-    filters.dumping_data()
+    utils.dumping_data()
 
     # Deepscan - repeat deep scan of found leaks
     # TODO Not it work only for DB version

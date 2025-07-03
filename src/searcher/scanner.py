@@ -6,7 +6,9 @@ from concurrent.futures import ThreadPoolExecutor, Future, wait, FIRST_COMPLETED
 import src.constants as const
 
 # Project lib's import
-from src.filters import Connector, dumping_data, Checker, CLONED, SCANNED
+from src.filters import Checker, CLONED, SCANNED
+from src.utils import dumping_data
+from src import Connector
 from src.logger import logger, CLR
 from src.searcher.parsers import (GitParserSearch, GitRepoParser, GitCodeParser, GitCommitParser)
 

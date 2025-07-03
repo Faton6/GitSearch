@@ -6,7 +6,7 @@ from math import ceil
 
 # Project lib's import
 
-from src.filters import filter_url_by_db, filter_url_by_repo
+from src.utils import filter_url_by_db, filter_url_by_repo
 from src.logger import logger
 
 from src.LeakObj import CodeObj, RepoObj, CommitObj

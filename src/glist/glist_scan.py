@@ -10,6 +10,7 @@ from src.logger import logger, CLR
 from src import constants
 from src.LeakObj import GlistObj
 from src import filters
+from src import utils
 
 GIST_LINK_HTML_CLASS = 'link-overlay'
 
@@ -83,7 +84,7 @@ class GlistScan:
         for organization in constants.dork_dict_from_DB:
             for i, dork in enumerate(constants.dork_dict_from_DB[organization]):
                 if constants.dork_search_counter > constants.MAX_SEARCH_BEFORE_DUMP and len(constants.RESULT_MASS):
-                    filters.dumping_data()
+                    utils.dumping_data()
 
                 constants.all_dork_search_counter += 1
                 logger.info(
@@ -101,10 +102,10 @@ class GlistScan:
                         if 'rate limit' in html:
                             logger.info('Reached rate limit')
                             time.sleep(20)
-                    glists_links = filters.filter_url_by_db(glists_links)
+                    glists_links = utils.filter_url_by_db(glists_links)
                     if len(glists_links) == 0:
                         break
-                    glists_links = filters.filter_url_by_repo(glists_links)
+                    glists_links = utils.filter_url_by_repo(glists_links)
                     if len(glists_links) == 0:
                         break
 
@@ -124,4 +125,4 @@ class GlistScan:
                         if (constants.quantity_obj_before_send >= constants.MAX_OBJ_BEFORE_SEND or
                                 constants.dork_search_counter > constants.MAX_SEARCH_BEFORE_DUMP and len(
                                     constants.RESULT_MASS)):
-                            filters.dumping_data()
+                            utils.dumping_data()
