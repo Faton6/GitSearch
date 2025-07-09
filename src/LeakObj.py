@@ -122,8 +122,7 @@ class LeakObj(ABC):
             return
         
         try:
-            logger.info(f"Starting AI analysis for {self.repo_name}")
-            
+           
             # Создаем AIObj если еще не создан
             self._create_ai_obj()
             
@@ -140,6 +139,7 @@ class LeakObj(ABC):
                     'recommendations': self.ai_analysis.get('recommendations', {}),
                     'full_analysis': self.ai_analysis
                 }
+                self.stats.set_ai_result(self.ai_obj.ai_result)
                 logger.info(f"AI analysis completed for {self.repo_name}")
             else:
                 logger.error(f"AI analysis failed for {self.repo_name}")
@@ -172,6 +172,7 @@ class LeakObj(ABC):
                     'recommendations': self.ai_analysis.get('recommendations', {}),
                     'full_analysis': self.ai_analysis
                 }
+                self.stats.set_ai_result(self.ai_obj.ai_result)
                 logger.info(f"AI analysis completed for {self.repo_name}")
             else:
                 logger.error(f"AI analysis failed for {self.repo_name}")
@@ -328,11 +329,6 @@ class LeakObj(ABC):
         self.status = '\n- '.join(self.status)
         self.ready_to_send = True
 
-    def _prepare_secrets(self):
-        if len(self.secrets) > 10:
-            for key in self.secrets.keys():
-                pass  # TODO check secrets duplicates
-
     def write_obj(self):  # for write to DB
 
         # Human chech:
@@ -349,8 +345,6 @@ class LeakObj(ABC):
             founded_leak = str(self.status[:10000]) + '...'
         else:
             founded_leak = self.status
-
-        self._prepare_secrets()
         # Result:
         # 0 - leaks doesn't found, add to exclude list
         # 1 - leaks found, sent request to block

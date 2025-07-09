@@ -256,9 +256,13 @@ class TestAIAnalysis:
         analysis = repo_obj.ai_obj.analyze_leak_comprehensive()
         # Анализ может вернуть None если нет провайдеров, это нормально
         if analysis is not None:
-            assert 'company_related' in analysis
-            assert 'confidence' in analysis
+            assert 'company_relevance' in analysis
+            assert 'classification' in analysis
+            assert 'severity_assessment' in analysis
             assert 'summary' in analysis
+            assert 'recommendations' in analysis
+            assert 'is_related' in analysis['company_relevance']
+            assert 'confidence' in analysis['company_relevance']
     
     def test_write_obj_with_ai_data(self):
         """Тест записи объекта с AI данными"""

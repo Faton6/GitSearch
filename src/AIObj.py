@@ -5,6 +5,7 @@ import json
 import base64
 import requests
 from typing import Optional, Dict, List, Any
+import re
 import tiktoken
 from openai import OpenAI
 import os
@@ -31,7 +32,7 @@ class AIObj(ABC):
         try:
             self.tokenizer = tiktoken.get_encoding("cl100k_base")
         except ImportError:
-            logger.warning("tiktoken не доступен, используется упрощенный подсчет токенов")
+            logger.warning("tiktoken no availible, using simple tokenizer")
             self.tokenizer = None
         
         # Флаги состояния
@@ -137,23 +138,79 @@ class AIObj(ABC):
         return self._llm_manager
 
     def analyze_leak_comprehensive(self):
-        """Комплексный анализ утечки с использованием множественных LLM провайдеров"""
-        try:
-            # Базовая реализация - будет расширена позже
-            if not self.llm_manager.providers:
-                logger.warning("Нет доступных LLM провайдеров")
-                return None
-            
-            # Пока используем простую заглушку
-            logger.info("Комплексный анализ запущен")
-            return {
-                "company_related": False,
-                "confidence": 0.0,
-                "summary": "Базовый анализ выполнен"
-            }
-        except Exception as e:
-            logger.error(f"Ошибка в комплексном анализе: {str(e)}")
+        """Полноценный анализ утечки с использованием доступных LLM провайдеров"""
+
+        if not self.llm_manager.providers:
+            logger.warning("Нет доступных LLM провайдеров")
             return None
+
+        system_prompt = (
+            "You are a security analyst. "
+            "Analyse provided repository information and return JSON with the "
+            "following structure: {\n"
+            "  'company_relevance': { 'is_related': bool, 'confidence': float },\n"
+            "  'severity_assessment': { 'level': str, 'score': float },\n"
+            "  'classification': { 'true_positive_probability': float },\n"
+            "  'summary': str,\n"
+            "  'recommendations': str\n"
+            "}."
+        )
+
+        user_prompt = self.base_prompt_text
+        if self.company_info:
+            try:
+                user_prompt += f"Company info: {json.dumps(self.company_info)}\n"
+            except Exception:
+                user_prompt += f"Company info: {self.company_info}\n"
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        response = self.llm_manager.make_request(
+            messages,
+            max_tokens=1024,
+            temperature=constants.AI_CONFIG.get("temperature", 0.1),
+        )
+
+        if not response:
+            return None
+
+        try:
+            content = response["choices"][0]["message"]["content"].strip()
+        except Exception as e:  # pragma: no cover - defensive
+            logger.error(f"Error in respone LLM: {e}")
+            return None
+
+        analysis_data = None
+        try:
+            analysis_data = json.loads(content)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", content, re.DOTALL)
+            if match:
+                try:
+                    analysis_data = json.loads(match.group(0))
+                except Exception:
+                    analysis_data = None
+
+        if analysis_data:
+            self.ai_analysis = analysis_data
+            self.ai_result = 1 if analysis_data.get("company_relevance", {}).get("is_related") else 0
+            self.ai_report = analysis_data
+            self.ai_analysis_completed = True
+            self.ai_requested = True
+            return analysis_data
+
+        if content in {"0", "1"}:
+            self.ai_result = int(content)
+            self.ai_report = content
+        else:
+            self.ai_result = -1
+            self.ai_report = content
+
+        self.ai_requested = True
+        return None
     
     def safe_generate(
         self,
@@ -350,9 +407,9 @@ class LLMProviderManager:
                     "last_request_time": 0,
                     "error_count": 0
                 }
-                logger.info(f"Загружен LLM провайдер: {provider_config['name']}")
+                logger.info(f"Uploaded LLM provider: {provider_config['name']}")
             else:
-                logger.warning(f"API ключ для {provider_config['name']} не найден или пуст")
+                logger.warning(f"API key for {provider_config['name']} not found or empty")
     
     def get_available_provider(self) -> Optional[Dict[str, Any]]:
         """Получить доступного провайдера"""
@@ -374,7 +431,7 @@ class LLMProviderManager:
         
         provider = self.get_available_provider()
         if not provider:
-            logger.error("Нет доступных LLM провайдеров")
+            logger.error("ZERO Availible LLM providers")
             return None
         
         headers = {
@@ -407,15 +464,14 @@ class LLMProviderManager:
                 provider["last_request_time"] = time.time()
                 provider["error_count"] = 0
                 
-                logger.info(f"Успешный запрос к провайдеру: {provider['name']}")
                 return response.json()
             else:
-                logger.error(f"Провайдер {provider['name']} вернул статус {response.status_code}: {response.text}")
+                logger.error(f"Provider {provider['name']} back with status: {response.status_code}: {response.text}")
                 provider["error_count"] += 1
                 return None
         
         except Exception as e:
-            logger.error(f"Ошибка запроса к провайдеру {provider['name']}: {str(e)}")
+            logger.error(f"Error in request to provider {provider['name']}: {str(e)}")
             provider["error_count"] += 1
             return None
 

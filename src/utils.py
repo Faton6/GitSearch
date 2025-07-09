@@ -156,6 +156,52 @@ def _add_repo_to_exclude(url):  # TODO: add check existing repo name
     except Exception as ex:
         logger.error('Error in adding excludes in exclude_list.txt (_add_repo_to_exclude): %s', ex)
 
+def sanitize_company_name(company_name: str) -> str:
+    """Return safe company name for detector usage."""
+    if not isinstance(company_name, str):
+        return ""
+    return (company_name.lower()
+            .replace(" ", "-")
+            .replace(".", "-")
+            .replace("(", "")
+            .replace(")", "")
+            .replace("/", "-"))
+
+
+def generate_company_search_terms(company_name: str) -> list[str]:
+    """Generate search terms based on company name."""
+    if not company_name:
+        return []
+
+    terms = []
+    company_name = company_name.lower()
+
+    # Full company name
+    terms.append(company_name)
+
+    # Split by common delimiters and add meaningful parts
+    parts = re.split(r'[\s\-_.,()&]+', company_name)
+    for part in parts:
+        if len(part) > 2:
+            terms.append(part)
+
+    # Abbreviations
+    if len(parts) > 1:
+        abbr = ''.join([p[0] for p in parts if p])
+        if len(abbr) > 1:
+            terms.append(abbr)
+
+        stopwords = {'inc', 'ltd', 'llc', 'corp', 'corporation', 'company',
+                     'co', 'group', 'gmbh', 'ag', 'sa'}
+        significant_parts = [p for p in parts if p and p not in stopwords and len(p) > 2]
+        if len(significant_parts) > 1:
+            sig_abbr = ''.join([p[0] for p in significant_parts])
+            if len(sig_abbr) > 1:
+                terms.append(sig_abbr)
+
+    # Remove duplicates and very short terms
+    return list({t for t in terms if len(t) > 1})
+
 
 def filter_url_by_repo(urls: list[str] | tuple[str] | str):
     """
@@ -224,20 +270,6 @@ def filter_url_by_db(urls):
             filtered_urls.append(url)
 
     return filtered_urls
-
-
-def exc_catcher(func):
-    """Decorator for catching exceptions in scan methods"""
-    def wrapper(*args, **kwargs):
-        try:
-            result = func(*args, **kwargs)
-            return result
-        except subprocess.TimeoutExpired:
-            logger.error("TimeoutExpired exception in %s", func.__name__)
-        except Exception as exc:
-            logger.error("Exception in %s: %s", func.__name__, exc)
-            return 2
-    return wrapper
 
 
 def semantic_check_dork(string_check: str, dork: str):

@@ -2,6 +2,7 @@ import re
 from src.logger import logger
 from src import constants
 from src import Connector
+from src import utils
 
 class LeakAnalyzer: 
     '''
@@ -10,6 +11,7 @@ class LeakAnalyzer:
     def __init__(self, leak_obj: any):
         self.leak_obj = leak_obj
         self.company_name = Connector.get_company_name(leak_obj.company_id)
+        self.company_tokens = utils.generate_company_search_terms(self.company_name)
         
         # Mapping for secret types and their criticality weights
         self.secret_type_weights = {
@@ -62,20 +64,13 @@ class LeakAnalyzer:
         # Corporate domain patterns will be generated dynamically
         self.corporate_domain_patterns = self._generate_corporate_domain_patterns()
     
-    def _company_tokens(self) -> list[str]:
-        """Return lower-case tokens derived from company name."""
-        if not self.company_name:
-            return []
-        tokens = re.split(r"[\s,._-]+", self.company_name.lower())
-        tokens.append(self.company_name.lower())
-        return list({t for t in tokens if t})
-    
+
     def _generate_corporate_domain_patterns(self) -> dict:
         """Generate corporate domain patterns based on company name and dork."""
         patterns = {}
         
         # Get company tokens
-        company_tokens = self._company_tokens()
+        company_tokens = self.company_tokens
         
         # Add dork as additional token if it exists
         dork_tokens = []
@@ -240,7 +235,7 @@ class LeakAnalyzer:
         score = 0.0
         dork = (self.leak_obj.dork or "").lower()
         description = str(self.leak_obj.stats.repo_stats_leak_stats_table.get("description") or "")
-        company_tokens = self._company_tokens()
+        company_tokens = self.company_tokens
         
         # Factor 1: Dork relevance
         # If the dork is found in the repo name or description, it's highly relevant
