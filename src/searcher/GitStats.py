@@ -222,6 +222,7 @@ class GitParserStats:
 
     def set_ai_result(self, ai_result):
         self.repo_stats_leak_stats_table['ai_result'] = ai_result
+        self.ai_result = ai_result
     
     def get_repo_stats_leak_stats_table(self):
         return self.repo_stats_leak_stats_table

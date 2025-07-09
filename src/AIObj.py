@@ -417,8 +417,9 @@ class LLMProviderManager:
         
         for name, provider in self.providers.items():
             # Простая проверка лимитов
-            if provider["error_count"] < 3:  # Не более 3 ошибок подряд
-                # Проверка минутного лимита (упрощенная)
+            if provider["error_count"] < 3:
+                if provider.get("requests_count", 0) >= provider.get("daily_limit", float("inf")) - 50:
+                    continue
                 if current_time - provider["last_request_time"] > 60 / provider["rpm"]:
                     return provider
         
@@ -465,6 +466,10 @@ class LLMProviderManager:
                 provider["error_count"] = 0
                 
                 return response.json()
+            elif response.status_code == 429:
+                logger.warning(f"Provider {provider['name']} rate limited")
+                provider["error_count"] += 1
+                return None
             else:
                 logger.error(f"Provider {provider['name']} back with status: {response.status_code}: {response.text}")
                 provider["error_count"] += 1

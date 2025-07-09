@@ -158,7 +158,11 @@ LEAK_OBJ_MESSAGES = {
         "ai_analysis_company_unrelated": "🤖 AI Analysis: Not company-related (confidence: {confidence:.2f})",
         "ai_analysis_high_severity": "🤖 AI Analysis: High severity leak detected (score: {score:.2f})",
         "ai_analysis_error": "🤖 AI Analysis: Error occurred during analysis",
-        "ai_analysis_summary": "🤖 AI Summary: {summary}"
+        "ai_analysis_summary": "🤖 AI Summary: {summary}",
+        "high_chance": "High chance of leak",
+        "medium_chance": "Medium chance of leak",
+        "low_chance": "Low chance of leak",
+        "no_chance": "No chance of leak",
     },
     "ru": {
         "leak_found_in_section": "Обнаружена утечка в разделе {obj_type} по поиску {dork}",
@@ -182,7 +186,11 @@ LEAK_OBJ_MESSAGES = {
         "ai_analysis_company_unrelated": "🤖 ИИ Анализ: Не связано с компанией (уверенность: {confidence:.2f})",
         "ai_analysis_high_severity": "🤖 ИИ Анализ: Обнаружена утечка высокой степени серьезности (оценка: {score:.2f})",
         "ai_analysis_error": "🤖 ИИ Анализ: Произошла ошибка во время анализа",
-        "ai_analysis_summary": "🤖 ИИ Резюме: {summary}"
+        "ai_analysis_summary": "🤖 ИИ Резюме: {summary}",
+        "high_chance": "Высокая вероятность утечки",
+        "medium_chance": "Средняя вероятность утечки",
+        "low_chance": "Низкая вероятность утечки",
+        "no_chance": "Нет вероятности утечки",
     }
 }
 

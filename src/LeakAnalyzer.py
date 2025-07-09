@@ -1,13 +1,15 @@
 import re
+import math
 from src.logger import logger
 from src import constants
 from src import Connector
 from src import utils
+from src.AIObj import AIObj # Import the new AIObj
 
 class LeakAnalyzer: 
-    '''
+    """
         Class to analyze the profitability of a leak based on organization relevance and sensitive data presence
-    '''
+    """
     def __init__(self, leak_obj: any):
         self.leak_obj = leak_obj
         self.company_name = Connector.get_company_name(leak_obj.company_id)
@@ -207,7 +209,7 @@ class LeakAnalyzer:
         
         # Penalty for common public domains
         public_domains = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "mail.ru", "yandex.ru"]
-        if any(pub_domain in domain for pub_domain in public_domains):
+        if any(pub_domain in domain for pub_domains in public_domains):
             score -= 0.3
             
         return max(score, 0.0)
@@ -330,10 +332,11 @@ class LeakAnalyzer:
         score -= fork_penalty
             
         # Factor 6: AI assessment (if available and positive)
-        if self.leak_obj.stats.ai_result == 1: # Assuming 1 means AI believes it's related
-            score += 0.3
-        if self.leak_obj.stats.ai_result == 0:
-            score -= 0.3
+        # This will now use the comprehensive AI analysis from AIObj
+        if self.leak_obj.ai_analysis and self.leak_obj.ai_analysis.get('company_relevance', {}).get('is_related'):
+            score += self.leak_obj.ai_analysis.get('company_relevance', {}).get('confidence', 0.0) * 0.3 # Boost based on AI confidence
+        elif self.leak_obj.ai_analysis and not self.leak_obj.ai_analysis.get('company_relevance', {}).get('is_related'):
+            score -= self.leak_obj.ai_analysis.get('company_relevance', {}).get('confidence', 0.0) * 0.3 # Penalty based on AI confidence
 
         # Cap the score at 1.0
         score = max(score, 0.0)  # Ensure score is not negative
@@ -501,7 +504,6 @@ class LeakAnalyzer:
         # Normalize score with improved formula
         if total_leaks > 0:
             # Use logarithmic scaling for diminishing returns
-            import math
             normalized_score = total_score / (total_score + math.log(total_leaks + 1) * 5)
             
             # Bonus for multiple diverse secret types found
@@ -517,8 +519,8 @@ class LeakAnalyzer:
             normalized_score = 0.0
 
         # AI assessment boost for sensitive data (if AI can specifically assess this)
-        if self.leak_obj.stats.ai_result == 1:
-            normalized_score += 0.05  # Small boost if AI thinks it's generally relevant
+        if self.leak_obj.ai_analysis and self.leak_obj.ai_analysis.get('severity_assessment', {}).get('score', 0.0) > 0.5:
+            normalized_score += self.leak_obj.ai_analysis.get('severity_assessment', {}).get('score', 0.0) * 0.1 # Small boost if AI thinks it's generally relevant
 
         return min(round(normalized_score, 2), 1.0)
 
@@ -540,5 +542,21 @@ class LeakAnalyzer:
             "true_positive_chance": true_positive_chance,
             "false_positive_chance": false_positive_chance
         }
+
+    def get_final_assessment(self) -> str:
+        """Generates a single, overall assessment for the analyst."""
+        profitability = self.calculate_profitability()
+        true_positive_chance = profitability["true_positive_chance"]
+        lang = constants.LANGUAGE
+        if true_positive_chance >= 0.8:
+            return self.status.append(self._get_message("high_chance", lang))
+        elif true_positive_chance >= 0.5:
+            return self.status.append(self._get_message("medium_chance", lang))
+        elif true_positive_chance >= 0.2:
+            return self.status.append(self._get_message("low_chance", lang))
+        else:
+            return self.status.append(self._get_message("no_chance", lang))
+
+
 
 

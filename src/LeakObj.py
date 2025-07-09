@@ -9,8 +9,6 @@ from src import constants
 from src import utils
 from src.logger import logger
 from src.LeakAnalyzer import LeakAnalyzer
-# Lazy import для AIObj во избежание циклического импорта
-
 
 
 class LeakObj(ABC):
@@ -221,7 +219,15 @@ class LeakObj(ABC):
         self._check_stats()
         lang = constants.LANGUAGE # Assuming LANGUAGE is defined in constants.py
 
-        self.status.insert(0, self._get_message("leak_found_in_section", lang, obj_type=self.obj_type, dork=self.dork))
+        # Run AI analysis if enabled and not already run
+        if constants.AI_ANALYSIS_ENABLED and not self.ai_analysis:
+            self.run_ai_analysis_sync()
+        
+        # Get final assessment from LeakAnalyzer and insert as the first line
+        final_assessment = LeakAnalyzer(self).get_final_assessment()
+        self.status.insert(0, final_assessment)
+
+        self.status.append(self._get_message("leak_found_in_section", lang, obj_type=self.obj_type, dork=self.dork))
         
         if 'status' in self.secrets:
             for i in self.secrets['status']:
@@ -288,10 +294,10 @@ class LeakObj(ABC):
         self.status.append(self._get_message("total_leaks_found", lang, total_count=sum_leaks_count))
         self.status.append(self._get_message("full_report_length", lang, length=utils.count_nested_dict_len(self.secrets)))
         
+        # Moved profitability calculation before AI analysis to ensure AI can use it
         self.profitability_scores = LeakAnalyzer(self).calculate_profitability()
         
         if self.profitability_scores:
-            self.profitability_scores = LeakAnalyzer(self).calculate_profitability()
             self.status.append(self._get_message("profitability_scores", lang, 
                                                  org_rel=self.profitability_scores['org_relevance'],
                                                  sens_data=self.profitability_scores['sensitive_data'],
@@ -302,9 +308,8 @@ class LeakObj(ABC):
         else:
             true_positive_chance = len(self.status) / 15.0 if len(self.status) > 0 else 0.0
         
-        # Run AI analysis if available
+        # Add AI analysis to status (moved here to ensure it's after the final assessment is added)
         if constants.AI_ANALYSIS_ENABLED:
-            self.run_ai_analysis_sync()
             self._add_ai_analysis_to_status()
             
             # Update true_positive_chance based on AI analysis
@@ -314,9 +319,9 @@ class LeakObj(ABC):
                     # Combine traditional scoring with AI assessment
                     true_positive_chance = (true_positive_chance + ai_tp_prob) / 2.0
         
-        if true_positive_chance < 0.3: # Example thresholds, can be adjusted
+        if true_positive_chance < 0.2: # Example thresholds, can be adjusted
             self.lvl = 0  # 'Low'
-        elif 0.3 <= true_positive_chance < 0.7:
+        elif 0.2 <= true_positive_chance < 0.8:
             self.lvl = 1  # 'Medium'
         else:
             self.lvl = 2  # 'High'
@@ -453,3 +458,5 @@ class GlistObj(LeakObj):
 
     def __str__(self) -> str:
         return 'Glist'
+
+
