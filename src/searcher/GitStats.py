@@ -224,7 +224,7 @@ class GitParserStats:
         self.repo_stats_leak_stats_table['ai_result'] = ai_result
     
     def get_repo_stats_leak_stats_table(self):
-        return self.get_repo_stats_leak_stats_table
+        return self.repo_stats_leak_stats_table
     
     def request_page(self, url) -> requests.Response:
         token = next(constants.token_generator())

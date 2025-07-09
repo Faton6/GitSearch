@@ -63,6 +63,25 @@ COMPANY_COUNTRY_MAP: dict[str, str] = {
     "SBER": "ru",
 } # TODO
 
+TEXT_FILE_EXTS = {
+    '.txt', '.md', '.rst', '.py', '.js', '.ts', '.java', '.cpp', '.c', '.h', '.hpp',
+    '.php', '.rb', '.go', '.rs', '.sh', '.bash', '.zsh', '.fish', '.ps1', '.cmd',
+    '.html', '.htm', '.xml', '.xhtml', '.css', '.scss', '.sass', '.less',
+    '.json', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.config',
+    '.sql', '.env', '.properties', '.gradle', '.maven', '.pom', '.dockerfile',
+    '.r', '.R', '.scala', '.kt', '.swift', '.m', '.mm', '.pl', '.pm',
+    '.lua', '.vim', '.emacs', '.gitignore', '.gitconfig', '.editorconfig',
+    '.log', '.out', '.err', '.tmp', '.backup', '.bak', '.old',
+    '.csv', '.tsv', '.dat', '.data'
+}
+
+CONTEXT_WORDS = [
+            'password', 'key', 'secret', 'token', 'api', 'config', 'database', 'auth',
+            'username', 'user', 'login', 'email', 'mail', 'account', 'admin',
+            'server', 'host', 'url', 'endpoint', 'connection', 'credential',
+            'company', 'corp', 'organization', 'org', 'team', 'group',
+            'app', 'application', 'service', 'client', 'customer'
+]
 
 # AI Analysis configuration
 AI_ANALYSIS_ENABLED = True

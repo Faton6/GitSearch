@@ -140,6 +140,7 @@ class LeakObj(ABC):
                     'recommendations': self.ai_analysis.get('recommendations', {}),
                     'full_analysis': self.ai_analysis
                 }
+                self.stats.set_ai_result(self.ai_obj.ai_result)
                 logger.info(f"AI analysis completed for {self.repo_name}")
             else:
                 logger.error(f"AI analysis failed for {self.repo_name}")
@@ -172,6 +173,7 @@ class LeakObj(ABC):
                     'recommendations': self.ai_analysis.get('recommendations', {}),
                     'full_analysis': self.ai_analysis
                 }
+                self.stats.set_ai_result(self.ai_obj.ai_result)
                 logger.info(f"AI analysis completed for {self.repo_name}")
             else:
                 logger.error(f"AI analysis failed for {self.repo_name}")

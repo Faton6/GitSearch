@@ -12,25 +12,29 @@ import time
 import hashlib
 import git
 import math
+from ioc_finder import find_iocs
 
 # Project lib's import
-try:
-    from ioc_finder import find_iocs
-    IOC_FINDER_AVAILABLE = True
-except ImportError:
-    IOC_FINDER_AVAILABLE = False
-    find_iocs = None
-
 from src import Connector, constants
 from src.logger import logger, CLR
-from src.utils import (
-    pywhat_analyze, filter_url_by_repo, filter_url_by_db, 
-    exc_catcher as _exc_catcher, semantic_check_dork as _semantic_check_dork
-)
+from src import utils
 
 exclusions: tuple[str]
 with open(constants.MAIN_FOLDER_PATH / "src" / "exclude_list.txt", 'r') as fd:
     exclusions = tuple(line.rstrip() for line in fd)
+
+def _exc_catcher(func):
+    """Decorator for catching exceptions in scan methods"""
+    def wrapper(*args, **kwargs):
+        try:
+            result = func(*args, **kwargs)
+            return result
+        except subprocess.TimeoutExpired:
+            logger.error("TimeoutExpired exception in %s", func.__name__)
+        except Exception as exc:
+            logger.error("Exception in %s: %s", func.__name__, exc)
+            return 2
+    return wrapper
 
 
 class CheckerException(Exception):
@@ -57,6 +61,9 @@ class Checker:
         self.secrets = constants.AutoVivification()
         self.repo: git.Repo
         self.status = INITED
+        self.company_name = Connector.get_company_name(self.obj.company_id)
+        self.company_terms = utils.generate_company_search_terms(self.company_name)
+        self.safe_company_name = utils.sanitize_company_name(self.company_name)
         self.scan_time_limit = constants.MAX_TIME_TO_SCAN_BY_UTIL_DEEP if self.mode == 3 else constants.MAX_TIME_TO_SCAN_BY_UTIL_DEFAULT
         self.log_color = choice(tuple(CLR.values()))
         self.scans = {
@@ -85,7 +92,7 @@ class Checker:
 
     def _pywhat_analyze_names(self, match):
         all_names = []
-        res_analyze = pywhat_analyze(match, self.repos_dir)
+        res_analyze = utils.pywhat_analyze(match, self.repos_dir)
         for i in res_analyze:
             all_names.append(i['Name'])
         if len(all_names) < 1:
@@ -193,14 +200,12 @@ class Checker:
         self.secrets[scan_type] = constants.AutoVivification()
         
         try:
-            # Получаем название компании
-            company_name = Connector.get_company_name(self.obj.company_id)
-            
+         
             # Создаем список поисковых терминов
             search_terms = [self.dork]
-            if company_name:
+            if self.company_name:
                 # Добавляем название компании и его части
-                search_terms.extend(self._generate_company_search_terms(company_name))
+                search_terms.extend(self.company_terms)
             
             # Используем Python для более качественного поиска
             found_matches = self._enhanced_file_search(search_terms)
@@ -220,7 +225,7 @@ class Checker:
                 
                 # Обрезаем слишком длинные строки
                 if len(leak_text) > constants.MAX_LINE_LEAK_LEN:
-                    leak_text = self._truncate_around_match(leak_text, search_term, constants.MAX_LINE_LEAK_LEN)
+                    leak_text = self._get_context(leak_text, search_term, constants.MAX_LINE_LEAK_LEN)
                 
                 self.secrets[scan_type][f'Leak #{index}']['meaningfull'] = meaningfulness
                 self.secrets[scan_type][f'Leak #{index}']['Match'] = leak_text
@@ -246,60 +251,12 @@ class Checker:
         logger.info(f'\t- {scan_type} scan %s %s %s success', self.log_color, self.url, CLR["RESET"])
         return 0
 
-    def _generate_company_search_terms(self, company_name):
-        """Генерирует поисковые термины на основе названия компании"""
-        if not company_name:
-            return []
-        
-        terms = []
-        
-        # Добавляем полное название
-        terms.append(company_name.lower())
-        
-        # Разбиваем на части и добавляем значимые слова
-        parts = re.split(r'[\s\-_.,()&]+', company_name.lower())
-        for part in parts:
-            if len(part) > 2:  # Снижаем требования к длине
-                terms.append(part)
-        
-        # Создаем аббревиатуры
-        if len(parts) > 1:
-            # Основная аббревиатура
-            abbr = ''.join([p[0] for p in parts if p and len(p) > 0])
-            if len(abbr) > 1:
-                terms.append(abbr)
-            
-            # Аббревиатура из значимых слов (исключаем служебные)
-            stopwords = {'inc', 'ltd', 'llc', 'corp', 'corporation', 'company', 'co', 'group', 'gmbh', 'ag', 'sa'}
-            significant_parts = [p for p in parts if p and p not in stopwords and len(p) > 2]
-            if len(significant_parts) > 1:
-                sig_abbr = ''.join([p[0] for p in significant_parts])
-                if len(sig_abbr) > 1:
-                    terms.append(sig_abbr)
-        
-        # Удаляем дубликаты и слишком короткие термины
-        terms = list(set([term for term in terms if len(term) > 1]))
-        
-        logger.debug(f'Generated company terms from "{company_name}": {terms}')
-        return terms
+    
 
     def _enhanced_file_search(self, search_terms):
         """Улучшенный поиск в файлах с учетом размера файлов"""
         found_matches = []
-        
-        # Расширения текстовых файлов (расширенный список)
-        text_exts = {
-            '.txt', '.md', '.rst', '.py', '.js', '.ts', '.java', '.cpp', '.c', '.h', '.hpp',
-            '.php', '.rb', '.go', '.rs', '.sh', '.bash', '.zsh', '.fish', '.ps1', '.cmd',
-            '.html', '.htm', '.xml', '.xhtml', '.css', '.scss', '.sass', '.less',
-            '.json', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.config',
-            '.sql', '.env', '.properties', '.gradle', '.maven', '.pom', '.dockerfile',
-            '.r', '.R', '.scala', '.kt', '.swift', '.m', '.mm', '.pl', '.pm',
-            '.lua', '.vim', '.emacs', '.gitignore', '.gitconfig', '.editorconfig',
-            '.log', '.out', '.err', '.tmp', '.backup', '.bak', '.old',
-            '.csv', '.tsv', '.dat', '.data'
-        }
-        
+                
         # Размер файла в байтах (10 МБ)
         MAX_FILE_SIZE_FOR_PYTHON = 10 * 1024 * 1024  # 10 MB
         
@@ -316,7 +273,7 @@ class Checker:
                     
                     # Проверяем расширение или известные файлы без расширений
                     is_text_file = (
-                        ext in text_exts or 
+                        ext in constants.TEXT_FILE_EXTS or 
                         filename_lower in {
                             'readme', 'license', 'makefile', 'changelog', 'authors', 'contributors',
                             'dockerfile', 'gemfile', 'rakefile', 'gruntfile', 'gulpfile',
@@ -485,7 +442,7 @@ class Checker:
             return 0
         
         # Сначала используем оригинальную проверку для совместимости
-        original_check = _semantic_check_dork(text, term)
+        original_check = utils.semantic_check_dork(text, term)
         if original_check:
             return original_check
         
@@ -498,18 +455,8 @@ class Checker:
         if len(text) > 50 and not re.search(r'[a-zA-Z]{3,}', text):
             return 0
         
-        # Для названий компаний проверяем менее строго
-        # Расширенный список контекстных слов
-        context_words = [
-            'password', 'key', 'secret', 'token', 'api', 'config', 'database', 'auth',
-            'username', 'user', 'login', 'email', 'mail', 'account', 'admin',
-            'server', 'host', 'url', 'endpoint', 'connection', 'credential',
-            'company', 'corp', 'organization', 'org', 'team', 'group',
-            'app', 'application', 'service', 'client', 'customer'
-        ]
-        
         # Проверяем наличие контекстных слов в тексте
-        context_score = sum(1 for word in context_words if word in text.lower())
+        context_score = sum(1 for word in constants.CONTEXT_WORDS if word in text.lower())
         
         # Если термин длинный (вероятно, название компании), то менее строгая проверка
         if len(term) > 4:
@@ -739,7 +686,7 @@ class Checker:
                         extra_data={'IOC_Type': ioc_type}
                     )
                     
-                    result['meaningfull'] = _semantic_check_dork(str(ioc), self.dork)
+                    result['meaningfull'] = utils.semantic_check_dork(str(ioc), self.dork)
                     self.secrets[scan_type][f'IOC #{processed_count}'] = result
                     processed_count += 1
             
@@ -793,7 +740,7 @@ class Checker:
         company_name = Connector.get_company_name(self.obj.company_id)
         
         # Создаем кастомные детекторы
-        custom_detectors = self._generate_company_detectors(company_name)
+        custom_detectors = self._generate_company_detectors(self.company_name, self.company_terms, self.safe_company_name)
         
         config_content = {
             'detectors': custom_detectors
@@ -810,7 +757,7 @@ class Checker:
             
         return config_path
 
-    def _generate_company_detectors(self, company_name):
+    def _generate_company_detectors(self, company_name, company_terms, safe_name):
         """Генерирует кастомные детекторы на основе названия компании"""
         detectors = []
         
@@ -819,10 +766,7 @@ class Checker:
         detectors.append(self._create_config_detector())
         
         # Если есть название компании, добавляем специфичные детекторы
-        if company_name:
-            company_terms = self._generate_company_search_terms(company_name)
-            safe_name = self._sanitize_company_name(company_name)
-            
+        if company_name: 
             # Создаем детекторы для компании
             detectors.extend([
                 self._create_company_credentials_detector(safe_name, company_terms),
@@ -947,10 +891,6 @@ class Checker:
                 'exclude_words': ['example@', 'test@', 'demo@']
             }
     
-    def _sanitize_company_name(self, company_name):
-        """Создает безопасное имя компании для использования в детекторах"""
-        return company_name.lower().replace(" ", "-").replace(".", "-").replace("(", "").replace(")", "").replace("/", "-")
-
     def _build_trufflehog_command(self, config_path):
         """Строит улучшенную команду TruffleHog"""
         base_command = [
@@ -1042,14 +982,13 @@ class Checker:
 
     def _filter_and_enhance_results(self, results):
         """Фильтрует и улучшает результаты TruffleHog"""
-        company_name = Connector.get_company_name(self.obj.company_id)
         enhanced_results = []
         
         for result in results:
             # Проверяем релевантность результата
-            if self._is_result_relevant(result, company_name):
+            if self._is_result_relevant(result, self.company_name):
                 # Добавляем дополнительную информацию
-                result['CompanyRelevance'] = self._calculate_company_relevance(result, company_name)
+                result['CompanyRelevance'] = self._calculate_company_relevance(result, self.company_name)
                 result['ContextualScore'] = self._calculate_contextual_score(result)
                 enhanced_results.append(result)
         
@@ -1061,13 +1000,15 @@ class Checker:
         ), reverse=True)
         
         return enhanced_results
-
-    def _is_company_specific_pattern(self, text, company_name):
+    def _is_company_specific_pattern(self, text, company_name=None):
         """Проверяет наличие специфических паттернов компании в тексте"""
+        if company_name is None:
+            company_name = self.company_name
+
         if not company_name:
             return False
-            
-        company_terms = self._generate_company_search_terms(company_name)
+
+        company_terms = self.company_terms if company_name == self.company_name else utils.generate_company_search_terms(company_name)
         
         # Проверяем логины с цифрами (например, vtb123, company456)
         for term in company_terms:
@@ -1086,8 +1027,10 @@ class Checker:
         
         return False
 
-    def _calculate_company_relevance(self, result, company_name):
+    def _calculate_company_relevance(self, result, company_name=None):
         """Вычисляет релевантность результата для компании"""
+        if company_name is None:
+            company_name = self.company_name
         if not company_name:
             return 0.0
         
@@ -1105,7 +1048,7 @@ class Checker:
         full_text = ' '.join(str(source) for source in text_sources if source).lower()
         
         # Проверяем наличие компанейских терминов
-        company_terms = self._generate_company_search_terms(company_name)
+        company_terms = self.company_terms if company_name == self.company_name else generate_company_search_terms(company_name)
         for term in company_terms:
             if term.lower() in full_text:
                 # Вес зависит от длины термина (длинные термины более специфичны)
@@ -1186,7 +1129,7 @@ class Checker:
             company_name = Connector.get_company_name(self.obj.company_id)
             
             # Проверяем специфические паттерны компании
-            if self._is_company_specific_pattern(raw_data, company_name):
+            if self._is_company_specific_pattern(raw_data, self.company_name):
                 return 1
             
             # Длинные секреты более вероятно реальные
@@ -1209,8 +1152,7 @@ class Checker:
         source_metadata = result.get('SourceMetadata', {})
         if isinstance(source_metadata, dict):
             data_text = str(source_metadata.get('Data', ''))
-            company_name = Connector.get_company_name(self.obj.company_id)
-            if self._is_company_specific_pattern(data_text, company_name):
+            if self._is_company_specific_pattern(data_text, self.company_name):
                 return 1
         
         # По умолчанию считаем осмысленным (лучше ложное срабатывание, чем пропуск)
@@ -1237,8 +1179,10 @@ class Checker:
         
         return entropy
 
-    def _is_result_relevant(self, result, company_name):
+    def _is_result_relevant(self, result, company_name=None):
         """Проверяет релевантность результата"""
+        if company_name is None:
+            company_name = self.company_name
         # Всегда включаем проверенные результаты
         if result.get('Verified', False):
             return True
@@ -1258,7 +1202,7 @@ class Checker:
         
         # Проверяем наличие компанейских терминов
         if company_name:
-            company_terms = self._generate_company_search_terms(company_name)
+            company_terms = self.company_terms if company_name == self.company_name else utils.generate_company_search_terms(company_name)
             for term in company_terms:
                 if term.lower() in context_text:
                     return True
@@ -1337,7 +1281,7 @@ class Checker:
                 processed_result['Match'] = match_key[:constants.MAX_LINE_LEAK_LEN] + '...'
             
             # Добавляем семантическую проверку
-            processed_result['meaningfull'] = _semantic_check_dork(processed_result['Match'], self.dork)
+            processed_result['meaningfull'] = utils.semantic_check_dork(processed_result['Match'], self.dork)
             
             # Сохраняем результат
             self.secrets[scan_type][f'Leak #{processed_count}'] = processed_result
@@ -1377,13 +1321,12 @@ class Checker:
     def _collect_repo_text(self):
         """Собирает текст из всех файлов репозитория"""
         repo_text = ""
-        text_exts = {'.txt', '.md', '.py', '.js', '.java', '.cpp', '.c', '.h', '.php', '.rb', '.go', '.rs'}
         
         try:
             for root, dirs, files in os.walk(self.repos_dir):
                 for file in files:
                     _, ext = os.path.splitext(file.lower())
-                    if ext in text_exts:
+                    if ext in constants.TEXT_FILE_EXTS:
                         file_path = os.path.join(root, file)
                         try:
                             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
