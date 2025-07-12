@@ -6,6 +6,7 @@ import time
 import os
 import requests
 import pymysql
+from typing import Any, Dict, Union, Set, Tuple
 
 # Project lib's import
 from src import constants
@@ -39,6 +40,26 @@ from src.logger import logger
 
 requests.urllib3.disable_warnings()
 
+def is_this_need_to_analysis(leak_obj):
+    is_this_need_to_analysis_flag = True
+    if not leak_obj.ready_to_send:
+        leak_obj._check_status()
+    scan_error = leak_obj.secrets.get("Scan error") or leak_obj.secrets.get("Error")
+    if scan_error and leak_obj.secrets and any(keyword in leak_obj.secrets.get(scan_error) for keyword in ["error", "oversize", "not analyze"]):
+        is_this_need_to_analysis_flag = False
+        
+    company_rel = leak_obj.ai_analysis.get('company_relevance', {})
+    if not isinstance(company_rel, dict):
+        company_rel = {}
+    
+    confidence = company_rel.get('confidence', 0.0)
+    
+    if leak_obj.profitability_scores['org_relevance'] < 0.25 and confidence < 0.25 and not company_rel.get('is_related', True):
+        is_this_need_to_analysis_flag = False
+        
+    if leak_obj.profitability_scores['false_positive_chance'] > 0.25 and leak_obj.profitability_scores['true_positive_chance'] < 0.35:
+        is_this_need_to_analysis_flag = False    
+    return is_this_need_to_analysis_flag
 
 def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 - update obj in DB
     res_backup = constants.AutoVivification()
@@ -66,36 +87,42 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
                 return
 
             if mode == 0:
-                existing_urls = load_existing_leak_urls(conn, cursor)
+                existing_urls = dump_from_DB(mode=1)
                 new_leaks_backup = constants.AutoVivification()
                 new_leak_counter = 1
 
-                for scan_key in constants.RESULT_MASS.keys():
+                for scan_key in constants.RESULT_MASS:
                     for scanObj in constants.RESULT_MASS[scan_key].keys():
                         leak_obj = constants.RESULT_MASS[scan_key][scanObj]
                         leak_id_existing = existing_urls.get(leak_obj.repo_url)
 
-                        if leak_id_existing:
-                            logger.info(f"Updating existing leak for URL: {leak_obj.repo_url} (Leak ID: {leak_id_existing})")
-                            update_existing_leak(leak_id_existing, leak_obj, conn, cursor)
-                        else:
-                            logger.info(f"Preparing new leak for URL: {leak_obj.repo_url}")
-                            data_leak = {
-                                'tname': 'leak', 'dname': 'GitLeak', 'action': 'add',
-                                'content': leak_obj.write_obj()
+                        if leak_id_existing and leak_id_existing != 0:
+                            logger.info(f"Updating existing leak for URL: {leak_obj.repo_url} (Leak ID: {leak_id_existing[1]})")
+                            update_existing_leak(leak_id_existing[1], leak_obj)
+                            continue
+                        if not is_this_need_to_analysis(leak_obj):
+                            leak_obj.res_check = constants.RESULT_CODE_LEAK_NOT_FOUND
+                        if (leak_obj.write_obj()['leak_type'] == 'None'
+                                or leak_obj.repo_url in dumped_repo_list):
+                            continue
+                        
+                        logger.info(f"Preparing new leak for URL: {leak_obj.repo_url}")
+                        data_leak = {
+                            'tname': 'leak', 'dname': 'GitLeak', 'action': 'add',
+                            'content': leak_obj.write_obj()
+                        }
+                        data_row_report = {
+                            'tname': 'raw_report', 'dname': 'GitLeak', 'action': 'add',
+                            'content': {
+                                'leak_id': new_leak_counter, 'report_name': leak_obj.repo_url,
+                                'raw_data': str(base64.b64encode(bz2.compress(json.dumps(leak_obj.secrets, indent=4).encode('utf-8'))))[2:-1],
+                                'ai_report': str(base64.b64encode(bz2.compress(json.dumps(leak_obj.ai_analysis, indent=4).encode('utf-8'))))[2:-1]
                             }
-                            data_row_report = {
-                                'tname': 'raw_report', 'dname': 'GitLeak', 'action': 'add',
-                                'content': {
-                                    'leak_id': new_leak_counter, 'report_name': leak_obj.repo_url,
-                                    'raw_data': str(base64.b64encode(bz2.compress(json.dumps(leak_obj.secrets, indent=4).encode('utf-8'))))[2:-1],
-                                    'ai_report': str(base64.b64encode(bz2.compress(json.dumps(leak_obj.ai_report, indent=4).encode('utf-8'))))[2:-1]
-                                }
-                            }
-                            leak_stats_table, accounts_table, commiters_table = leak_obj.get_stats()
-                            new_leaks_backup[new_leak_counter] = [data_leak, data_row_report, leak_stats_table, accounts_table, commiters_table]
-                            dumped_repo_list.append(leak_obj.repo_url)
-                            new_leak_counter += 1
+                        }
+                        leak_stats_table, accounts_table, commiters_table = leak_obj.get_stats()
+                        new_leaks_backup[new_leak_counter] = [data_leak, data_row_report, leak_stats_table, accounts_table, commiters_table]
+                        dumped_repo_list.append(leak_obj.repo_url)
+                        new_leak_counter += 1
                 
                 if new_leaks_backup:
                     with open(report_filename, 'w') as file:
@@ -623,3 +650,40 @@ def update_leaks_from_report(filename: str, conn, cursor):
                     "INSERT INTO raw_report (leak_id, report_name, raw_data, ai_report) VALUES (%s, %s, %s, %s)",
                     (leak_id, report_content['report_name'], enc_raw, enc_ai),
                 )
+                
+def merge_reports(old: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Merge two report dictionaries. Preserves existing data in 'old' and merges new data from 'new'.
+    
+    - Merges content of keys like 'gitsecrets', 'trufflehog', etc.
+    - Overwrites 'message' if new one is present.
+    - For AI reports, replaces the whole structure if new is not empty.
+    """
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return old if old else new
+
+    # Список ключей, которые нужно слить по содержимому
+    merge_keys = {'gitsecrets', 'trufflehog', 'grepscan', 'deepsecrets', 'gitleaks'}
+
+    for key in merge_keys:
+        if key in new:
+            if key not in old or not isinstance(old[key], dict):
+                old[key] = {}
+            # Объединяем внутренние структуры (например, списки найденных утечек)
+            if isinstance(new[key], dict):
+                # Пример: merge по типам утечек
+                for subkey, value in new[key].items():
+                    if value:  # Не добавляем пустые значения
+                        old[key][subkey] = value
+            elif new[key]:  # Если не dict, просто заменяем, если не пусто
+                old[key] = new[key]
+
+    # Перезаписываем сообщение, если оно есть в new
+    if 'message' in new and new['message']:
+        old['message'] = new['message']
+
+    # Для ai_report — полная замена, если в new что-то есть
+    if 'ai_report' in new and new['ai_report']:
+        old['ai_report'] = new['ai_report']
+
+    return old

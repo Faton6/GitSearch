@@ -68,16 +68,18 @@ class Checker:
         self.log_color = choice(tuple(CLR.values()))
         self.scans = {
             'gitleaks': self.gitleaks_scan,
-            'gitsecrets': self.gitsecrets_scan,
             'trufflehog': self.trufflehog_scan,
-            'grepscan': self.grep_scan,
-            'deepsecrets': self.deepsecrets_scan
+            'detect_secrets': self.detect_secrets_scan,
+            'kingfisher': self.kingfisher_scan,
+            'grepscan': self.grep_scan
         }
 
         self.deep_scans = {
             'gitleaks': self.gitleaks_scan,
             'gitsecrets': self.gitsecrets_scan,
             'grepscan': self.grep_scan,
+            'detect_secrets': self.detect_secrets_scan,
+            'kingfisher': self.kingfisher_scan,
             'deepsecrets': self.deepsecrets_scan,
             'ioc_finder': self.ioc_finder_scan,
             'ai_deep_scan': self.ai_deep_scan,
@@ -163,26 +165,21 @@ class Checker:
                 if res == 2:
                     logger.error('Excepted error in scan, check privious log!')
                 elif res == 3:
-                    logger.info(f'Canceling scan in repo: {"/".join(self.url.split("/")[-2:])}')
+                    logger.info(f'Canceling {method} scan in repo: {"/".join(self.url.split("/")[-2:])}')
 
         os.chdir(cur_dir)
         
         # Проверяем, есть ли хотя бы один сканер с результатами
         has_results = any(
             scan_type in self.secrets and 
-            len(self.secrets[scan_type]) > 0 and
-            not (len(self.secrets[scan_type]) == 1 and 'Info' in self.secrets[scan_type])
+            len(self.secrets[scan_type]) > 0
             for scan_type in self.secrets
         )
         
         if not has_results:
             logger.info(f'No meaningful results found in {self.url} by any scanner')
             # Добавляем информативную запись вместо пустого результата
-            self.secrets['scan_summary'] = {
-                'message': f'No leaks found for dork "{self.dork}" in repository',
-                'scanners_used': list(self.scans.keys()),
-                'scan_results': scan_results
-            }
+            self.secrets['message'] = f'No leaks found for dork "{self.dork}" in repository'
         
         logger.info('Scanned: %s | %s %s %s ', self.dork, self.log_color, self.url,
                     CLR["RESET"])
@@ -200,7 +197,9 @@ class Checker:
         self.secrets[scan_type] = constants.AutoVivification()
         
         try:
-         
+            if not os.path.isdir(self.repos_dir):
+                logger.info('Repository directory %s removed before grep_scan', self.repos_dir)
+                return 3
             # Создаем список поисковых терминов
             search_terms = [self.dork]
             if self.company_name:
@@ -238,10 +237,8 @@ class Checker:
             
             # Если не найдено ни одного совпадения, добавляем информативную запись
             if len(found_matches) == 0:
-                self.secrets[scan_type]['Info'] = f'No matches found for terms: {", ".join(search_terms)}'
                 logger.info(f'No matches found in {self.url} for terms: {", ".join(search_terms)}')
             elif meaningful_count == 0:
-                self.secrets[scan_type]['Info'] = f'Found {len(found_matches)} matches but none were meaningful'
                 logger.info(f'Found {len(found_matches)} matches in {self.url} but none were meaningful')
                 
         except Exception as ex:
@@ -255,10 +252,11 @@ class Checker:
 
     def _enhanced_file_search(self, search_terms):
         """Улучшенный поиск в файлах с учетом размера файлов"""
+            
         found_matches = []
                 
-        # Размер файла в байтах (10 МБ)
-        MAX_FILE_SIZE_FOR_PYTHON = 10 * 1024 * 1024  # 10 MB
+        # Размер файла в байтах (2 МБ)
+        MAX_FILE_SIZE_FOR_PYTHON = 2 * 1024 * 1024  # 2 MB
         
         try:
             for root, dirs, files in os.walk('.'):
@@ -275,11 +273,11 @@ class Checker:
                     is_text_file = (
                         ext in constants.TEXT_FILE_EXTS or 
                         filename_lower in {
-                            'readme', 'license', 'makefile', 'changelog', 'authors', 'contributors',
-                            'dockerfile', 'gemfile', 'rakefile', 'gruntfile', 'gulpfile',
-                            'package', 'requirements', 'setup', 'build', 'install'
+                            'readme', 'license', 'changelog', 'authors', 'contributors',
+                            'gemfile', 'rakefile', 'gruntfile', 'gulpfile',
+                            'package', 'requirements'
                         } or
-                        filename_lower.startswith(('readme.', 'license.', 'changelog.', 'install.')) or
+                        filename_lower.startswith(('license.', 'changelog.', 'install.')) or
                         filename_lower.endswith(('.example', '.sample', '.template', '.dist'))
                     )
                     
@@ -306,13 +304,17 @@ class Checker:
                             return found_matches[:constants.MAX_UTIL_RES_LINES]
                             
                     except Exception as ex:
-                        logger.debug(f'Error processing file {file_path}: {ex}')
+                        logger.error(f'Error processing file {file_path}: {ex}')
                         continue
-                        
+        except FileNotFoundError:
+            logger.info(f'Error in file search: {ex}')
+            raise                
+        
         except Exception as ex:
-            logger.debug(f'Error in file search: {ex}')
+            logger.error(f'Error in file search: {ex}')
         
         return found_matches
+
 
     def _search_small_file_with_python(self, file_path, search_terms):
         """Поиск в небольших файлах с помощью Python"""
@@ -551,8 +553,6 @@ class Checker:
         
         # Проверяем, есть ли найденные утечки
         if not stderr_output or len(stderr_output) == 0:
-            # Нет найденных утечек
-            self.secrets[scan_type]['Info'] = 'No secrets found by git-secrets'
             logger.info(f'\t- {scan_type} scan %s %s %s success, no secrets found', 
                        self.log_color, self.url, CLR["RESET"])
             return 0
@@ -606,14 +606,143 @@ class Checker:
         
         processed_count = self._process_scan_results(scan_type, lines, process_gitsecrets_result)
         
-        if processed_count == 0:
-            self.secrets[scan_type]['Info'] = 'Git-secrets completed but no meaningful results found'
-        
         logger.info(f'\t- {scan_type} scan %s %s %s success, processed {processed_count} results', 
                    self.log_color, self.url, CLR["RESET"])
         
         return 0
 
+    def detect_secrets_scan(self):
+        scan_type = 'detect_secrets'
+        self.secrets[scan_type] = constants.AutoVivification()
+
+        ds_bin = shutil.which('detect-secrets')
+        if not ds_bin:
+            self.secrets[scan_type]['Info'] = 'detect-secrets not installed'
+            logger.info(f'\t- {scan_type} scan %s %s %s success (tool not available)',
+                        self.log_color, self.url, CLR["RESET"])
+            return 0
+
+        cmd = [ds_bin, 'scan', '--all-files']
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                cwd=self.repos_dir,
+                timeout=self.scan_time_limit
+            )
+        except subprocess.TimeoutExpired:
+            logger.error(f'\t- {scan_type} timeout occured in repository %s %s %s',
+                         self.log_color, self.url, CLR["RESET"])
+            return 2
+        except Exception as ex:
+            logger.error(f'\t- Error in repository %s %s %s {scan_type}: %s',
+                         self.log_color, self.url, CLR["RESET"], ex)
+            return 2
+
+        try:
+            output = json.loads(result.stdout)
+        except Exception as ex:
+            logger.error(f'Failed to parse detect-secrets output: {ex}')
+            return 2
+
+        results = []
+        for file_path, secrets in output.get('results', {}).items():
+            for sec in secrets:
+                line_num = sec.get('line_number')
+                line_text = ''
+                abs_path = os.path.join(self.repos_dir, file_path)
+                try:
+                    with open(abs_path, 'r', encoding='utf-8', errors='ignore') as fh:
+                        lines = fh.readlines()
+                        if line_num and 0 < line_num <= len(lines):
+                            line_text = lines[line_num - 1].strip()
+                except Exception:
+                    pass
+                result_entry = self._create_standard_result(
+                    match=line_text,
+                    file_path=f"{file_path}:{line_num}",
+                    extra_data={'SecretType': sec.get('type'),
+                                'Verified': sec.get('is_verified')}
+                )
+                results.append(result_entry)
+
+        processed_count = self._process_scan_results(scan_type, results, lambda x, _: x)
+
+        if processed_count == 0:
+            self.secrets[scan_type]['Info'] = 'detect-secrets completed but no meaningful results found'
+
+        logger.info(f'\t- {scan_type} scan %s %s %s success, processed {processed_count} results',
+                    self.log_color, self.url, CLR["RESET"])
+
+        return 0
+
+    @_exc_catcher
+    def kingfisher_scan(self):
+        scan_type = 'kingfisher'
+        self.secrets[scan_type] = constants.AutoVivification()
+
+        kf_bin = shutil.which('kingfisher')
+        if not kf_bin:
+            self.secrets[scan_type]['Info'] = 'kingfisher not installed'
+            logger.info(f'\t- {scan_type} scan %s %s %s success (tool not available)',
+                        self.log_color, self.url, CLR["RESET"])
+            return 0
+
+        cmd = [
+            kf_bin, 'scan', self.repos_dir, '--format', 'json',
+            '--no-update-check', '--git-history', 'none', '--confidence', 'low', '-q'
+        ]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.scan_time_limit
+            )
+        except subprocess.TimeoutExpired:
+            logger.error(f'\t- {scan_type} timeout occured in repository %s %s %s',
+                         self.log_color, self.url, CLR["RESET"])
+            return 2
+        except Exception as ex:
+            logger.error(f'\t- Error in repository %s %s %s {scan_type}: %s',
+                         self.log_color, self.url, CLR["RESET"], ex)
+            return 2
+
+        json_segments = self._extract_json_segments(result.stdout)
+        if not json_segments:
+            self.secrets[scan_type]['Info'] = 'No findings'
+            logger.info(f'\t- {scan_type} scan %s %s %s success, no findings',
+                        self.log_color, self.url, CLR["RESET"])
+            return 0
+
+        findings = json_segments[0] if isinstance(json_segments[0], list) else []
+        results = []
+        for item in findings:
+            rule_id = item.get('id', '')
+            for match in item.get('matches', []):
+                finding = match.get('finding', {})
+                snippet = finding.get('snippet', '').strip()
+                file_path = finding.get('path', '')
+                line_num = finding.get('line')
+                result_entry = self._create_standard_result(
+                    match=snippet,
+                    file_path=f"{file_path}:{line_num}" if line_num else file_path,
+                    extra_data={'Rule': rule_id, 'Confidence': finding.get('confidence')}
+                )
+                results.append(result_entry)
+
+        processed_count = self._process_scan_results(scan_type, results, lambda x, _: x)
+
+        if processed_count == 0:
+            self.secrets[scan_type]['Info'] = 'Kingfisher completed but no meaningful results found'
+
+        logger.info(f'\t- {scan_type} scan %s %s %s success, processed {processed_count} results',
+                    self.log_color, self.url, CLR["RESET"])
+
+        return 0
+    
     @_exc_catcher
     def deepsecrets_scan(self):
         scan_type = 'deepsecrets'
@@ -667,11 +796,6 @@ class Checker:
         scan_type = 'ioc_finder'
         self.secrets[scan_type] = constants.AutoVivification()
         
-        if not IOC_FINDER_AVAILABLE:
-            self.secrets[scan_type]['Info'] = 'IOC finder library not available'
-            logger.info(f'\t- {scan_type} scan %s %s %s success (library not available)', self.log_color, self.url, CLR["RESET"])
-            return 0
-        
         try:
             # Собираем текст из файлов репозитория
             repo_text = self._collect_repo_text()
@@ -702,6 +826,7 @@ class Checker:
         
         return 0
 
+    
     @_exc_catcher
     def ai_deep_scan(self):
         """AI глубокое сканирование"""

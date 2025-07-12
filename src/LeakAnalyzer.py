@@ -4,7 +4,6 @@ from src.logger import logger
 from src import constants
 from src import Connector
 from src import utils
-from src.AIObj import AIObj # Import the new AIObj
 
 class LeakAnalyzer: 
     """
@@ -543,19 +542,28 @@ class LeakAnalyzer:
             "false_positive_chance": false_positive_chance
         }
 
+    def _get_message(self, key: str, lang: str = "ru", **kwargs) -> str:
+        template = constants.LEAK_OBJ_MESSAGES.get(
+            lang, constants.LEAK_OBJ_MESSAGES["en"]
+        ).get(key, "")
+        try:
+            return template.format(**kwargs)
+        except Exception:
+            return template
+    
     def get_final_assessment(self) -> str:
         """Generates a single, overall assessment for the analyst."""
         profitability = self.calculate_profitability()
         true_positive_chance = profitability["true_positive_chance"]
         lang = constants.LANGUAGE
         if true_positive_chance >= 0.8:
-            return self.status.append(self._get_message("high_chance", lang))
+            return self._get_message("high_chance", lang)
         elif true_positive_chance >= 0.5:
-            return self.status.append(self._get_message("medium_chance", lang))
+            return self._get_message("medium_chance", lang)
         elif true_positive_chance >= 0.2:
-            return self.status.append(self._get_message("low_chance", lang))
+            return self._get_message("low_chance", lang)
         else:
-            return self.status.append(self._get_message("no_chance", lang))
+            return self._get_message("no_chance", lang)
 
 
 

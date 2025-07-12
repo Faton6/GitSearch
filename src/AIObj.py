@@ -41,7 +41,7 @@ class AIObj(ABC):
         
         # Результаты анализа
         self.ai_result = -1  # Для обратной совместимости (0/1/-1)
-        self.ai_report = {'Thinks': 'Not state'}
+        
         self.ai_analysis = None  # Расширенный анализ
         
         # Информация о компании
@@ -197,17 +197,14 @@ class AIObj(ABC):
         if analysis_data:
             self.ai_analysis = analysis_data
             self.ai_result = 1 if analysis_data.get("company_relevance", {}).get("is_related") else 0
-            self.ai_report = analysis_data
             self.ai_analysis_completed = True
             self.ai_requested = True
             return analysis_data
 
         if content in {"0", "1"}:
             self.ai_result = int(content)
-            self.ai_report = content
         else:
             self.ai_result = -1
-            self.ai_report = content
 
         self.ai_requested = True
         return None
@@ -327,13 +324,13 @@ class AIObj(ABC):
                                                 temperature=constants.AI_CONFIG['temperature'],
                                                 model=constants.AI_CONFIG['model'])
             if ai_response and ai_response.choices:
-                self.ai_report = ai_response.choices[0].message.content.strip()
-                if self.ai_report == '0':
+                self.ai_analysis = ai_response.choices[0].message.content.strip()
+                if self.ai_analysis == '0':
                     self.ai_result = 0
-                elif self.ai_report == '1':
+                elif self.ai_analysis == '1':
                     self.ai_result = 1
                 else:
-                    logger.warning(f"AI returned unexpected output: {self.ai_report}")
+                    logger.warning(f"AI returned unexpected output: {self.ai_analysis}")
                     self.ai_result = -1
             else:
                 logger.warning("AI response was empty or malformed.")

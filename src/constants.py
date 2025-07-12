@@ -34,6 +34,7 @@ GITHUB_REPO_COUNT_AT_REQUEST_LIMIT: int = 1000  # Github api restriction https:/
 GITHUB_REQUEST_REPO_PER_PAGE: int = 100
 RESULT_CODES = ['1', '2', '3']  # Field from DB that conatain status if founded leak
 RESULT_CODE_TO_DEEPSCAN = 5
+RESULT_CODE_LEAK_NOT_FOUND = 0
 RESULT_CODE_TO_SEND = 4
 all_dork_counter = 0 # quantity of all dorks
 # Dork counterts
@@ -54,6 +55,13 @@ LOW_LVL_THRESHOLD = 5  # low lvl of leaks - from 0 to LVL_LOW_THRESHOLD - 1
 MEDIUM_LOW_THRESHOLD = 15
 LANGUAGE = 'ru'  # default language for messages
 
+# AI Analysis configuration
+AI_ANALYSIS_ENABLED = True
+AI_ANALYSIS_TIMEOUT = 30  # seconds
+AI_MAX_CONTEXT_LENGTH = 4000  # characters
+AI_COMPANY_RELEVANCE_THRESHOLD = 0.5
+AI_TRUE_POSITIVE_THRESHOLD = 0.6
+
 COUNTRY_PROFILING: bool = True
 COMPANY_COUNTRY_MAP_DEFAULT: str = "ru"  # Default country for companies without specific mapping
 COMPANY_COUNTRY_MAP: dict[str, str] = {
@@ -63,32 +71,10 @@ COMPANY_COUNTRY_MAP: dict[str, str] = {
     "SBER": "ru",
 } # TODO
 
-TEXT_FILE_EXTS = {
-    '.txt', '.md', '.rst', '.py', '.js', '.ts', '.java', '.cpp', '.c', '.h', '.hpp',
-    '.php', '.rb', '.go', '.rs', '.sh', '.bash', '.zsh', '.fish', '.ps1', '.cmd',
-    '.html', '.htm', '.xml', '.xhtml', '.css', '.scss', '.sass', '.less',
-    '.json', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.config',
-    '.sql', '.env', '.properties', '.gradle', '.maven', '.pom', '.dockerfile',
-    '.r', '.R', '.scala', '.kt', '.swift', '.m', '.mm', '.pl', '.pm',
-    '.lua', '.vim', '.emacs', '.gitignore', '.gitconfig', '.editorconfig',
-    '.log', '.out', '.err', '.tmp', '.backup', '.bak', '.old',
-    '.csv', '.tsv', '.dat', '.data'
-}
 
-CONTEXT_WORDS = [
-            'password', 'key', 'secret', 'token', 'api', 'config', 'database', 'auth',
-            'username', 'user', 'login', 'email', 'mail', 'account', 'admin',
-            'server', 'host', 'url', 'endpoint', 'connection', 'credential',
-            'company', 'corp', 'organization', 'org', 'team', 'group',
-            'app', 'application', 'service', 'client', 'customer'
-]
-
-# AI Analysis configuration
-AI_ANALYSIS_ENABLED = True
-AI_ANALYSIS_TIMEOUT = 30  # seconds
-AI_MAX_CONTEXT_LENGTH = 4000  # characters
-AI_COMPANY_RELEVANCE_THRESHOLD = 0.5
-AI_TRUE_POSITIVE_THRESHOLD = 0.6
+dork_dict_from_DB: dict = {}
+dork_list_from_file: list = []
+url_from_DB: dict = {}
 
 
 tracemalloc.start()
@@ -133,7 +119,25 @@ else:
     url_DB = CONFIG_FILE['url_DB']
     token_DB = CONFIG_FILE['token_DB']
 
+TEXT_FILE_EXTS = {
+    '.txt', '.md', '.rst', '.py', '.js', '.ts', '.java', '.cpp', '.c', '.h', '.hpp',
+    '.php', '.rb', '.go', '.rs', '.sh', '.bash', '.zsh', '.fish', '.ps1', '.cmd',
+    '.html', '.htm', '.xml', '.xhtml', '.css', '.scss', '.sass', '.less',
+    '.json', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.config',
+    '.sql', '.env', '.properties', '.gradle', '.maven', '.pom', '.dockerfile',
+    '.r', '.R', '.scala', '.kt', '.swift', '.m', '.mm', '.pl', '.pm',
+    '.lua', '.vim', '.emacs', '.gitignore', '.gitconfig', '.editorconfig',
+    '.log', '.out', '.err', '.tmp', '.backup', '.bak', '.old',
+    '.csv', '.tsv', '.dat', '.data'
+}
 
+CONTEXT_WORDS = [
+            'password', 'key', 'secret', 'token', 'api', 'config', 'database', 'auth',
+            'username', 'user', 'login', 'email', 'mail', 'account', 'admin',
+            'server', 'host', 'url', 'endpoint', 'connection', 'credential',
+            'company', 'corp', 'organization', 'org', 'team', 'group',
+            'app', 'application', 'service', 'client', 'customer'
+]
 
 LEAK_OBJ_MESSAGES = {
     "en": {
