@@ -45,7 +45,7 @@ def is_this_need_to_analysis(leak_obj):
     if not leak_obj.ready_to_send:
         leak_obj._check_status()
     scan_error = leak_obj.secrets.get("Scan error") or leak_obj.secrets.get("Error")
-    if scan_error and leak_obj.secrets and any(keyword in leak_obj.secrets.get(scan_error) for keyword in ["error", "oversize", "not analyze"]):
+    if scan_error and any(keyword in str(scan_error).lower() for keyword in ["error", "oversize", "not analyze"]):
         is_this_need_to_analysis_flag = False
         
     company_rel = leak_obj.ai_analysis.get('company_relevance', {})

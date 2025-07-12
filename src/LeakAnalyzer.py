@@ -207,9 +207,10 @@ class LeakAnalyzer:
                 score += 0.7
         
         # Penalty for common public domains
-        public_domains = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "mail.ru", "yandex.ru"]
-        if any(pub_domain in domain for pub_domains in public_domains):
-            score -= 0.3
+        public_domains = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.com"]
+        for pub_domain in public_domains:
+            if pub_domain in domain:
+                score -= 0.2
             
         return max(score, 0.0)
     

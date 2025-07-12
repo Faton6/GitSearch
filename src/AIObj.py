@@ -53,6 +53,16 @@ class AIObj(ABC):
         # Подготовка данных для анализа
         self._prepare_analysis_data(secrets, stats_data, leak_info)
     
+    
+    @property
+    def ai_report(self):
+        """Alias property for ``ai_analysis`` for older code."""
+        return self.ai_analysis
+
+    @ai_report.setter
+    def ai_report(self, value):
+        self.ai_analysis = value
+    
     def _prepare_analysis_data(self, secrets: dict, stats_data: dict, leak_info: dict):
         """Подготовка данных для AI анализа"""
         
