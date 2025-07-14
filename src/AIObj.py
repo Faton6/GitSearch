@@ -1,17 +1,15 @@
 # Standart libs import
+
 import time
 from abc import ABC
 import json
-import base64
 import requests
 from typing import Optional, Dict, List, Any
 import re
 import tiktoken
 from openai import OpenAI
-import os
 
 from src import constants
-from src.searcher.GitStats import GitParserStats
 from src.logger import logger
 
 
@@ -28,6 +26,7 @@ class AIObj(ABC):
     base_prompt_text = 'None'
     
     def __init__(self, secrets: dict, stats_data: dict, leak_info: dict, company_info: Optional[Dict[str, Any]] = None):
+        
         # Инициализация токенизатора (если доступен)
         try:
             self.tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -65,7 +64,6 @@ class AIObj(ABC):
     
     def _prepare_analysis_data(self, secrets: dict, stats_data: dict, leak_info: dict):
         """Подготовка данных для AI анализа"""
-        
         # Обработка секретов
         secrets_str = json.dumps(secrets) if secrets else "-"
         
@@ -149,7 +147,7 @@ class AIObj(ABC):
 
     def analyze_leak_comprehensive(self):
         """Полноценный анализ утечки с использованием доступных LLM провайдеров"""
-
+        
         if not self.llm_manager.providers:
             logger.warning("Нет доступных LLM провайдеров")
             return None
@@ -177,7 +175,6 @@ class AIObj(ABC):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-
         response = self.llm_manager.make_request(
             messages,
             max_tokens=1024,
@@ -192,7 +189,6 @@ class AIObj(ABC):
         except Exception as e:  # pragma: no cover - defensive
             logger.error(f"Error in respone LLM: {e}")
             return None
-
         analysis_data = None
         try:
             analysis_data = json.loads(content)

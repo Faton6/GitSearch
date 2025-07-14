@@ -48,6 +48,7 @@ REPO_MAX_SIZE = 300000
 MAX_UTIL_RES_LINES = 200  # максимальное число строк результата работы каждого из сканеров, которое будет отправлено в отчет
 MAX_LINE_LEAK_LEN = 100  # максимальная длина строки с найденной утечкой
 MAX_TRY_TO_CLONE = 3
+GREP_SCAN_WAIT_TIMEOUT = 20  # seconds to wait for grep_scan before giving up
 MAX_COMMITERS_DISPLAY = 5 # max number of commiters to display in report
 MAX_DESCRIPTION_LEN = 50 # max length of description in report
 LOW_LVL_THRESHOLD = 5  # low lvl of leaks - from 0 to LVL_LOW_THRESHOLD - 1

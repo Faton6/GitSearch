@@ -11,6 +11,7 @@ import time # Import time for mocking
 
 from src import Connector
 from src import constants
+from src import logger
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -332,7 +333,7 @@ def test_dump_to_DB_mode_0_success(mock_load_urls, mock_strftime, mock_json_dump
         "approval": 0, "result": 4, "company_id": 1, "profitability_scores": {}}
     mock_leak_obj.repo_url = "test_repo_url"
     mock_leak_obj.secrets = {"scanner1": {"leak1": "data"}}
-    mock_leak_obj.ai_report = {"ai": "report"}
+    mock_leak_obj.ai_analysis = {"ai": "report"}
     mock_leak_obj.get_stats.return_value = ({}, [], []) # Mock empty stats
 
     # Setup constants for the test
@@ -375,6 +376,7 @@ def test_merge_reports_deduplication():
     old = {"gitleaks": {"Leak #1": {"Match": "foo", "File": "f"}}}
     new = {"gitleaks": {"0": {"Match": "foo", "File": "f"}, "1": {"Match": "bar", "File": "f2"}}}
     merged = Connector.merge_reports(old, new)
+    logger.info(f"Merged report: {merged}")
     assert len(merged["gitleaks"]) == 2
 
 

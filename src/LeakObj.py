@@ -82,10 +82,10 @@ class LeakObj(ABC):
     
     def _create_ai_obj(self):
         """Создание объекта AIObj для анализа"""
+        
         if self.ai_obj is None:
             # Lazy import для избежания циклического импорта
             from src.AIObj import AIObj
-            
             # Подготовка данных для AIObj
             stats_data = {}
             leak_info = {
@@ -118,7 +118,6 @@ class LeakObj(ABC):
         if self.ai_analysis and not force:
             logger.debug("AI analysis already completed")
             return
-        
         try:
             # Создаем AIObj если еще не создан
             self._create_ai_obj()

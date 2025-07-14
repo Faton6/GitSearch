@@ -41,6 +41,7 @@ RUN wget https://github.com/gitleaks/gitleaks/releases/download/v8.27.2/gitleaks
 # get git-secrets
 RUN wget https://github.com/awslabs/git-secrets/blob/master/git-secrets 
 
+# get kingfisher
 RUN wget https://github.com/mongodb/kingfisher/releases/download/v1.20.0/kingfisher-linux-x64.tgz && \
     tar -xzf kingfisher-linux-x64.tgz && \
     rm ./kingfisher-linux-x64.tgz

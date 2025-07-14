@@ -42,23 +42,40 @@ requests.urllib3.disable_warnings()
 
 def is_this_need_to_analysis(leak_obj):
     is_this_need_to_analysis_flag = True
-    if not leak_obj.ready_to_send:
-        leak_obj._check_status()
-    scan_error = leak_obj.secrets.get("Scan error") or leak_obj.secrets.get("Error")
-    if scan_error and any(keyword in str(scan_error).lower() for keyword in ["error", "oversize", "not analyze"]):
+
+    if not getattr(leak_obj, "ready_to_send", False):
+        if hasattr(leak_obj, "_check_status"):
+            leak_obj._check_status()
+
+    scan_error = getattr(leak_obj, "secrets", {}).get("Scan error") or getattr(
+        leak_obj, "secrets", {}
+    ).get("Error")
+    if scan_error and any(
+        keyword in str(scan_error).lower() for keyword in ["error", "oversize", "not analyze"]
+    ):
         is_this_need_to_analysis_flag = False
-        
-    company_rel = leak_obj.ai_analysis.get('company_relevance', {})
+
+    ai_analysis = getattr(leak_obj, "ai_analysis", {}) or {}
+    company_rel = ai_analysis.get("company_relevance", {})
     if not isinstance(company_rel, dict):
         company_rel = {}
-    
-    confidence = company_rel.get('confidence', 0.0)
-    
-    if leak_obj.profitability_scores['org_relevance'] < 0.25 and confidence < 0.25 and not company_rel.get('is_related', True):
+
+    confidence = company_rel.get("confidence", 0.0)
+
+    profitability = getattr(leak_obj, "profitability_scores", {})
+    if not isinstance(profitability, dict):
+        profitability = {}
+
+    org_rel = profitability.get("org_relevance", 0.0)
+    false_pos = profitability.get("false_positive_chance", 0.0)
+    true_pos = profitability.get("true_positive_chance", 1.0)
+
+    if org_rel < 0.25 and confidence < 0.25 and not company_rel.get("is_related", True):
         is_this_need_to_analysis_flag = False
-        
-    if leak_obj.profitability_scores['false_positive_chance'] > 0.25 and leak_obj.profitability_scores['true_positive_chance'] < 0.35:
-        is_this_need_to_analysis_flag = False    
+
+    if false_pos > 0.25 and true_pos < 0.35:
+        is_this_need_to_analysis_flag = False
+
     return is_this_need_to_analysis_flag
 
 def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 - update obj in DB
@@ -510,33 +527,6 @@ def get_accounts_from_DB(leak_id: int, conn=None, cursor=None):
             conn.close()
 
 
-def merge_reports(old: dict, new: dict) -> dict:
-    if not isinstance(old, dict):
-        old = {}
-    if not isinstance(new, dict):
-        return old
-    for scan, leaks in new.items():
-        if scan not in old or not isinstance(old.get(scan), dict):
-            old[scan] = leaks
-            continue
-        if not isinstance(leaks, dict):
-            old[scan] = leaks
-            continue
-        existing = old[scan]
-        for leak in leaks.values():
-            match = leak.get('Match')
-            file_ = leak.get('File')
-            dup = False
-            for ex in existing.values():
-                if ex.get('Match') == match and ex.get('File') == file_:
-                    dup = True
-                    break
-            if not dup:
-                key = f"Leak #{len(existing) + 1}"
-                existing[key] = leak
-    return old
-
-
 def update_existing_leak(leak_id: int, leak_obj, conn, cursor):
     try:
         leak_data = leak_obj.write_obj()
@@ -651,39 +641,46 @@ def update_leaks_from_report(filename: str, conn, cursor):
                     (leak_id, report_content['report_name'], enc_raw, enc_ai),
                 )
                 
-def merge_reports(old: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
+def merge_reports(
+    old: Union[Dict[str, Any], constants.AutoVivification],
+    new: Union[Dict[str, Any], constants.AutoVivification]
+) -> Union[Dict[str, Any], constants.AutoVivification]:
     """
-    Merge two report dictionaries. Preserves existing data in 'old' and merges new data from 'new'.
+    Merge two report dictionaries (or constants.AutoVivification instances).
     
-    - Merges content of keys like 'gitsecrets', 'trufflehog', etc.
-    - Overwrites 'message' if new one is present.
-    - For AI reports, replaces the whole structure if new is not empty.
+    Preserves existing data in 'old' and merges new data from 'new'.
     """
-    if not isinstance(old, dict) or not isinstance(new, dict):
+
+    if not isinstance(old, (dict, constants.AutoVivification)) or not isinstance(new, (dict, constants.AutoVivification)):
         return old if old else new
 
-    # Список ключей, которые нужно слить по содержимому
+    # Определяем тип результирующего объекта (сохраняем тип `old`)
+    result_class = type(old)
+    if not isinstance(old, type(new)):
+        # Если типы разные, можно выбрать более общий (dict), или оставить тип `old`
+        pass  # можно добавить логику выбора, если нужно
+
     merge_keys = {'gitsecrets', 'trufflehog', 'grepscan', 'deepsecrets', 'gitleaks'}
 
     for key in merge_keys:
         if key in new:
-            if key not in old or not isinstance(old[key], dict):
-                old[key] = {}
-            # Объединяем внутренние структуры (например, списки найденных утечек)
-            if isinstance(new[key], dict):
-                # Пример: merge по типам утечек
-                for subkey, value in new[key].items():
-                    if value:  # Не добавляем пустые значения
-                        old[key][subkey] = value
-            elif new[key]:  # Если не dict, просто заменяем, если не пусто
+            if key not in old or not isinstance(old[key], (dict, constants.AutoVivification)):
+                old[key] = result_class() if isinstance(old, constants.AutoVivification) else {}
+
+            # Рекурсивное объединение внутренних структур
+            if isinstance(new[key], (dict, constants.AutoVivification)):
+                # Если значение тоже словарь, рекурсивно мерджим
+                if isinstance(old[key], (dict, constants.AutoVivification)):
+                    merge_reports(old[key], new[key])
+                else:
+                    old[key] = new[key]  # заменяем, если старое не словарь
+            elif new[key]:  # простые значения — перезаписываем, если не пусто
                 old[key] = new[key]
 
-    # Перезаписываем сообщение, если оно есть в new
+    # Перезаписываем message, если есть
     if 'message' in new and new['message']:
         old['message'] = new['message']
 
-    # Для ai_report — полная замена, если в new что-то есть
+    # Полная замена ai_report, если новое не пустое
     if 'ai_report' in new and new['ai_report']:
         old['ai_report'] = new['ai_report']
-
-    return old

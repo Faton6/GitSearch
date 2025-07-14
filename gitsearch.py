@@ -94,9 +94,16 @@ if __name__ == "__main__":
     # Deepscan - repeat deep scan of found leaks
     # TODO Not it work only for DB version
 
-    # logger.info('Start Deepscan scan')
-    # constants.RESULT_MASS = constants.AutoVivification()
-    # deepscan.deep_scan()
+    logger.info('Start Deepscan scan')
+    constants.RESULT_MASS = constants.AutoVivification()
+    deep_scan_manager = deepscan.DeepScanManager()
+    deep_scan_manager.run()
+
+
+    logger.info('Start Re scan')
+    constants.RESULT_MASS = constants.AutoVivification()
+    deep_scan_manager = deepscan.DeepScanManager()
+    deep_scan_manager.run(mode=1)  # mode=1 for re-scan
 
     os.chdir(old_dir)
     print(f'Back to directory: {old_dir}')

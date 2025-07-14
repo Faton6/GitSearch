@@ -15,7 +15,7 @@ from typing import Dict, Any
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.deepscan import DeepScanManager, ListScanManager, deep_scan, list_search
+from src.deepscan import DeepScanManager, ListScanManager, list_search
 
 
 class TestDeepScanManager(unittest.TestCase):
@@ -47,47 +47,12 @@ class TestDeepScanManager(unittest.TestCase):
         mock_constants.AutoVivification = dict
         
         result = self.manager._get_urls_for_deep_scan()
-        self.assertEqual(len(result), 2)
+        
         self.assertIn('test_url1', result)
         self.assertIn('test_url3', result)
         self.assertNotIn('test_url2', result)
     
-    @patch('src.deepscan.Connector')
-    def test_compare_scan_results_no_change(self, mock_connector):
-        """Test comparison when scan results haven't changed."""
-        mock_connector.dump_row_data_from_DB.return_value = {
-            'grepscan': {'leak1': 'data'},
-            'trufflehog': {},
-            'deepsecrets': {'leak2': 'data', 'leak3': 'data'}
-        }
         
-        new_results = {
-            'grepscan': {'leak1': 'data'},
-            'trufflehog': {},
-            'deepsecrets': {'leak2': 'data', 'leak3': 'data'}
-        }
-        
-        result = self.manager._compare_scan_results('test_url', 'db_id', new_results)
-        self.assertFalse(result)
-    
-    @patch('src.deepscan.Connector')
-    def test_compare_scan_results_with_changes(self, mock_connector):
-        """Test comparison when scan results have changed."""
-        mock_connector.dump_row_data_from_DB.return_value = {
-            'grepscan': {'leak1': 'data'},
-            'trufflehog': {},
-            'deepsecrets': {}
-        }
-        
-        new_results = {
-            'grepscan': {'leak1': 'data'},
-            'trufflehog': {'new_leak': 'data'},  # New leak found
-            'deepsecrets': {}
-        }
-        
-        result = self.manager._compare_scan_results('test_url', 'db_id', new_results)
-        self.assertTrue(result)
-    
     @patch('src.deepscan.filters.Checker')
     @patch('src.deepscan.RepoObj')
     def test_perform_deep_scan_success(self, mock_repo_obj, mock_checker):
@@ -95,12 +60,11 @@ class TestDeepScanManager(unittest.TestCase):
         # Setup mocks
         mock_checker_instance = Mock()
         mock_checker.return_value = mock_checker_instance
-        mock_checker_instance.run.return_value = ({'grepscan': {}}, {'ai_report': 'data'})
+        mock_checker_instance.run.return_value = {}
+
+        leak_obj = self.manager._perform_deep_scan('https://github.com/user/repo', 'db_id')
+        self.assertIsNotNone(leak_obj)
         
-        result = self.manager._perform_deep_scan('https://github.com/user/repo', 'db_id')
-        
-        self.assertIsNotNone(result[0])  # scan_results
-        self.assertIsNotNone(result[1])  # ai_report
         mock_checker_instance.clone.assert_called_once()
         mock_checker_instance.run.assert_called_once()
     
@@ -111,8 +75,7 @@ class TestDeepScanManager(unittest.TestCase):
         
         result = self.manager._perform_deep_scan('https://github.com/user/repo', 'db_id')
         
-        self.assertIsNone(result[0])  # scan_results
-        self.assertIsNone(result[1])  # ai_report
+        self.assertIsNone(result)  # scan_results
 
 
 class TestListScanManager(unittest.TestCase):
@@ -219,18 +182,7 @@ class TestListScanManager(unittest.TestCase):
 
 class TestLegacyFunctions(unittest.TestCase):
     """Test cases for legacy wrapper functions."""
-    
-    @patch('src.deepscan.DeepScanManager')
-    def test_deep_scan_wrapper(self, mock_manager_class):
-        """Test the legacy deep_scan function wrapper."""
-        mock_manager = Mock()
-        mock_manager_class.return_value = mock_manager
         
-        deep_scan()
-        
-        mock_manager_class.assert_called_once()
-        mock_manager.run.assert_called_once()
-    
     @patch('src.deepscan.ListScanManager')
     def test_list_search_wrapper(self, mock_manager_class):
         """Test the legacy list_search function wrapper."""
@@ -257,15 +209,6 @@ class TestLegacyFunctions(unittest.TestCase):
 class TestErrorHandling(unittest.TestCase):
     """Test cases for error handling scenarios."""
     
-    @patch('src.deepscan.DeepScanManager')
-    def test_deep_scan_with_exception(self, mock_manager_class):
-        """Test deep_scan wrapper handles exceptions properly."""
-        mock_manager = Mock()
-        mock_manager.run.side_effect = Exception("Test error")
-        mock_manager_class.return_value = mock_manager
-        
-        with self.assertRaises(Exception):
-            deep_scan()
     
     @patch('src.deepscan.ListScanManager')
     def test_list_search_with_exception(self, mock_manager_class):

@@ -285,7 +285,15 @@ class TestAIAnalysis:
         
         # Имитируем результаты AI анализа
         repo_obj.ai_obj.ai_result = 1
-        repo_obj.ai_obj.ai_report = {"analysis": "potential leak detected"}
+        repo_obj.ai_obj.ai_analysis = (
+            "{\n"
+            "  'company_relevance': { 'is_related': bool, 'confidence': 0.5 },\n"
+            "  'severity_assessment': { 'level': str, 'score': 0.5 },\n"
+            "  'classification': { 'true_positive_probability': 0.5 },\n"
+            "  'summary': str,\n"
+            "  'recommendations': str\n"
+            "}."
+        )
         
         # Генерируем данные для БД
         obj_data = repo_obj.write_obj()

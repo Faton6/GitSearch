@@ -81,9 +81,7 @@ class Checker:
             'detect_secrets': self.detect_secrets_scan,
             'kingfisher': self.kingfisher_scan,
             'deepsecrets': self.deepsecrets_scan,
-            'ioc_finder': self.ioc_finder_scan,
             'ai_deep_scan': self.ai_deep_scan,
-            # ,'ioc_extractor': self._ioc_extractor
         }
 
     def _clean_repo_dirs(self):
@@ -153,22 +151,50 @@ class Checker:
                     self.url, CLR["RESET"])
         cur_dir = os.getcwd()
         os.chdir(self.repos_dir)
-        
+        timeout_grep_scan = constants.GREP_SCAN_WAIT_TIMEOUT
         scan_results = {}
+        if self.mode == 3:
+            self.scans = self.deep_scans
+            timeout_grep_scan = constants.GREP_SCAN_WAIT_TIMEOUT * 5
+        
         with ThreadPoolExecutor(max_workers=len(self.scans)) as executor:
-            futures = {executor.submit(method): name for name, method in self.scans.items()}
+            futures = {}
+            grep_future = None
+            for name, method in self.scans.items():
+                fut = executor.submit(method)
+                if name == 'grepscan':
+                    grep_future = fut
+                else:
+                    futures[fut] = name
+
             for future in as_completed(futures):
                 res, method = future.result(), futures[future]
                 scan_results[method] = res
                 if res == 1:
+                    if grep_future:
+                        try:
+                            grep_future.result(timeout=timeout_grep_scan)
+                        except Exception:
+                            logger.info(f'Canceling grepscan scan in repo: {"/".join(self.url.split("/")[-2:])}')
                     return 1
                 if res == 2:
                     logger.error('Excepted error in scan, check privious log!')
                 elif res == 3:
                     logger.info(f'Canceling {method} scan in repo: {"/".join(self.url.split("/")[-2:])}')
 
+            if grep_future:
+                try:
+                    res = grep_future.result(timeout=timeout_grep_scan)
+                except Exception:
+                    logger.info(f'Canceling grepscan scan in repo: {"/".join(self.url.split("/")[-2:])}')
+                    res = 3
+                scan_results['grepscan'] = res
+                if res == 1:
+                    return 1
+                if res == 2:
+                    logger.error('Excepted error in scan, check privious log!')
+
         os.chdir(cur_dir)
-        
         # Проверяем, есть ли хотя бы один сканер с результатами
         has_results = any(
             scan_type in self.secrets and 
@@ -231,7 +257,6 @@ class Checker:
                 self.secrets[scan_type][f'Leak #{index}']['File'] = file_path
                 # Дополнительная информация для анализа (не влияет на совместимость)
                 self.secrets[scan_type][f'Leak #{index}']['SearchTerm'] = search_term
-                self.secrets[scan_type][f'Leak #{index}']['IsCompanyRelated'] = search_term != self.dork
             
             logger.debug(f'Meaningful matches: {meaningful_count}/{len(found_matches)} for {self.url}')
             
@@ -703,33 +728,70 @@ class Checker:
             )
         except subprocess.TimeoutExpired:
             logger.error(f'\t- {scan_type} timeout occured in repository %s %s %s',
-                         self.log_color, self.url, CLR["RESET"])
+                        self.log_color, self.url, CLR["RESET"])
             return 2
         except Exception as ex:
             logger.error(f'\t- Error in repository %s %s %s {scan_type}: %s',
-                         self.log_color, self.url, CLR["RESET"], ex)
+                        self.log_color, self.url, CLR["RESET"], ex)
             return 2
-
-        json_segments = self._extract_json_segments(result.stdout)
-        if not json_segments:
+        
+        # Обработка вывода с несколькими JSON-объектами
+        output = result.stdout.strip()
+        if not output:
             self.secrets[scan_type]['Info'] = 'No findings'
             logger.info(f'\t- {scan_type} scan %s %s %s success, no findings',
                         self.log_color, self.url, CLR["RESET"])
             return 0
 
-        findings = json_segments[0] if isinstance(json_segments[0], list) else []
+        # Разделяем вывод на отдельные JSON-объекты
+        json_objects = []
+        decoder = json.JSONDecoder()
+        offset = 0
+        while offset < len(output):
+            try:
+                obj, end = decoder.raw_decode(output[offset:])
+                json_objects.append(obj)
+                offset += end
+                # Пропускаем пробельные символы между JSON-объектами
+                while offset < len(output) and output[offset].isspace():
+                    offset += 1
+            except json.JSONDecodeError:
+                logger.error(f'Failed to parse Kingfisher output at offset {offset}')
+                break
+
+        # Первый объект должен быть списком результатов
+        findings = []
+        for obj in json_objects:
+            if isinstance(obj, list):
+                findings = obj
+                break
+
         results = []
         for item in findings:
             rule_id = item.get('id', '')
-            for match in item.get('matches', []):
+            matches = item.get('matches', [])
+            
+            for match in matches:
                 finding = match.get('finding', {})
                 snippet = finding.get('snippet', '').strip()
+                
+                # Формирование информации о местоположении
                 file_path = finding.get('path', '')
                 line_num = finding.get('line')
+                location = f"{file_path}:{line_num}" if line_num is not None else file_path
+                
+                # Извлечение дополнительных метаданных
+                extra_data = {
+                    'Rule': rule_id,
+                    'Confidence': finding.get('confidence', ''),
+                    'Entropy': finding.get('entropy', ''),
+                    'Fingerprint': finding.get('fingerprint', '')
+                }
+                
                 result_entry = self._create_standard_result(
                     match=snippet,
-                    file_path=f"{file_path}:{line_num}" if line_num else file_path,
-                    extra_data={'Rule': rule_id, 'Confidence': finding.get('confidence')}
+                    file_path=location,
+                    extra_data=extra_data
                 )
                 results.append(result_entry)
 

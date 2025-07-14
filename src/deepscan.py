@@ -28,7 +28,7 @@ Date: 2025-01-14
 """
 
 import os
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 from src.logger import logger
 from src import Connector
@@ -74,17 +74,39 @@ class DeepScanManager:
             Dict containing URLs and their associated data for deep scanning
         """
         urls_to_scan = constants.AutoVivification()
-        url_dump = constants.dork_dict_from_DB
+        url_dump = Connector.dump_from_DB(mode=1)
+        
+        for url_from_db in url_dump.keys():
+            url_data = url_dump[url_from_db]
+            if (isinstance(url_data, str) and 
+                int(url_data[0]) == constants.RESULT_CODE_TO_DEEPSCAN) or (isinstance(url_data[0], int) and 
+                url_data[0] == constants.RESULT_CODE_TO_DEEPSCAN):
+                urls_to_scan[url_from_db] = [url_data[1], None]
+                
+        logger.info(f"Found {len(urls_to_scan)} URLs marked for deep scanning")
+        return urls_to_scan
+ 
+ 
+    def _get_urls_for_deep_scan_with_no_results(self):
+        """
+        Retrieve URLs from database that are marked as not research yet (4).
+        
+        Returns:
+            Dict containing URLs and their associated data for deep rescanning
+        """
+        
+        urls_to_scan = constants.AutoVivification()
+        url_dump = Connector.dump_from_DB(mode=1)
         
         for url_from_db in url_dump.keys():
             url_data = url_dump[url_from_db]
             if (isinstance(url_data[0], str) and 
-                int(url_data[0]) == constants.RESULT_CODE_TO_DEEPSCAN):
-                urls_to_scan[url_from_db] = [url_data[1], None, None]
+                int(url_data[0]) == constants.RESULT_CODE_TO_SEND) or (isinstance(url_data[0], int) and 
+                url_data[0] == constants.RESULT_CODE_TO_SEND):
+                urls_to_scan[url_from_db] = [url_data[1], None]
                 
-        logger.info(f"Found {len(urls_to_scan)} URLs marked for deep scanning")
+        logger.info(f"Found {len(urls_to_scan)} URLs not analysed yet")
         return urls_to_scan
-    
     def _perform_deep_scan(self, url: str, database_id: str) -> Tuple[Optional[Dict], Optional[Dict]]:
         """
         Perform deep scan on a single repository URL.
@@ -106,70 +128,32 @@ class DeepScanManager:
             repo_obj = RepoObj(url, mock_repo_data, 'deep_scan_dork')
             
             # Initialize checker with deep scan mode (mode=3)
-            checker = filters.Checker(
-                url=url,
-                dork='deep_scan',
-                obj=repo_obj,
-                mode=3  # Deep scan mode
-            )
+            checker = filters.Checker(url=url, dork="deep_scan", obj=repo_obj, mode=3)
             
             # Perform the scanning process
             checker.clone()
-            scan_results, ai_report = checker.run()
+            checker.run()
             
-            return scan_results, ai_report
+            return repo_obj
             
         except Exception as e:
             logger.error(f"Error during deep scan of {url}: {e}")
-            return None, None
+            return None
     
-    def _compare_scan_results(self, url: str, database_id: str, new_results: Dict) -> bool:
-        """
-        Compare new scan results with existing database results.
-        
-        Args:
-            url: Repository URL
-            database_id: Database identifier
-            new_results: New scan results to compare
-            
-        Returns:
-            True if results are different (need update), False if same
-        """
-        try:
-            raw_report = Connector.dump_row_data_from_DB(database_id)
-            
-            # Compare key scanner results using configured scanners
-            scanner_types = ['grepscan', 'trufflehog', 'deepsecrets', 'gitleaks', 'gitsecrets']
-            
-            differences_found = 0
-            for scanner_type in scanner_types:
-                old_count = len(raw_report.get(scanner_type, {}))
-                new_count = len(new_results.get(scanner_type, {}))
-                
-                if old_count != new_count:
-                    differences_found += 1
-                    logger.info(f"Difference found in {scanner_type}: {old_count} vs {new_count}")
-            
-            # Consider results different if we found any differences
-            if differences_found > 0:
-                logger.info(f"Found {differences_found} differences for {url}")
-                return True
-            else:
-                logger.info(f"No significant changes found for {url}")
-                return False
-                    
-        except Exception as e:
-            logger.error(f"Error comparing results for {url}: {e}")
-            return True  # Assume difference if comparison fails
-    
-    def run(self) -> None:
+ 
+    def run(self, mode=0) -> None:
         """
         Execute the complete deep scanning process.
         """
         logger.info("Starting deep scan process")
         
-        # Step 1: Get URLs marked for deep scanning
-        self.urls_to_scan = self._get_urls_for_deep_scan()
+        if mode == 0:
+            self.urls_to_scan = self._get_urls_for_deep_scan()
+        elif mode == 1:
+            self.urls_to_scan = self._get_urls_for_deep_scan_with_no_results()
+        else:
+            logger.error('Incorrect mode of deepscan, use standart mode = 0')
+            self.urls_to_scan = self._get_urls_for_deep_scan()
         
         if not self.urls_to_scan:
             logger.info("No URLs found for deep scanning")
@@ -186,7 +170,18 @@ class DeepScanManager:
             self._process_batch(batch_urls)
         
         # Step 3: Filter out URLs with unchanged results and update database
-        self._finalize_results()
+        for url, data in list(self.urls_to_scan.items()):
+            leak_obj = data[1]
+            if leak_obj:
+                constants.RESULT_MASS["deep_scan"][leak_obj.repo_name] = leak_obj
+            else:
+                del self.urls_to_scan[url]
+
+        if constants.RESULT_MASS.get("deep_scan"):
+            Connector.dump_to_DB()
+            constants.RESULT_MASS.pop("deep_scan", None)
+        else:
+            logger.info("No repositories require database updates")
         
         logger.info("Deep scan process completed")
     
@@ -200,61 +195,21 @@ class DeepScanManager:
         for url in batch_urls:
             database_id = self.urls_to_scan[url][0]
             logger.info(f"Deep scanning: {url}")
-            
-            # Retry logic for failed scans
-            for attempt in range(DEEP_SCAN_CONFIG['max_retries']):
+
+            for attempt in range(DEEP_SCAN_CONFIG["max_retries"]):
                 try:
-                    scan_result, ai_report = self._perform_deep_scan(url, database_id)
-                    if scan_result is not None:
-                        self.urls_to_scan[url][1] = scan_result
-                        self.urls_to_scan[url][2] = ai_report
+                    leak_obj = self._perform_deep_scan(url, database_id)
+                    if leak_obj:
+                        self.urls_to_scan[url][1] = leak_obj
                         break
-                    else:
-                        logger.warning(f"Scan attempt {attempt + 1} failed for {url}")
-                        
+                    logger.warning(f"Scan attempt {attempt + 1} failed for {url}")
                 except Exception as e:
                     logger.error(f"Error in scan attempt {attempt + 1} for {url}: {e}")
-                    
+
             else:
                 logger.error(f"All scan attempts failed for {url}, removing from update list")
                 del self.urls_to_scan[url]
     
-    def _finalize_results(self) -> None:
-        """
-        Compare results and update database with changed repositories.
-        """
-        urls_to_update = {}
-        
-        for url in list(self.urls_to_scan.keys()):
-            database_id = self.urls_to_scan[url][0]
-            new_results = self.urls_to_scan[url][1]
-            
-            if new_results and self._compare_scan_results(url, database_id, new_results):
-                urls_to_update[url] = self.urls_to_scan[url]
-            else:
-                del self.urls_to_scan[url]
-        
-        # Update database with new results
-        if urls_to_update:
-            logger.info(f"Updating database with results for {len(urls_to_update)} repositories")
-            Connector.dump_to_DB(mode=1, result_deepscan=urls_to_update)
-        else:
-            logger.info("No repositories require database updates")
-
-
-def deep_scan():
-    """
-    Legacy function wrapper for deep scanning.
-    
-    This function maintains backward compatibility while using the new
-    DeepScanManager class for improved code organization.
-    """
-    try:
-        deep_scan_manager = DeepScanManager()
-        deep_scan_manager.run()
-    except Exception as e:
-        logger.error(f"Error in deep scan process: {e}")
-        raise
 
 
 class ListScanManager:

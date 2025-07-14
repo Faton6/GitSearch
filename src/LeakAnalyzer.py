@@ -332,12 +332,12 @@ class LeakAnalyzer:
         score -= fork_penalty
             
         # Factor 6: AI assessment (if available and positive)
-        # This will now use the comprehensive AI analysis from AIObj
-        if self.leak_obj.ai_analysis and self.leak_obj.ai_analysis.get('company_relevance', {}).get('is_related'):
-            score += self.leak_obj.ai_analysis.get('company_relevance', {}).get('confidence', 0.0) * 0.3 # Boost based on AI confidence
-        elif self.leak_obj.ai_analysis and not self.leak_obj.ai_analysis.get('company_relevance', {}).get('is_related'):
-            score -= self.leak_obj.ai_analysis.get('company_relevance', {}).get('confidence', 0.0) * 0.3 # Penalty based on AI confidence
-
+        ai_analysis = getattr(self.leak_obj, 'ai_analysis', None)
+        if ai_analysis and ai_analysis.get('company_relevance', {}).get('is_related'):
+            score += ai_analysis.get('company_relevance', {}).get('confidence', 0.0) * 0.3  # Boost based on AI confidence
+        elif ai_analysis and not ai_analysis.get('company_relevance', {}).get('is_related'):
+            score -= ai_analysis.get('company_relevance', {}).get('confidence', 0.0) * 0.3  # Penalty based on AI confidence
+            
         # Cap the score at 1.0
         score = max(score, 0.0)  # Ensure score is not negative
         score = round(score, 2)  # Round to 2 decimal places for consistency
@@ -518,10 +518,10 @@ class LeakAnalyzer:
         else:
             normalized_score = 0.0
 
-        # AI assessment boost for sensitive data (if AI can specifically assess this)
-        if self.leak_obj.ai_analysis and self.leak_obj.ai_analysis.get('severity_assessment', {}).get('score', 0.0) > 0.5:
-            normalized_score += self.leak_obj.ai_analysis.get('severity_assessment', {}).get('score', 0.0) * 0.1 # Small boost if AI thinks it's generally relevant
-
+       
+        ai_analysis = getattr(self.leak_obj, 'ai_analysis', None)
+        if ai_analysis and ai_analysis.get('severity_assessment', {}).get('score', 0.0) > 0.5:
+            normalized_score += ai_analysis.get('severity_assessment', {}).get('score', 0.0) * 0.1  # Small boost if AI thinks it's generally relevant
         return min(round(normalized_score, 2), 1.0)
 
     def calculate_profitability(self) -> dict:

@@ -56,6 +56,8 @@ COMPARISON_THRESHOLDS = {
         'trufflehog', 
         'deepsecrets',
         'gitleaks',
+        'detect_secrets',
+        'kingfisher',
         'gitsecrets'
     ]
 }
