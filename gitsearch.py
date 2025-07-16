@@ -81,14 +81,14 @@ if __name__ == "__main__":
 
     # Github Gist scan
     logger.info('Start Gist scan')
-    GlistScan.run(filter_='updated', quantity=30)
-    utils.dumping_data()
+    #GlistScan.run(filter_='updated', quantity=30)
+    #utils.dumping_data()
 
     # Github scan
     logger.info('Start Github scan')
     
-    for org in constants.dork_dict_from_DB:
-        Scanner(org).gitscan()
+    #for org in constants.dork_dict_from_DB:
+    #    Scanner(org).gitscan()
     utils.dumping_data()
 
     # Deepscan - repeat deep scan of found leaks

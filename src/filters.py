@@ -11,8 +11,7 @@ import re
 import time
 import hashlib
 import git
-import math
-from ioc_finder import find_iocs
+import ast
 
 # Project lib's import
 from src import Connector, constants
@@ -78,10 +77,11 @@ class Checker:
             'gitleaks': self.gitleaks_scan,
             'gitsecrets': self.gitsecrets_scan,
             'grepscan': self.grep_scan,
+            'deepsecrets': self.deepsecrets_scan,
             'detect_secrets': self.detect_secrets_scan,
             'kingfisher': self.kingfisher_scan,
-            'deepsecrets': self.deepsecrets_scan,
             'ai_deep_scan': self.ai_deep_scan,
+            # ,'ioc_extractor': self._ioc_extractor
         }
 
     def _clean_repo_dirs(self):
@@ -151,50 +151,24 @@ class Checker:
                     self.url, CLR["RESET"])
         cur_dir = os.getcwd()
         os.chdir(self.repos_dir)
-        timeout_grep_scan = constants.GREP_SCAN_WAIT_TIMEOUT
-        scan_results = {}
+        
         if self.mode == 3:
             self.scans = self.deep_scans
-            timeout_grep_scan = constants.GREP_SCAN_WAIT_TIMEOUT * 5
-        
+        scan_results = {}
         with ThreadPoolExecutor(max_workers=len(self.scans)) as executor:
-            futures = {}
-            grep_future = None
-            for name, method in self.scans.items():
-                fut = executor.submit(method)
-                if name == 'grepscan':
-                    grep_future = fut
-                else:
-                    futures[fut] = name
-
+            futures = {executor.submit(method): name for name, method in self.scans.items()}
             for future in as_completed(futures):
                 res, method = future.result(), futures[future]
                 scan_results[method] = res
                 if res == 1:
-                    if grep_future:
-                        try:
-                            grep_future.result(timeout=timeout_grep_scan)
-                        except Exception:
-                            logger.info(f'Canceling grepscan scan in repo: {"/".join(self.url.split("/")[-2:])}')
                     return 1
                 if res == 2:
                     logger.error('Excepted error in scan, check privious log!')
                 elif res == 3:
                     logger.info(f'Canceling {method} scan in repo: {"/".join(self.url.split("/")[-2:])}')
 
-            if grep_future:
-                try:
-                    res = grep_future.result(timeout=timeout_grep_scan)
-                except Exception:
-                    logger.info(f'Canceling grepscan scan in repo: {"/".join(self.url.split("/")[-2:])}')
-                    res = 3
-                scan_results['grepscan'] = res
-                if res == 1:
-                    return 1
-                if res == 2:
-                    logger.error('Excepted error in scan, check privious log!')
-
         os.chdir(cur_dir)
+        
         # Проверяем, есть ли хотя бы один сканер с результатами
         has_results = any(
             scan_type in self.secrets and 
@@ -231,7 +205,7 @@ class Checker:
             if self.company_name:
                 # Добавляем название компании и его части
                 search_terms.extend(self.company_terms)
-            
+            search_terms = list(set(search_terms))
             # Используем Python для более качественного поиска
             found_matches = self._enhanced_file_search(search_terms)
             
@@ -635,7 +609,8 @@ class Checker:
                    self.log_color, self.url, CLR["RESET"])
         
         return 0
-
+    
+    @_exc_catcher
     def detect_secrets_scan(self):
         scan_type = 'detect_secrets'
         self.secrets[scan_type] = constants.AutoVivification()
@@ -694,9 +669,6 @@ class Checker:
 
         processed_count = self._process_scan_results(scan_type, results, lambda x, _: x)
 
-        if processed_count == 0:
-            self.secrets[scan_type]['Info'] = 'detect-secrets completed but no meaningful results found'
-
         logger.info(f'\t- {scan_type} scan %s %s %s success, processed {processed_count} results',
                     self.log_color, self.url, CLR["RESET"])
 
@@ -735,7 +707,6 @@ class Checker:
                         self.log_color, self.url, CLR["RESET"], ex)
             return 2
         
-        # Обработка вывода с несколькими JSON-объектами
         output = result.stdout.strip()
         if not output:
             self.secrets[scan_type]['Info'] = 'No findings'
@@ -743,31 +714,81 @@ class Checker:
                         self.log_color, self.url, CLR["RESET"])
             return 0
 
-        # Разделяем вывод на отдельные JSON-объекты
-        json_objects = []
-        decoder = json.JSONDecoder()
-        offset = 0
-        while offset < len(output):
-            try:
-                obj, end = decoder.raw_decode(output[offset:])
-                json_objects.append(obj)
-                offset += end
-                # Пропускаем пробельные символы между JSON-объектами
-                while offset < len(output) and output[offset].isspace():
-                    offset += 1
-            except json.JSONDecodeError:
-                logger.error(f'Failed to parse Kingfisher output at offset {offset}')
-                break
+        # Удаляем текстовые префиксы перед JSON
+        json_start = output.find('[')
+        if json_start == -1:
+            # Если нет открывающей скобки массива, ищем объект
+            json_start = output.find('{')
+        
+        if json_start == -1:
+            logger.error(f'No JSON found in Kingfisher output: {output[:200]}...')
+            return 2
+        
+        # Извлекаем только JSON часть
+        json_output = output[json_start:]
+        
+        # Ищем конец первого JSON объекта (массива результатов)
+        json_end = 0
+        brace_count = 0
+        in_string = False
+        escape = False
+        
+        for i, char in enumerate(json_output):
+            if char == '"' and not escape:
+                in_string = not in_string
+            elif not in_string:
+                if char == '[' or char == '{':
+                    brace_count += 1
+                elif char == ']' or char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        json_end = i + 1
+                        break
+            
+            escape = (char == '\\' and not escape)
+        
+        if json_end == 0:
+            logger.error(f'Failed to find end of JSON array in output: {json_output[:200]}...')
+            return 2
+        
+        # Извлекаем только массив результатов
+        json_array = json_output[:json_end]
+        
+        # Пытаемся распарсить JSON
+        try:
+            # Исправляем известные проблемы формата
+            json_array = (
+                json_array
+                .replace("'", '"')  # Заменяем одинарные кавычки на двойные
+                .replace(": 0,", ": null,")  # Исправляем значения git_metadata
+                .replace(": 0}", ": null}")  # Для последнего элемента
+            )
+            
+            findings = json.loads(json_array)
+        except json.JSONDecodeError as e:
+            logger.error(f'Failed to parse Kingfisher JSON array: {e}. JSON string: {json_array[:200]}...')
+            return 2
+        except Exception as e:
+            logger.error(f'Unexpected error parsing Kingfisher output: {e}')
+            return 2
 
-        # Первый объект должен быть списком результатов
-        findings = []
-        for obj in json_objects:
-            if isinstance(obj, list):
-                findings = obj
-                break
+        # Если мы получили словарь вместо массива, преобразуем его в ожидаемую структуру
+        if isinstance(findings, dict):
+            # Проверяем наличие ключа, содержащего результаты
+            for key in ['results', 'findings']:
+                if key in findings and isinstance(findings[key], list):
+                    findings = findings[key]
+                    break
+            else:
+                # Если не нашли подходящий ключ, используем пустой список
+                findings = []
 
         results = []
         for item in findings:
+            # Обрабатываем как элемент массива
+            if not isinstance(item, dict):
+                continue
+                
             rule_id = item.get('id', '')
             matches = item.get('matches', [])
             
@@ -785,7 +806,8 @@ class Checker:
                     'Rule': rule_id,
                     'Confidence': finding.get('confidence', ''),
                     'Entropy': finding.get('entropy', ''),
-                    'Fingerprint': finding.get('fingerprint', '')
+                    'Fingerprint': finding.get('fingerprint', ''),
+                    'Validation': finding.get('validation', {}).get('status', '')
                 }
                 
                 result_entry = self._create_standard_result(
@@ -851,42 +873,6 @@ class Checker:
         else:
             logger.error('File deepsecrets_rep.json not founded\n')
             return 2
-
-    @_exc_catcher
-    def ioc_finder_scan(self):
-        """Сканирование с помощью IOC finder"""
-        scan_type = 'ioc_finder'
-        self.secrets[scan_type] = constants.AutoVivification()
-        
-        try:
-            # Собираем текст из файлов репозитория
-            repo_text = self._collect_repo_text()
-            
-            # Ищем IOC с помощью ioc_finder
-            iocs = find_iocs(repo_text)
-            
-            processed_count = 0
-            for ioc_type, ioc_list in iocs.items():
-                for ioc in ioc_list:
-                    if processed_count >= constants.MAX_UTIL_RES_LINES:
-                        break
-                    
-                    result = self._create_standard_result(
-                        match=str(ioc),
-                        extra_data={'IOC_Type': ioc_type}
-                    )
-                    
-                    result['meaningfull'] = utils.semantic_check_dork(str(ioc), self.dork)
-                    self.secrets[scan_type][f'IOC #{processed_count}'] = result
-                    processed_count += 1
-            
-            logger.info(f'\t- {scan_type} scan %s %s %s success, found {processed_count} IOCs', 
-                       self.log_color, self.url, CLR["RESET"])
-        except Exception as ex:
-            logger.error(f'\t- Error in repository %s %s %s {scan_type}: %s', self.log_color, self.url, CLR["RESET"], ex)
-            return 2
-        
-        return 0
 
     
     @_exc_catcher
@@ -1102,8 +1088,7 @@ class Checker:
         
         # Минимальный набор исключений - только действительно ненужные файлы
         exclude_patterns = [
-            '*.log', '*.tmp', '*.cache', '*.ipynb'
-            '*.jpg', '*.png', '*.gif', '*.zip'
+            '*.ipynb', '*.jpg', '*.png', '*.gif', '*.zip'
         ]
         
         for pattern in exclude_patterns:

@@ -76,6 +76,8 @@ def is_this_need_to_analysis(leak_obj):
     if false_pos > 0.25 and true_pos < 0.35:
         is_this_need_to_analysis_flag = False
 
+    if false_pos == 1.0:
+        is_this_need_to_analysis_flag = False
     return is_this_need_to_analysis_flag
 
 def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 - update obj in DB
@@ -113,12 +115,12 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
                         leak_obj = constants.RESULT_MASS[scan_key][scanObj]
                         leak_id_existing = existing_urls.get(leak_obj.repo_url)
 
-                        if leak_id_existing and leak_id_existing != 0:
-                            logger.info(f"Updating existing leak for URL: {leak_obj.repo_url} (Leak ID: {leak_id_existing[1]})")
-                            update_existing_leak(leak_id_existing[1], leak_obj)
-                            continue
                         if not is_this_need_to_analysis(leak_obj):
                             leak_obj.res_check = constants.RESULT_CODE_LEAK_NOT_FOUND
+                        if leak_id_existing and leak_id_existing != 0:
+                            logger.info(f"Updating existing leak for URL: {leak_obj.repo_url} (Leak ID: {leak_id_existing[1]})")
+                            update_existing_leak(leak_id_existing[1], leak_obj, conn, cursor)
+                            continue
                         if (leak_obj.write_obj()['leak_type'] == 'None'
                                 or leak_obj.repo_url in dumped_repo_list):
                             continue
@@ -242,7 +244,6 @@ def dump_target_from_DB():
         dumped_data = cursor.fetchall()
 
         for i in dumped_data:
-            #dork_dict[i[1]] = base64.b64decode(i[0].encode('utf-8')).decode('utf-8').split(', ')
             dork_dict[i[1]] = base64.b64decode(i[0]).decode('utf-8').split(', ')
 
         return dork_dict
@@ -373,6 +374,22 @@ def company_exists(company_id: int, cursor) -> bool:
         logger.error(f"Error checking company existence: {e}")
         return False
 
+def get_compnay_id(leak_id: int) -> int:
+    conn, cursor = connect_to_database()
+    if not conn or not cursor:
+        return ""
+    try:
+        cursor.execute("SELECT company_id FROM leak WHERE id=%s", (leak_id,))
+        result = cursor.fetchone()
+        if result:
+            return int(result[0])
+        return ""
+    except pymysql.Error as e:
+        logger.error(f"Error: {e}")
+        return ""
+    finally:
+        if conn:
+            conn.close()
 
 def get_company_name(company_id: int) -> str:
     """Return company name for given id or empty string on failure."""
@@ -578,7 +595,7 @@ def update_existing_leak(leak_id: int, leak_obj, conn, cursor):
             old_ai = {}
 
         merged_raw = merge_reports(old_raw, leak_obj.secrets)
-        merged_ai = merge_reports(old_ai, leak_obj.ai_report)
+        merged_ai = merge_reports(old_ai, leak_obj.ai_analysis)
         enc_raw = base64.b64encode(bz2.compress(json.dumps(merged_raw).encode('utf-8')))
         enc_ai = base64.b64encode(bz2.compress(json.dumps(merged_ai).encode('utf-8')))
 

@@ -189,7 +189,10 @@ class LeakObj(ABC):
         if not self.ai_analysis:
             self.ai_analysis = {'Thinks': 'Not state'}
         # Get final assessment from LeakAnalyzer and insert as the first line
-        final_assessment = LeakAnalyzer(self).get_final_assessment()
+        if len(self.status) > 0 and 'File extension' in self.status[0]:
+            final_assessment = LeakAnalyzer(self, bad_file_ext=True).get_final_assessment()
+        else:
+            final_assessment = LeakAnalyzer(self, bad_file_ext=False).get_final_assessment()
         self.status.insert(0, final_assessment)
 
         self.status.append(self._get_message("leak_found_in_section", lang, obj_type=self.obj_type, dork=self.dork))
@@ -260,7 +263,11 @@ class LeakObj(ABC):
         self.status.append(self._get_message("full_report_length", lang, length=utils.count_nested_dict_len(self.secrets)))
         
         # Moved profitability calculation before AI analysis to ensure AI can use it
-        self.profitability_scores = LeakAnalyzer(self).calculate_profitability()
+        if len(self.status) > 0 and 'File extension' in self.status[0]:
+            self.profitability_scores = LeakAnalyzer(self, bad_file_ext=True).calculate_profitability()
+        else:
+            self.profitability_scores = LeakAnalyzer(self, bad_file_ext=False).calculate_profitability()
+        
         
         if self.profitability_scores:
             self.status.append(self._get_message("profitability_scores", lang, 

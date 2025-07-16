@@ -123,7 +123,10 @@ class GitParserStats:
                                                         'description': response['description']
                                                         }
             else:
-                logger.error('Got message from github request: %s %s %s', self.log_color,
+                if 'message' in response and response['message'] == 'Not Found':
+                    logger.error('Repo statistic not found: %s %s %s', self.log_color, str(response), CLR["RESET"])
+                else:
+                    logger.error('Got message from github api request: %s %s %s', self.log_color,
                              str(response), CLR["RESET"])
         self.repo_stats_getted = True
 
@@ -157,8 +160,12 @@ class GitParserStats:
                                                                            'related_company_id': 0
                                                                            })
                 else:
-                    logger.error('Got message from github request: %s %s %s', self.log_color,
-                                 str(response), CLR["RESET"])
+                    if 'message' in response and response['message'] == 'Not Found':
+                        logger.error('Contributors statistic not found: %s %s %s', self.log_color, str(response), CLR["RESET"])
+                    else:
+                        logger.error('Got message from github contributors request: %s %s %s', self.log_color,
+                                    str(response), CLR["RESET"])
+                    
                     self.repo_stats_leak_stats_table['contributors_count'] = len(self.contributors_stats_accounts_table)
             self.coll_stats_getted = True
 
@@ -213,8 +220,12 @@ class GitParserStats:
                                                                            'related_account_id': 0
                                                                            })
             else:
-                logger.error('Got message from github request: %s %s %s', self.log_color,
-                             str(response), CLR["RESET"])
+                if 'message' in response and response['message'] == 'Not Found':
+                    logger.error('Commits statistic not found: %s %s %s', self.log_color, str(response), CLR["RESET"])
+                else:
+                    logger.error('Got message from github commits request: %s %s %s', self.log_color,
+                                str(response), CLR["RESET"])
+                
                 self.repo_stats_leak_stats_table['commits_count'] = len(response)
                 self.repo_stats_leak_stats_table['commiters_count'] = len(self.commits_stats_commiters_table)
 

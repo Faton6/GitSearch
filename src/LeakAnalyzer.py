@@ -9,8 +9,9 @@ class LeakAnalyzer:
     """
         Class to analyze the profitability of a leak based on organization relevance and sensitive data presence
     """
-    def __init__(self, leak_obj: any):
+    def __init__(self, leak_obj: any, bad_file_ext: bool = False):
         self.leak_obj = leak_obj
+        self.bad_file_ext = bad_file_ext
         self.company_name = Connector.get_company_name(leak_obj.company_id)
         self.company_tokens = utils.generate_company_search_terms(self.company_name)
         
@@ -167,7 +168,12 @@ class LeakAnalyzer:
                 ]
                 if any(re.search(pattern, file_path) for pattern in critical_patterns):
                     score += 0.3
-        
+                file_ignore = ('.ipynb', '.png', '.svg')
+                if file_path.endswith(file_ignore):
+                    score -= 0.3
+                elif self.bad_file_ext:
+                    score -= 0.5
+                
         return min(score, 1.0)
     
     def _extract_domain_from_email(self, email: str) -> str:

@@ -33,7 +33,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from src.logger import logger
 from src import Connector
 from src import constants
-from src.LeakObj import RepoObj
+from src.LeakObj import RepoObj, GlistObj
 from src import filters
 from src import utils
 from src.searcher.scanner import Scanner
@@ -107,13 +107,46 @@ class DeepScanManager:
                 
         logger.info(f"Found {len(urls_to_scan)} URLs not analysed yet")
         return urls_to_scan
-    def _perform_deep_scan(self, url: str, database_id: str) -> Tuple[Optional[Dict], Optional[Dict]]:
+    
+    def _perform_gistobj_deep_scan(self, url: str, leak_id: str, company_id: int) -> Tuple[Optional[Dict], Optional[Dict]]:
+        """
+        Perform deep scan on a single Gist URL.
+        
+        Args:
+            url: Gist URL to scan
+            leak_id: Database identifier for the Gist
+            
+        Returns:
+            Tuple of (scan_results, ai_report)
+        """
+        try:
+            # Create a mock GlistObj for the checker
+            mock_repo_data = {
+                'full_name': '/'.join(url.split('/')[-2:]),
+                'owner': {'login': url.split('/')[-2]},
+                'size': 0  # Will be updated during scanning
+            }
+            
+            
+            company_name = Connector.get_company_name(company_id=company_id)
+            glist_obj = GlistObj(url, company_name, company_id)
+            glist_obj.stats.get_repo_stats()
+            checker = filters.Checker(url=url, dork=company_name, obj=glist_obj, mode=2)
+            checker.clone()
+            checker.run()
+                       
+            return glist_obj
+            
+        except Exception as e:
+            logger.error(f"Error during deep scan of {url}: {e}")
+            return None
+    def _perform_leakobj_deep_scan(self, url: str, leak_id: str, company_id: int) -> Tuple[Optional[Dict], Optional[Dict]]:
         """
         Perform deep scan on a single repository URL.
         
         Args:
             url: Repository URL to scan
-            database_id: Database identifier for the repository
+            leak_id: Database identifier for the repository
             
         Returns:
             Tuple of (scan_results, ai_report)
@@ -125,10 +158,11 @@ class DeepScanManager:
                 'owner': {'login': url.split('/')[-2]},
                 'size': 0  # Will be updated during scanning
             }
-            repo_obj = RepoObj(url, mock_repo_data, 'deep_scan_dork')
+            company_name = Connector.get_company_name(company_id=company_id)
+            repo_obj = RepoObj(url, mock_repo_data, company_id)
             
             # Initialize checker with deep scan mode (mode=3)
-            checker = filters.Checker(url=url, dork="deep_scan", obj=repo_obj, mode=3)
+            checker = filters.Checker(url=url, dork=company_name, obj=repo_obj, mode=3)
             
             # Perform the scanning process
             checker.clone()
@@ -162,14 +196,19 @@ class DeepScanManager:
         # Step 2: Process URLs in batches
         url_list = list(self.urls_to_scan.keys())
         batch_size = DEEP_SCAN_CONFIG['batch_size']
-        
+        counter = 0
         for i in range(0, len(url_list), batch_size):
             batch_urls = url_list[i:i + batch_size]
             logger.info(f"Processing batch {i//batch_size + 1}: {len(batch_urls)} URLs")
             
             self._process_batch(batch_urls)
-        
-        # Step 3: Filter out URLs with unchanged results and update database
+
+            if counter > constants.MAX_OBJ_BEFORE_SEND:
+                self.send_objs()
+                counter = 0
+            counter += 1
+    
+    def send_objs(self):
         for url, data in list(self.urls_to_scan.items()):
             leak_obj = data[1]
             if leak_obj:
@@ -193,12 +232,17 @@ class DeepScanManager:
             batch_urls: List of URLs to process in this batch
         """
         for url in batch_urls:
-            database_id = self.urls_to_scan[url][0]
+            leak_id = self.urls_to_scan[url][0]
             logger.info(f"Deep scanning: {url}")
 
             for attempt in range(DEEP_SCAN_CONFIG["max_retries"]):
                 try:
-                    leak_obj = self._perform_deep_scan(url, database_id)
+                    company_id = Connector.get_compnay_id(leak_id)
+                    
+                    if 'gist.github.com' in url:
+                        leak_obj = self._perform_gistobj_deep_scan(url, leak_id, company_id)
+                    else:
+                        leak_obj = self._perform_leakobj_deep_scan(url, leak_id, company_id)
                     if leak_obj:
                         self.urls_to_scan[url][1] = leak_obj
                         break
@@ -417,33 +461,3 @@ def list_search(input_file_path: Optional[str] = None) -> None:
         logger.error(f"Error in list search process: {e}")
         raise
 
-
-def _list_scan(url_list: List[str]) -> None:
-    """
-    Legacy function for backward compatibility.
-    
-    Args:
-        url_list: List of URLs to scan
-        
-    Deprecated: Use ListScanManager.run() instead
-    """
-    logger.warning("_list_scan is deprecated. Use ListScanManager instead.")
-    
-    try:
-        # Create temporary file with URLs
-        temp_file = str(constants.MAIN_FOLDER_PATH / "temp" / "temp_list_scan.txt")
-        with open(temp_file, 'w', encoding='utf-8') as f:
-            for url in url_list:
-                f.write(f"{url}\n")
-        
-        # Use ListScanManager
-        list_scan_manager = ListScanManager(temp_file)
-        list_scan_manager.run()
-        
-        # Clean up temporary file
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
-            
-    except Exception as e:
-        logger.error(f"Error in legacy _list_scan: {e}")
-        raise
