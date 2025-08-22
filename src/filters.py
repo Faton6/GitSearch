@@ -106,10 +106,16 @@ class Checker:
         if self.obj.stats.repo_stats_leak_stats_table['size'] > constants.REPO_MAX_SIZE:
             logger.info(
                 f'Repository %s %s %s oversize ({self.obj.stats.repo_stats_leak_stats_table["size"]} > {constants.REPO_MAX_SIZE} limit), code not analyze',
-                self.log_color, self.url, CLR["RESET"]) # TODO: in report write oversize instead of "not state"
+                self.log_color, self.url, CLR["RESET"])
             self.obj.status.append(
                 f'Repository {self.url} is oversize ({self.obj.stats.repo_stats_leak_stats_table["size"]}), code not analyze')
-            self.secrets = {'Scan error':f'Repository {self.url} is oversize ({self.obj.stats.repo_stats_leak_stats_table["size"]}), code not analyze'}
+            # Report oversize status instead of generic "not state"
+            self.secrets = {
+                'Scan_status': 'oversize',
+                'Scan_error': f'Repository {self.url} is oversize ({self.obj.stats.repo_stats_leak_stats_table["size"]} bytes > {constants.REPO_MAX_SIZE} bytes limit)',
+                'Size_bytes': self.obj.stats.repo_stats_leak_stats_table["size"],
+                'Size_limit': constants.REPO_MAX_SIZE
+            }
             self._clean_repo_dirs()
             self.status |= NOT_CLONED
         else:
@@ -118,13 +124,37 @@ class Checker:
             for try_clone in range(constants.MAX_TRY_TO_CLONE):
                 try:
                     self._clean_repo_dirs()
-                    self.repo = git.Repo.clone_from(
-                        self.url, self.repos_dir)
+                    repo_url = self.url
+                    authenticated_url = repo_url.replace(
+                        "https://",
+                        f"https://{constants.GITHUB_CLONE_TOKEN}@"
+                    )   
+                    # TODO change to pygithub
+                    # self.repo = pygithub.Github(constants.GITHUB_CLONE_TOKEN).get_repo(self.url)
+                    # TODO change to graphql
+                    
+                    # Добавляем timeout на клонирование через subprocess, если gitpython не поддерживает timeout напрямую
+                    import subprocess
+                    clone_timeout = getattr(constants, 'MAX_TIME_TO_CLONE', 500)  # секунд, можно вынести в constants
+                    try:
+                        result = subprocess.run([
+                            'git', 'clone', '--depth=1', authenticated_url, self.repos_dir
+                        ], timeout=clone_timeout, capture_output=True, text=True)
+                        if result.returncode != 0:
+                            if 'not found' in result.stderr or 'not found' in result.stdout:
+                                break
+                            logger.error(f'git clone failed: {result.stderr}')
+                            
+                        self.repo = git.Repo(self.repos_dir)
+                    except subprocess.TimeoutExpired:
+                        logger.error(f'git clone timeout ({clone_timeout}s) for {self.url}')
+                        raise
                     os.makedirs(self.report_dir)
                     self.clean_excluded_files()
+                    self.obj.stats.fetch_contributors_stats()  # get stats this to optimize token usage
                     break
                 except Exception as exc:
-                    time.sleep(1)
+                    time.sleep(5)
                     pass
             else:
                 logger.error('Failed to clone repo %s', self.url)
@@ -132,7 +162,6 @@ class Checker:
                 self._clean_repo_dirs()
 
             self.status |= CLONED
-        self.obj.stats.get_contributors_stats()  # get stats this to optimize token usage
 
     def clean_excluded_files(self):
         """Очищает исключенные файлы из репозитория"""
@@ -674,157 +703,98 @@ class Checker:
 
         return 0
 
-    @_exc_catcher
     def kingfisher_scan(self):
+        """Запускает kingfisher, парсит stdout‑массив и обрабатывает находки."""
         scan_type = 'kingfisher'
         self.secrets[scan_type] = constants.AutoVivification()
 
         kf_bin = shutil.which('kingfisher')
         if not kf_bin:
             self.secrets[scan_type]['Info'] = 'kingfisher not installed'
-            logger.info(f'\t- {scan_type} scan %s %s %s success (tool not available)',
-                        self.log_color, self.url, CLR["RESET"])
+            logger.info('\t- %s scan %s %s %s success (tool not available)',
+                        scan_type, self.log_color, self.url, CLR["RESET"])
             return 0
 
         cmd = [
-            kf_bin, 'scan', self.repos_dir, '--format', 'json',
-            '--no-update-check', '--git-history', 'none', '--confidence', 'low', '-q'
+            kf_bin, 'scan', self.repos_dir,
+            '--format', 'json', '--no-update-check', '--confidence', 'low', '-q'
         ]
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=self.scan_time_limit
-            )
+            res = subprocess.run(cmd, capture_output=True, text=True,
+                                timeout=self.scan_time_limit)
         except subprocess.TimeoutExpired:
-            logger.error(f'\t- {scan_type} timeout occured in repository %s %s %s',
+            logger.error('\t- %s timeout in %s %s %s', scan_type,
                         self.log_color, self.url, CLR["RESET"])
             return 2
-        except Exception as ex:
-            logger.error(f'\t- Error in repository %s %s %s {scan_type}: %s',
-                        self.log_color, self.url, CLR["RESET"], ex)
+        except subprocess.CalledProcessError as ex:
+            logger.error('\t- %s returned non‑zero: %s', scan_type, ex)
             return 2
-        
-        output = result.stdout.strip()
-        if not output:
+
+        raw = res.stdout.lstrip()           # stderr содержит статистику/лог
+
+        # --- извлекаем один внешний [...] ---
+        start = raw.find('[')
+        if start == -1:
             self.secrets[scan_type]['Info'] = 'No findings'
-            logger.info(f'\t- {scan_type} scan %s %s %s success, no findings',
-                        self.log_color, self.url, CLR["RESET"])
+            logger.info('\t- %s scan %s %s %s success, no findings',
+                        scan_type, self.log_color, self.url, CLR["RESET"])
             return 0
 
-        # Удаляем текстовые префиксы перед JSON
-        json_start = output.find('[')
-        if json_start == -1:
-            # Если нет открывающей скобки массива, ищем объект
-            json_start = output.find('{')
-        
-        if json_start == -1:
-            logger.error(f'No JSON found in Kingfisher output: {output[:200]}...')
-            return 2
-        
-        # Извлекаем только JSON часть
-        json_output = output[json_start:]
-        
-        # Ищем конец первого JSON объекта (массива результатов)
-        json_end = 0
-        brace_count = 0
-        in_string = False
-        escape = False
-        
-        for i, char in enumerate(json_output):
-            if char == '"' and not escape:
-                in_string = not in_string
-            elif not in_string:
-                if char == '[' or char == '{':
-                    brace_count += 1
-                elif char == ']' or char == '}':
-                    brace_count -= 1
-                    if brace_count == 0:
-                        json_end = i + 1
-                        break
-            
-            escape = (char == '\\' and not escape)
-        
-        if json_end == 0:
-            logger.error(f'Failed to find end of JSON array in output: {json_output[:200]}...')
-            return 2
-        
-        # Извлекаем только массив результатов
-        json_array = json_output[:json_end]
-        
-        # Пытаемся распарсить JSON
-        try:
-            # Исправляем известные проблемы формата
-            json_array = (
-                json_array
-                .replace("'", '"')  # Заменяем одинарные кавычки на двойные
-                .replace(": 0,", ": null,")  # Исправляем значения git_metadata
-                .replace(": 0}", ": null}")  # Для последнего элемента
-            )
-            
-            findings = json.loads(json_array)
-        except json.JSONDecodeError as e:
-            logger.error(f'Failed to parse Kingfisher JSON array: {e}. JSON string: {json_array[:200]}...')
-            return 2
-        except Exception as e:
-            logger.error(f'Unexpected error parsing Kingfisher output: {e}')
+        depth = 0
+        in_str = False
+        esc = False
+        end = -1
+        for i, ch in enumerate(raw[start:], start):
+            if in_str:
+                esc = not esc if ch == '\\' and not esc else False
+                if ch == '"' and not esc:
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == '[':
+                depth += 1
+            elif ch == ']':
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end == -1:
+            logger.error('Cannot find end of JSON array in Kingfisher output')
             return 2
 
-        # Если мы получили словарь вместо массива, преобразуем его в ожидаемую структуру
-        if isinstance(findings, dict):
-            # Проверяем наличие ключа, содержащего результаты
-            for key in ['results', 'findings']:
-                if key in findings and isinstance(findings[key], list):
-                    findings = findings[key]
-                    break
-            else:
-                # Если не нашли подходящий ключ, используем пустой список
-                findings = []
+        try:
+            findings = json.loads(raw[start:end])
+        except json.JSONDecodeError as e:
+            logger.error('Kingfisher JSON decode error: %s', e)
+            return 2
 
         results = []
         for item in findings:
-            # Обрабатываем как элемент массива
-            if not isinstance(item, dict):
-                continue
-                
             rule_id = item.get('id', '')
-            matches = item.get('matches', [])
-            
-            for match in matches:
-                finding = match.get('finding', {})
-                snippet = finding.get('snippet', '').strip()
-                
-                # Формирование информации о местоположении
-                file_path = finding.get('path', '')
-                line_num = finding.get('line')
-                location = f"{file_path}:{line_num}" if line_num is not None else file_path
-                
-                # Извлечение дополнительных метаданных
-                extra_data = {
-                    'Rule': rule_id,
-                    'Confidence': finding.get('confidence', ''),
-                    'Entropy': finding.get('entropy', ''),
-                    'Fingerprint': finding.get('fingerprint', ''),
-                    'Validation': finding.get('validation', {}).get('status', '')
+            for match in item.get('matches', []):
+                f = match.get('finding', {})
+                loc = f'{f.get("path","")}:{f.get("line")}' if f.get('line') else f.get('path','')
+                extra = {
+                    'Rule':        rule_id,
+                    'Confidence':  f.get('confidence'),
+                    'Entropy':     f.get('entropy'),
+                    'Fingerprint': f.get('fingerprint'),
+                    'Validation':  f.get('validation', {}).get('status')
                 }
-                
-                result_entry = self._create_standard_result(
-                    match=snippet,
-                    file_path=location,
-                    extra_data=extra_data
+                results.append(
+                    self._create_standard_result(match=f.get('snippet','').strip(),
+                                                file_path=loc,
+                                                extra_data=extra)
                 )
-                results.append(result_entry)
 
-        processed_count = self._process_scan_results(scan_type, results, lambda x, _: x)
-
-        if processed_count == 0:
+        processed = self._process_scan_results(scan_type, results, lambda x, _: x)
+        if processed == 0:
             self.secrets[scan_type]['Info'] = 'Kingfisher completed but no meaningful results found'
 
-        logger.info(f'\t- {scan_type} scan %s %s %s success, processed {processed_count} results',
-                    self.log_color, self.url, CLR["RESET"])
-
+        logger.info('\t- %s scan %s %s %s success, processed %d results',
+                    scan_type, self.log_color, self.url, CLR["RESET"], processed)
         return 0
     
     @_exc_catcher
@@ -874,7 +844,6 @@ class Checker:
             logger.error('File deepsecrets_rep.json not founded\n')
             return 2
 
-    
     @_exc_catcher
     def ai_deep_scan(self):
         """AI глубокое сканирование"""
@@ -1224,7 +1193,7 @@ class Checker:
         full_text = ' '.join(str(source) for source in text_sources if source).lower()
         
         # Проверяем наличие компанейских терминов
-        company_terms = self.company_terms if company_name == self.company_name else generate_company_search_terms(company_name)
+        company_terms = self.company_terms if company_name == self.company_name else utils.generate_company_search_terms(company_name)
         for term in company_terms:
             if term.lower() in full_text:
                 # Вес зависит от длины термина (длинные термины более специфичны)
@@ -1424,7 +1393,7 @@ class Checker:
             time.sleep(2)  # for MultiThread control
             self._clean_repo_dirs()
 
-        self.obj.stats.get_commits_stats()  # get stats this to optimize token usage
+        self.obj.stats.fetch_commits_stats()  # get stats this to optimize token usage
         self.obj.secrets = self.secrets
         # AI анализ теперь выполняется автоматически в LeakObj._check_status()
         return self.secrets
@@ -1512,6 +1481,3 @@ class Checker:
             pass
         
         return repo_text
-
-    # Метод ai_scan() удален - AI анализ теперь выполняется автоматически 
-    # в LeakObj._check_status() через интеграцию с AIObj.py

@@ -70,7 +70,7 @@ class GlistScan:
 
     @classmethod
     def _scan(cls, url, obj):
-        obj.stats.get_repo_stats()
+        obj.stats.fetch_repository_stats()
         checker = filters.Checker(url, obj.dork, obj, 2)
         checker.clone()
         SECRETS = checker.run()
@@ -85,6 +85,7 @@ class GlistScan:
             for i, dork in enumerate(constants.dork_dict_from_DB[organization]):
                 if constants.dork_search_counter > constants.MAX_SEARCH_BEFORE_DUMP and len(constants.RESULT_MASS):
                     utils.dumping_data()
+                    utils.check_temp_folder_size()
 
                 constants.all_dork_search_counter += 1
                 logger.info(
@@ -126,3 +127,4 @@ class GlistScan:
                                 constants.dork_search_counter > constants.MAX_SEARCH_BEFORE_DUMP and len(
                                     constants.RESULT_MASS)):
                             utils.dumping_data()
+                            utils.check_temp_folder_size()

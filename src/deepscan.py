@@ -78,7 +78,7 @@ class DeepScanManager:
         
         for url_from_db in url_dump.keys():
             url_data = url_dump[url_from_db]
-            if (isinstance(url_data, str) and 
+            if (isinstance(url_data[0], str) and 
                 int(url_data[0]) == constants.RESULT_CODE_TO_DEEPSCAN) or (isinstance(url_data[0], int) and 
                 url_data[0] == constants.RESULT_CODE_TO_DEEPSCAN):
                 urls_to_scan[url_from_db] = [url_data[1], None]
@@ -108,7 +108,7 @@ class DeepScanManager:
         logger.info(f"Found {len(urls_to_scan)} URLs not analysed yet")
         return urls_to_scan
     
-    def _perform_gistobj_deep_scan(self, url: str, leak_id: str, company_id: int) -> Tuple[Optional[Dict], Optional[Dict]]:
+    def _perform_gistobj_deep_scan(self, url: str, leak_id: int, company_id: int) -> Tuple[Optional[Dict], Optional[Dict]]:
         """
         Perform deep scan on a single Gist URL.
         
@@ -117,7 +117,7 @@ class DeepScanManager:
             leak_id: Database identifier for the Gist
             
         Returns:
-            Tuple of (scan_results, ai_report)
+            Tuple of (obj)
         """
         try:
             # Create a mock GlistObj for the checker
@@ -130,7 +130,7 @@ class DeepScanManager:
             
             company_name = Connector.get_company_name(company_id=company_id)
             glist_obj = GlistObj(url, company_name, company_id)
-            glist_obj.stats.get_repo_stats()
+            glist_obj.stats.fetch_repository_stats()
             checker = filters.Checker(url=url, dork=company_name, obj=glist_obj, mode=2)
             checker.clone()
             checker.run()
@@ -140,7 +140,7 @@ class DeepScanManager:
         except Exception as e:
             logger.error(f"Error during deep scan of {url}: {e}")
             return None
-    def _perform_leakobj_deep_scan(self, url: str, leak_id: str, company_id: int) -> Tuple[Optional[Dict], Optional[Dict]]:
+    def _perform_leakobj_deep_scan(self, url: str, leak_id: int, company_id: int) -> Tuple[Optional[Dict], Optional[Dict]]:
         """
         Perform deep scan on a single repository URL.
         
@@ -149,7 +149,7 @@ class DeepScanManager:
             leak_id: Database identifier for the repository
             
         Returns:
-            Tuple of (scan_results, ai_report)
+            Tuple of (obj)
         """
         try:
             # Create a mock RepoObj for the checker
@@ -159,8 +159,8 @@ class DeepScanManager:
                 'size': 0  # Will be updated during scanning
             }
             company_name = Connector.get_company_name(company_id=company_id)
-            repo_obj = RepoObj(url, mock_repo_data, company_id)
-            
+            repo_obj = RepoObj(url, mock_repo_data, company_name, company_id)
+            repo_obj.stats.fetch_repository_stats()
             # Initialize checker with deep scan mode (mode=3)
             checker = filters.Checker(url=url, dork=company_name, obj=repo_obj, mode=3)
             
@@ -197,31 +197,36 @@ class DeepScanManager:
         url_list = list(self.urls_to_scan.keys())
         batch_size = DEEP_SCAN_CONFIG['batch_size']
         counter = 0
+        if len(url_list) > 500:
+            url_list = url_list[:500]  # Limit to first 500 URLs for performance
         for i in range(0, len(url_list), batch_size):
             batch_urls = url_list[i:i + batch_size]
-            logger.info(f"Processing batch {i//batch_size + 1}: {len(batch_urls)} URLs")
-            
-            self._process_batch(batch_urls)
-
-            if counter > constants.MAX_OBJ_BEFORE_SEND:
-                self.send_objs()
-                counter = 0
-            counter += 1
+            logger.info(f"Processing batch {i//batch_size + 1}: {len(batch_urls)} URLs. I={i}")
+            # counter теперь увеличивается на каждом обработанном URL
+            counter += self._process_batch(batch_urls)
+            # send_objs вызывается после каждого batch
+            self.send_objs()
+        # Финальный вызов send_objs для отправки оставшихся объектов
+        self.send_objs()
     
     def send_objs(self):
+        # Обрабатываем только те объекты, которые были успешно просканированы и еще не отправлены
+        urls_to_remove = []
         for url, data in list(self.urls_to_scan.items()):
             leak_obj = data[1]
-            if leak_obj:
+            # leak_obj должен быть валидным и не должен быть уже в RESULT_MASS
+            if leak_obj and leak_obj.repo_name not in constants.RESULT_MASS["deep_scan"]:
                 constants.RESULT_MASS["deep_scan"][leak_obj.repo_name] = leak_obj
-            else:
-                del self.urls_to_scan[url]
+                urls_to_remove.append(url)
+        # Удаляем только те url, которые были обработаны
+        for url in urls_to_remove:
+            del self.urls_to_scan[url]
 
         if constants.RESULT_MASS.get("deep_scan"):
             Connector.dump_to_DB()
             constants.RESULT_MASS.pop("deep_scan", None)
         else:
             logger.info("No repositories require database updates")
-        
         logger.info("Deep scan process completed")
     
     def _process_batch(self, batch_urls: List[str]) -> None:
@@ -231,14 +236,17 @@ class DeepScanManager:
         Args:
             batch_urls: List of URLs to process in this batch
         """
+        counter = 0
         for url in batch_urls:
-            leak_id = self.urls_to_scan[url][0]
+            if isinstance(self.urls_to_scan[url][0], (int, str)):
+                leak_id = int(self.urls_to_scan[url][0])
+            else:
+                continue
             logger.info(f"Deep scanning: {url}")
 
             for attempt in range(DEEP_SCAN_CONFIG["max_retries"]):
                 try:
-                    company_id = Connector.get_compnay_id(leak_id)
-                    
+                    company_id = Connector.get_company_id(int(leak_id))
                     if 'gist.github.com' in url:
                         leak_obj = self._perform_gistobj_deep_scan(url, leak_id, company_id)
                     else:
@@ -249,10 +257,11 @@ class DeepScanManager:
                     logger.warning(f"Scan attempt {attempt + 1} failed for {url}")
                 except Exception as e:
                     logger.error(f"Error in scan attempt {attempt + 1} for {url}: {e}")
-
             else:
                 logger.error(f"All scan attempts failed for {url}, removing from update list")
                 del self.urls_to_scan[url]
+            counter += 1
+        return counter
     
 
 

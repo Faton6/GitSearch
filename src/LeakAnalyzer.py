@@ -15,38 +15,6 @@ class LeakAnalyzer:
         self.company_name = Connector.get_company_name(leak_obj.company_id)
         self.company_tokens = utils.generate_company_search_terms(self.company_name)
         
-        # Mapping for secret types and their criticality weights
-        self.secret_type_weights = {
-            # Critical secrets (private keys, certificates)
-            "private_key": 1.0,
-            "rsa_private_key": 1.0,
-            "ssh_private_key": 1.0,
-            "certificate": 0.9,
-            "pkcs8": 0.9,
-            
-            # High-value secrets (production credentials)
-            "database_password": 0.8,
-            "prod_password": 0.8,
-            "admin_password": 0.8,
-            "api_key": 0.7,
-            "access_token": 0.7,
-            "secret_key": 0.7,
-            "auth_token": 0.7,
-            
-            # Medium-value secrets
-            "password": 0.5,
-            "token": 0.5,
-            "key": 0.4,
-            "credential": 0.4,
-            
-            # Low-value secrets (likely test/dev)
-            "test_password": 0.1,
-            "dev_password": 0.1,
-            "dummy_password": 0.1,
-            "example_key": 0.1,
-            "sample_token": 0.1,
-        }
-        
         # Context keywords that increase/decrease secret value
         self.context_keywords = {
             "critical": {
@@ -174,7 +142,7 @@ class LeakAnalyzer:
                 elif self.bad_file_ext:
                     score -= 0.5
                 
-        return min(score, 1.0)
+        return max(0.0, min(score, 1.0))
     
     def _extract_domain_from_email(self, email: str) -> str:
         """Extract domain from email address."""
@@ -184,7 +152,8 @@ class LeakAnalyzer:
         try:
             domain = email.split('@')[-1].lower().strip()
             return domain
-        except:
+        except (IndexError, AttributeError) as e:
+            logger.warning(f"Error extracting domain from email '{email}': {e}")
             return ""
     
     def _check_corporate_email_domains(self, email: str, company_tokens: list[str]) -> float:
@@ -200,9 +169,10 @@ class LeakAnalyzer:
         if not domain:
             return 0.0
         
-        # Check against known corporate domains
-        for company, patterns in self.corporate_domain_patterns.items():
-            if any(token in company for token in company_tokens):
+        # Check against known corporate domains based on company tokens
+        for token in company_tokens:
+            if token in self.corporate_domain_patterns:
+                patterns = self.corporate_domain_patterns[token]
                 for pattern in patterns:
                     if re.search(pattern, domain):
                         return 1.0  # Perfect match for corporate domain
@@ -251,7 +221,14 @@ class LeakAnalyzer:
             score += 0.25
         if dork and description and dork in description.lower():
             score += 0.15
-
+        
+        # Check other company tokens in description
+        if company_tokens and description:
+            description_lower = description.lower()
+            for token in company_tokens:
+                if token in description_lower:
+                    # Lower score than dork since these are derived tokens
+                    score += 0.08
         # Factor 2: Enhanced Author/Committer relevance with corporate email analysis
         # Check if author or committers names/emails contain parts of the dork or company name
         if self.leak_obj.author_name and self.leak_obj.dork and self.leak_obj.dork.lower() in self.leak_obj.author_name.lower():
@@ -340,9 +317,11 @@ class LeakAnalyzer:
         # Factor 6: AI assessment (if available and positive)
         ai_analysis = getattr(self.leak_obj, 'ai_analysis', None)
         if ai_analysis and ai_analysis.get('company_relevance', {}).get('is_related'):
-            score += ai_analysis.get('company_relevance', {}).get('confidence', 0.0) * 0.3  # Boost based on AI confidence
+            ai_confidence = ai_analysis.get('company_relevance', {}).get('confidence', 0.0)
+            score += ai_confidence * 0.5 + 0.1  # Weighted boost based on AI confidence
         elif ai_analysis and not ai_analysis.get('company_relevance', {}).get('is_related'):
-            score -= ai_analysis.get('company_relevance', {}).get('confidence', 0.0) * 0.3  # Penalty based on AI confidence
+            ai_confidence = ai_analysis.get('company_relevance', {}).get('confidence', 0.0)
+            score -= (ai_confidence * 0.3 + 0.05)  # Penalty based on AI confidence
             
         # Cap the score at 1.0
         score = max(score, 0.0)  # Ensure score is not negative

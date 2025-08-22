@@ -57,6 +57,7 @@ class LeakObj(ABC):
 
         self.secrets = {'Not state': 'Not state'}
         self.ai_analysis = None  # Will store AI analysis results
+        self.ai_configence = 0.0
         self.company_info = None  # Will store company information for analysis
         self.ai_obj = None  # AIObj instance for analysis
         self.status = []
@@ -154,11 +155,11 @@ class LeakObj(ABC):
             # Company relevance
             company_rel = self.ai_analysis.get('company_relevance', {})
             if company_rel.get('is_related'):
-                confidence = company_rel.get('confidence', 0.0)
-                self.status.append(self._get_message("ai_analysis_company_related", lang, confidence=confidence))
+                self.ai_configence = company_rel.get('confidence', 0.0)
+                self.status.append(self._get_message("ai_analysis_company_related", lang, confidence=self.ai_configence))
             else:
-                confidence = company_rel.get('confidence', 0.0)
-                self.status.append(self._get_message("ai_analysis_company_unrelated", lang, confidence=confidence))
+                self.ai_configence = company_rel.get('confidence', 0.0)
+                self.status.append(self._get_message("ai_analysis_company_unrelated", lang, confidence=self.ai_configence))
             
             # Severity assessment
             severity = self.ai_analysis.get('severity_assessment', {})
@@ -180,6 +181,16 @@ class LeakObj(ABC):
             self.status.append(self._get_message("ai_analysis_error", lang))
     
     def _check_status(self):
+        
+        scan_error = self.secrets.get("Scan error")
+
+        if scan_error and any(
+            keyword in str(scan_error).lower() for keyword in ["failed to clone", "clone"]
+        ) and ('gist.github.com' in self.repo_url or int(self.stats.repo_stats_leak_stats_table['size']) == 0):
+            self.lvl = 0
+            self.status = [self._get_message("gist_clone_error", constants.LANGUAGE)]
+            return
+        
         self._check_stats()
         lang = constants.LANGUAGE # Assuming LANGUAGE is defined in constants.py
 
@@ -338,20 +349,16 @@ class LeakObj(ABC):
             'updated_at': self.stats.updated_at,
             'approval': res_human_check,
             'leak_type': founded_leak,
-            'result': self.res_check,
-            'company_id': self.company_id,
-            'ai_report': json.dumps(self.ai_analysis) if self.ai_analysis else {'Error':'AI report not created'},
-            'ai_company_related': self.ai_analysis.get('company_relevance', {}).get('is_related', False) if self.ai_analysis else None,
-            'ai_severity_score': self.ai_analysis.get('severity_assessment', {}).get('score', 0.0) if self.ai_analysis else None,
-            'ai_true_positive_prob': self.ai_analysis.get('classification', {}).get('true_positive_probability', 0.0) if self.ai_analysis else None
+            'result': int(self.res_check),
+            'company_id': int(self.company_id),
         }
         return self.final_leak
 
     def _check_stats(self):
         if not self.stats.coll_stats_getted:
-            self.stats.get_contributors_stats()
+            self.stats.fetch_contributors_stats()
         if not self.stats.comm_stats_getted:
-            self.stats.get_commits_stats()
+            self.stats.fetch_commits_stats()
         for contributor in self.stats.contributors_stats_accounts_table:
             contributor['company_id'] = self.company_id
 

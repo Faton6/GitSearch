@@ -7,7 +7,7 @@ import src.constants as const
 
 # Project lib's import
 from src.filters import Checker, CLONED, SCANNED
-from src.utils import dumping_data
+from src import utils
 from src import Connector
 from src.logger import logger, CLR
 from src.searcher.parsers import (GitParserSearch, GitRepoParser, GitCodeParser, GitCommitParser)
@@ -16,7 +16,8 @@ from src.searcher.parsers import (GitParserSearch, GitRepoParser, GitCodeParser,
 def check_obj_pool_size():
     if (const.quantity_obj_before_send >= const.MAX_OBJ_BEFORE_SEND
         or const.dork_search_counter > const.MAX_SEARCH_BEFORE_DUMP) and len(const.RESULT_MASS):
-        dumping_data()
+        utils.dumping_data()
+        utils.check_temp_folder_size()
 
 
 class Scanner():
@@ -78,7 +79,7 @@ class Scanner():
                         else:
                             self.checked.append(obj.repo_name)
 
-                        obj.stats.get_repo_stats()
+                        obj.stats.fetch_repository_stats()
 
                         checker = Checker(obj.repo_url, obj.dork, obj, 1)
                         targets[clone_exec.submit(checker.clone)] = checker
