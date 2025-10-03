@@ -37,6 +37,91 @@ class GitSearchAPIClient:
             logger.error(f"Error connecting to MariaDB: {e}")
             return None
     
+    def _make_request(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Compatibility method for ver2 API-style requests.
+        
+        Emulates API interface but works with local database.
+        Expected data format:
+        {
+            'tname': table_name,
+            'dname': database_name,
+            'action': 'get'|'add'|'upd',
+            'content': {...},
+            'limit': int,
+            'offset': int
+        }
+        """
+        try:
+            table_name = data.get('tname')
+            dname = data.get('dname', '')
+            action = data.get('action')
+            content = data.get('content', {})
+            limit = data.get('limit', 100)
+            offset = data.get('offset', 0)
+            
+            # Маппинг таблиц ver2 -> локальная БД
+            table_mapping = {
+                'company': 'companies',  # company в ver2 -> companies в локальной БД
+                'dork': 'dorks',
+                'leak': 'leak',
+                'raw_report': 'raw_report',
+                'leak_stats': 'leak_stats',
+                'account': 'account',
+                'related_accounts_leaks': 'related_accounts_leaks'
+            }
+            
+            # Маппинг полей для companies
+            field_mapping = {
+                'companies': {
+                    'name': 'company_name'  # name в ver2 -> company_name в локальной БД
+                }
+            }
+            
+            # Конвертируем имя таблицы
+            actual_table = table_mapping.get(table_name, table_name)
+            
+            if action == 'get':
+                results = self.get_data(actual_table, content, limit, offset)
+                
+                # Конвертируем поля обратно для совместимости с ver2
+                if actual_table in field_mapping:
+                    converted_results = []
+                    for row in results:
+                        converted_row = dict(row)
+                        for old_field, new_field in field_mapping[actual_table].items():
+                            if new_field in converted_row:
+                                converted_row[old_field] = converted_row[new_field]
+                        converted_results.append(converted_row)
+                    results = converted_results
+                
+                return {
+                    'auth': True,
+                    'content': results if results else [0]
+                }
+            elif action == 'add':
+                result_id = self.add_data(actual_table, content)
+                return {
+                    'auth': True,
+                    'content': {'id': result_id} if result_id else 'ERROR: Failed to add data'
+                }
+            elif action == 'upd':
+                affected = self.upd_data(actual_table, content)
+                return {
+                    'auth': True,
+                    'content': {'affected': affected if affected is not None else 0}
+                }
+            else:
+                return {
+                    'auth': False,
+                    'content': f'ERROR: Unknown action {action}'
+                }
+        except Exception as e:
+            logger.error(f"Error in _make_request: {e}")
+            return {
+                'auth': False,
+                'content': f'ERROR: {str(e)}'
+            }
+    
     def get_data(self, table_name: str, filters: Optional[Dict[str, Any]] = None, 
                  limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         """Get data from specified table with filters.

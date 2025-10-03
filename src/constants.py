@@ -65,6 +65,7 @@ AI_ANALYSIS_TIMEOUT = 30  # seconds
 AI_MAX_CONTEXT_LENGTH = 4000  # characters
 AI_COMPANY_RELEVANCE_THRESHOLD = 0.5
 AI_TRUE_POSITIVE_THRESHOLD = 0.6
+AI_PROVIDER_CHECK_INTERVAL = 5  # Check provider availability every N requests (0 = check every time)
 
 COUNTRY_PROFILING: bool = True
 COMPANY_COUNTRY_MAP_DEFAULT: str = "ru"  # Default country for companies without specific mapping

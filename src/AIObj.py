@@ -155,6 +155,10 @@ class AIObj(ABC):
     def analyze_leak_comprehensive(self):
         """Полноценный анализ утечки с использованием доступных LLM провайдеров"""
 
+        # Быстрая проверка с кешированием перед началом анализа
+        if not self.llm_manager.has_available_providers():
+            return None
+        
         if not self.llm_manager.providers:
             logger.warning("Нет доступных LLM провайдеров")
             return None
@@ -402,6 +406,9 @@ class LLMProviderManager:
     def __init__(self):
         self.providers = {}
         self.usage_stats = {}
+        self._providers_available = None  # Кеш доступности провайдеров
+        self._request_counter = 0  # Счетчик запросов для периодической проверки
+        self._last_check_time = 0  # Время последней проверки
         self._load_providers()
     
     def _load_providers(self):
@@ -423,6 +430,20 @@ class LLMProviderManager:
             else:
                 logger.warning(f"API key for {provider_config['name']} not found or empty")
     
+    def _check_providers_available(self) -> bool:
+        """Проверить наличие доступных провайдеров"""
+        current_time = time.time()
+        
+        for name, provider in self.providers.items():
+            # Простая проверка лимитов
+            if provider["error_count"] < 3:
+                if provider.get("requests_count", 0) >= provider.get("daily_limit", float("inf")) - 50:
+                    continue
+                if current_time - provider["last_request_time"] > 60 / provider["rpm"]:
+                    return True
+        
+        return False
+    
     def get_available_provider(self) -> Optional[Dict[str, Any]]:
         """Получить доступного провайдера"""
         current_time = time.time()
@@ -437,14 +458,47 @@ class LLMProviderManager:
         
         return None
     
+    def has_available_providers(self) -> bool:
+        """Проверить наличие доступных провайдеров с учетом кеширования"""
+        check_interval = constants.AI_PROVIDER_CHECK_INTERVAL
+        
+        # Если интервал 0, всегда проверяем
+        if check_interval == 0:
+            available = self._check_providers_available()
+            self._providers_available = available
+            return available
+        
+        # Увеличиваем счетчик запросов
+        self._request_counter += 1
+        
+        # Проверяем, нужно ли обновить кеш
+        if self._providers_available is None or self._request_counter >= check_interval:
+            available = self._check_providers_available()
+            self._providers_available = available
+            self._request_counter = 0
+            self._last_check_time = time.time()
+            
+            if not available:
+                logger.warning(f"ZERO Available LLM providers. Next check after {check_interval} requests")
+            else:
+                logger.info(f"LLM providers are available. Next check after {check_interval} requests")
+        
+        return self._providers_available
+    
     def make_request(self, messages: List[Dict[str, str]], 
                     max_tokens: int = 2000, 
                     temperature: float = 0.1) -> Optional[Dict[str, Any]]:
         """Выполнить запрос к доступному провайдеру"""
         
+        # Быстрая проверка с кешированием
+        if not self.has_available_providers():
+            return None
+        
         provider = self.get_available_provider()
         if not provider:
-            logger.error("ZERO Availible LLM providers")
+            logger.error("ZERO Available LLM providers")
+            # Сбрасываем кеш, т.к. провайдеры недоступны
+            self._providers_available = False
             return None
         
         headers = {
