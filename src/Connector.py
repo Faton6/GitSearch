@@ -51,8 +51,13 @@ def is_this_need_to_analysis(leak_obj):
         leak_obj, "secrets", {}
     ).get("Error")
     if scan_error and any(
-        keyword in str(scan_error).lower() for keyword in ["error", "oversize", "not analyze"]
+        keyword in str(scan_error).lower() for keyword in ["oversize", "not analyze"]
     ):
+        is_this_need_to_analysis_flag = False
+
+    if scan_error and any(
+        keyword in str(scan_error).lower() for keyword in ["failed to clone", "clone"]
+    ) and ('gist.github.com' in leak_obj.repo_url or int(leak_obj.stats.repo_stats_leak_stats_table['size']) == 0):
         is_this_need_to_analysis_flag = False
 
     ai_analysis = getattr(leak_obj, "ai_analysis", {}) or {}
@@ -78,6 +83,9 @@ def is_this_need_to_analysis(leak_obj):
 
     if false_pos == 1.0:
         is_this_need_to_analysis_flag = False
+    
+    if leak_obj.ai_configence >= 0.7:
+        is_this_need_to_analysis_flag = True
     return is_this_need_to_analysis_flag
 
 def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 - update obj in DB

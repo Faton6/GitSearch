@@ -8,7 +8,7 @@ import signal
 from src import constants
 from src import Connector
 from src.logger import logger
-from src.searcher import Scanner
+from src.searcher.scanner import Scanner
 from src.glist.glist_scan import GlistScan
 from src import deepscan
 from src import utils
@@ -66,14 +66,15 @@ if __name__ == "__main__":
                     constants.all_dork_counter += 1
                     constants.leak_check_list.append(base_dork) # Assuming base_dorks are also leak_check_list items
 
+   
     constants.all_dork_counter *= 2
 
     signal.signal(signal.SIGINT, signal_shutdown)
 
-    # Changing directory to project root folder
+
     old_dir = os.getcwd()
     os.chdir(constants.SEARCH_FOLDER_PATH)
-    logger.info('Curent directory: %s', constants.SEARCH_FOLDER_PATH)
+    logger.info(f'Curent directory: {constants.SEARCH_FOLDER_PATH}')
 
     # List scan
     logger.info('Start List scan')
@@ -81,18 +82,15 @@ if __name__ == "__main__":
 
     # Github Gist scan
     logger.info('Start Gist scan')
-    #GlistScan.run(filter_='updated', quantity=30)
-    #utils.dumping_data()
+    GlistScan.run(filter_='updated', quantity=30)
+    utils.dumping_data()
 
     # Github scan
     logger.info('Start Github scan')
-    
-    #for org in constants.dork_dict_from_DB:
-    #    Scanner(org).gitscan()
+    for org in constants.dork_dict_from_DB:
+        Scanner(org).gitscan()
     utils.dumping_data()
 
-    # Deepscan - repeat deep scan of found leaks
-    # TODO Not it work only for DB version
 
     logger.info('Start Deepscan scan')
     constants.RESULT_MASS = constants.AutoVivification()
@@ -104,6 +102,11 @@ if __name__ == "__main__":
     constants.RESULT_MASS = constants.AutoVivification()
     deep_scan_manager = deepscan.DeepScanManager()
     deep_scan_manager.run(mode=1)  # mode=1 for re-scan
+
+    Connector.update_result_filed_in_DB()
+    
+    if os.path.exists(f'{constants.MAIN_FOLDER_PATH}/temp/temp_exclude_list.txt'):
+        os.remove(f'{constants.MAIN_FOLDER_PATH}/temp/temp_exclude_list.txt')
 
     os.chdir(old_dir)
     print(f'Back to directory: {old_dir}')

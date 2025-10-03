@@ -25,9 +25,11 @@ if not os.path.exists(TEMP_FOLDER):
 if not os.path.exists(RESULTS):
     os.makedirs(RESULTS)
 # seconds to scan by git-secrets/gitleaks/whisper/trufflehpg/deepsecret
+MAX_TEMP_FOLDER_SIZE = 10 * 1024 * 1024 * 1024 # TODO add ckecking of size and deleting old temp folders
 MAX_TIME_TO_SCAN_BY_UTIL_DEFAULT = 100
 MAX_TIME_TO_SCAN_BY_UTIL_DEEP = 3000
 MAX_TIME_TO_SEARCH_GITHUB_REQUEST = 500  # seconds to search by github API
+MAX_TIME_TO_CLONE = 500  # seconds to clone repo
 GITHUB_REQUEST_COOLDOWN: float = 60.0
 GITHUB_REQUEST_RATE_LIMIT: float = 10.0
 GITHUB_REPO_COUNT_AT_REQUEST_LIMIT: int = 1000  # Github api restriction https://docs.github.com/rest/search/search#search-code
@@ -66,12 +68,43 @@ AI_TRUE_POSITIVE_THRESHOLD = 0.6
 COUNTRY_PROFILING: bool = True
 COMPANY_COUNTRY_MAP_DEFAULT: str = "ru"  # Default country for companies without specific mapping
 COMPANY_COUNTRY_MAP: dict[str, str] = {
+    # Russian companies
     "VTB": "ru",
-    "INNO": "ru",
-    "ALFA": "ru",
+    "INNO": "ru", 
+    "T1": "ru",
     "SBER": "ru",
-} # TODO
+    "GAZPROM": "ru",
+    "YANDEX": "ru",
+    "MAILRU": "ru",
+    "OZON": "ru",
+    "WILDBERRIES": "ru",
+    "KASPERSKY": "ru",
+    
+    # International companies
+    "GOOGLE": "en",
+    "MICROSOFT": "en", 
+    "APPLE": "en",
+    "AMAZON": "en",
+    "META": "en",
+    "TESLA": "en",
+    "NVIDIA": "en",
+    "IBM": "en",
+    "ORACLE": "en",
+    "ANDROID": "en",
+    "LINUX": "en",
+}
+# Common public email domains for corporate domain detection
+PUBLIC_EMAIL_DOMAINS = {
+    'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'live.com',
+    'yandex.ru', 'mail.ru', 'rambler.ru', 'bk.ru', 'list.ru',
+    'protonmail.com', 'tutanota.com', 'temp-mail.org'
+}
 
+# Patterns that might indicate dangerous content in repositories
+DANGEROUS_PATTERNS = {
+    'api_key', 'secret', 'password', 'token', 'credential', 'private_key',
+    'prod', 'production', 'admin', 'root', 'database', 'db_password'
+}
 
 dork_dict_from_DB: dict = {}
 dork_list_from_file: list = []
