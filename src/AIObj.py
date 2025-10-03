@@ -5,8 +5,21 @@ import json
 import requests
 from typing import Optional, Dict, List, Any
 import re
-import tiktoken
-from openai import OpenAI
+
+# Опциональные импорты для AI функционала
+try:
+    import tiktoken
+    TIKTOKEN_AVAILABLE = True
+except ImportError:
+    TIKTOKEN_AVAILABLE = False
+    tiktoken = None
+
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+    OpenAI = None
 
 from src import constants
 from src.logger import logger
@@ -26,10 +39,14 @@ class AIObj(ABC):
     
     def __init__(self, secrets: dict, stats_data: dict, leak_info: dict, company_info: Optional[Dict[str, Any]] = None):
         # Инициализация токенизатора (если доступен)
-        try:
-            self.tokenizer = tiktoken.get_encoding("cl100k_base")
-        except ImportError:
-            logger.warning("tiktoken no availible, using simple tokenizer")
+        if TIKTOKEN_AVAILABLE and tiktoken:
+            try:
+                self.tokenizer = tiktoken.get_encoding("cl100k_base")
+            except Exception as e:
+                logger.warning(f"tiktoken initialization failed: {e}, using simple tokenizer")
+                self.tokenizer = None
+        else:
+            logger.debug("tiktoken not available, using simple tokenizer")
             self.tokenizer = None
         
         # Флаги состояния
@@ -40,6 +57,7 @@ class AIObj(ABC):
         self.ai_result = -1  # Для обратной совместимости (0/1/-1)
         
         self.ai_analysis = None  # Расширенный анализ
+        self.ai_report = None  # Для совместимости с тестами и старым кодом
         
         # Информация о компании
         self.company_info = company_info or {}

@@ -54,6 +54,14 @@ class GitParserStats:
         self.commits_stats_commiters_table: list = []
         
         self.ai_result = -1 # 1 - ai found leak, 0 - ai not found leak, -1 - ai not used
+        
+        # Флаги состояния получения статистики
+        self.repo_stats_getted = False
+        self.coll_stats_getted = False
+        self.comm_stats_getted = False
+
+        if self.login_repo is None:
+            raise ValueError("Attribute url is not overloaded!")
 
     def _is_corporate_domain(self, email: str) -> bool:
         """Check if email domain is corporate (not a public provider)."""
@@ -86,13 +94,6 @@ class GitParserStats:
             
         # Return 1 if score >= 1 (needs monitoring), 0 otherwise
         return 1 if score >= 1 else 0
-
-        self.repo_stats_getted = False
-        self.coll_stats_getted = False
-        self.comm_stats_getted = False
-
-        if self.login_repo is None:
-            raise ValueError("Attribute url is not overloaded!")
 
     # check repository stats:
     def fetch_repository_stats(self):  # Renamed from get_repo_stats for better clarity

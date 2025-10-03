@@ -12,6 +12,7 @@ import time
 import hashlib
 import git
 import ast
+import threading
 
 # Project lib's import
 from src import Connector, constants
@@ -65,6 +66,9 @@ class Checker:
         self.safe_company_name = utils.sanitize_company_name(self.company_name)
         self.scan_time_limit = constants.MAX_TIME_TO_SCAN_BY_UTIL_DEEP if self.mode == 3 else constants.MAX_TIME_TO_SCAN_BY_UTIL_DEFAULT
         self.log_color = choice(tuple(CLR.values()))
+        # Блокировка для безопасного удаления директории при мультипоточности
+        self._cleanup_lock = threading.Lock()
+        self._cleaned = False  # Флаг для предотвращения повторного удаления
         self.scans = {
             'gitleaks': self.gitleaks_scan,
             'trufflehog': self.trufflehog_scan,
@@ -85,10 +89,27 @@ class Checker:
         }
 
     def _clean_repo_dirs(self):
-        if os.path.exists(self.repos_dir):
-            shutil.rmtree(self.repos_dir)
-        if os.path.exists(self.report_dir):
-            shutil.rmtree(self.report_dir)
+        """Безопасное удаление директории репозитория с защитой от race condition"""
+        with self._cleanup_lock:
+            if self._cleaned:
+                logger.debug(f'Repository {self.repos_dir} already cleaned, skipping')
+                return
+            
+            try:
+                if os.path.exists(self.repos_dir):
+                    shutil.rmtree(self.repos_dir)
+                    logger.debug(f'Cleaned repository directory: {self.repos_dir}')
+            except Exception as e:
+                logger.error(f'Error cleaning repository directory {self.repos_dir}: {e}')
+            
+            try:
+                if os.path.exists(self.report_dir):
+                    shutil.rmtree(self.report_dir)
+                    logger.debug(f'Cleaned report directory: {self.report_dir}')
+            except Exception as e:
+                logger.error(f'Error cleaning report directory {self.report_dir}: {e}')
+            
+            self._cleaned = True
 
     def _pywhat_analyze_names(self, match):
         all_names = []
@@ -149,6 +170,10 @@ class Checker:
                     except subprocess.TimeoutExpired:
                         logger.error(f'git clone timeout ({clone_timeout}s) for {self.url}')
                         raise
+                    
+                    # Удаляем токен из .git/config сразу после клонирования
+                    utils.remove_token_from_git_config(self.repos_dir, self.url)
+                    
                     os.makedirs(self.report_dir)
                     self.clean_excluded_files()
                     self.obj.stats.fetch_contributors_stats()  # get stats this to optimize token usage
@@ -178,25 +203,42 @@ class Checker:
     def scan(self):
         logger.info('Started scan: %s | %s %s %s ', self.dork, self.log_color,
                     self.url, CLR["RESET"])
+        
+        # Проверка существования директории перед началом сканирования
+        if not os.path.isdir(self.repos_dir):
+            logger.error('Repository directory %s does not exist or was removed before scan', self.repos_dir)
+            self.secrets = {'Scan error': f'Repository directory removed before scan'}
+            return self.secrets
+        
         cur_dir = os.getcwd()
-        os.chdir(self.repos_dir)
+        try:
+            os.chdir(self.repos_dir)
+        except (FileNotFoundError, NotADirectoryError) as e:
+            logger.error('Failed to change to repository directory %s: %s', self.repos_dir, e)
+            self.secrets = {'Scan error': f'Failed to access repository directory'}
+            return self.secrets
         
         if self.mode == 3:
             self.scans = self.deep_scans
         scan_results = {}
-        with ThreadPoolExecutor(max_workers=len(self.scans)) as executor:
-            futures = {executor.submit(method): name for name, method in self.scans.items()}
-            for future in as_completed(futures):
-                res, method = future.result(), futures[future]
-                scan_results[method] = res
-                if res == 1:
-                    return 1
-                if res == 2:
-                    logger.error('Excepted error in scan, check privious log!')
-                elif res == 3:
-                    logger.info(f'Canceling {method} scan in repo: {"/".join(self.url.split("/")[-2:])}')
-
-        os.chdir(cur_dir)
+        try:
+            with ThreadPoolExecutor(max_workers=len(self.scans)) as executor:
+                futures = {executor.submit(method): name for name, method in self.scans.items()}
+                for future in as_completed(futures):
+                    res, method = future.result(), futures[future]
+                    scan_results[method] = res
+                    if res == 1:
+                        return 1
+                    if res == 2:
+                        logger.error('Excepted error in scan, check privious log!')
+                    elif res == 3:
+                        logger.info(f'Canceling {method} scan in repo: {"/".join(self.url.split("/")[-2:])}')
+        finally:
+            # Всегда возвращаемся в исходную директорию, даже при ошибках
+            try:
+                os.chdir(cur_dir)
+            except Exception as e:
+                logger.error(f'Failed to return to original directory {cur_dir}: {e}')
         
         # Проверяем, есть ли хотя бы один сканер с результатами
         has_results = any(
@@ -505,6 +547,11 @@ class Checker:
     def gitleaks_scan(self):
         scan_type = 'gitleaks'
         
+        # Проверка существования директории перед сканированием
+        if not os.path.isdir(self.repos_dir):
+            logger.warning('Repository directory %s removed before gitleaks_scan', self.repos_dir)
+            return 3
+        
         try:
             gitleaks_com = (
                 '/usr/local/bin/gitleaks detect --no-banner --no-color --report-format json --exit-code 0 --report-path "'
@@ -550,6 +597,11 @@ class Checker:
     def gitsecrets_scan(self):
         scan_type = 'gitsecrets'
         self.secrets[scan_type] = constants.AutoVivification()
+        
+        # Проверка существования директории перед сканированием
+        if not os.path.isdir(self.repos_dir):
+            logger.warning('Repository directory %s removed before gitsecrets_scan', self.repos_dir)
+            return 3
         
         # Инициализация git secrets
         subprocess.run(['git', 'secrets', '--install', '-f'],
@@ -644,6 +696,11 @@ class Checker:
         scan_type = 'detect_secrets'
         self.secrets[scan_type] = constants.AutoVivification()
 
+        # Проверка существования директории перед сканированием
+        if not os.path.isdir(self.repos_dir):
+            logger.warning('Repository directory %s removed before detect_secrets_scan', self.repos_dir)
+            return 3
+
         ds_bin = shutil.which('detect-secrets')
         if not ds_bin:
             self.secrets[scan_type]['Info'] = 'detect-secrets not installed'
@@ -707,6 +764,11 @@ class Checker:
         """Запускает kingfisher, парсит stdout‑массив и обрабатывает находки."""
         scan_type = 'kingfisher'
         self.secrets[scan_type] = constants.AutoVivification()
+
+        # Проверка существования директории перед сканированием
+        if not os.path.isdir(self.repos_dir):
+            logger.warning('Repository directory %s removed before kingfisher_scan', self.repos_dir)
+            return 3
 
         kf_bin = shutil.which('kingfisher')
         if not kf_bin:
@@ -801,6 +863,12 @@ class Checker:
     def deepsecrets_scan(self):
         scan_type = 'deepsecrets'
         self.secrets[scan_type] = constants.AutoVivification()
+        
+        # Проверка существования директории перед сканированием
+        if not os.path.isdir(self.repos_dir):
+            logger.warning('Repository directory %s removed before deepsecrets_scan', self.repos_dir)
+            return 3
+        
         try:
             deep_com = 'deepsecrets --target-dir ' + self.repos_dir + ' --outfile ' + self.report_dir + scan_type + '_rep.json'
             deepsecrets_proc = subprocess.run(deep_com, stdin=None, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -858,6 +926,11 @@ class Checker:
     def trufflehog_scan(self):
         scan_type = 'trufflehog'
         self.secrets[scan_type] = constants.AutoVivification()
+        
+        # Проверка существования директории перед сканированием
+        if not os.path.isdir(self.repos_dir):
+            logger.warning('Repository directory %s removed before trufflehog_scan', self.repos_dir)
+            return 3
         
         try:
             # Создаем кастомный конфиг для TruffleHog

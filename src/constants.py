@@ -35,6 +35,7 @@ GITHUB_REQUEST_RATE_LIMIT: float = 10.0
 GITHUB_REPO_COUNT_AT_REQUEST_LIMIT: int = 1000  # Github api restriction https://docs.github.com/rest/search/search#search-code
 GITHUB_REQUEST_REPO_PER_PAGE: int = 100
 RESULT_CODES = ['1', '2', '3']  # Field from DB that conatain status if founded leak
+RESULT_CODE_STILL_ACCESS = 1
 RESULT_CODE_TO_DEEPSCAN = 5
 RESULT_CODE_LEAK_NOT_FOUND = 0
 RESULT_CODE_TO_SEND = 4
@@ -149,6 +150,7 @@ if env_variables:
     # Добавляем GitHub токены из .env
     github_tokens = [value for key, value in env_variables.items() if key.startswith('GITHUB_TOKEN')]
     token_tuple = token_tuple + tuple(github_tokens)
+    GITHUB_CLONE_TOKEN = env_variables.get('GITHUB_CLONE_TOKEN', '')
 else:
     url_DB = CONFIG_FILE['url_DB']
     token_DB = CONFIG_FILE['token_DB']

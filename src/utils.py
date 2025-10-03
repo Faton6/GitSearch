@@ -7,6 +7,7 @@ import subprocess
 import re
 import time
 import tracemalloc
+from pathlib import Path
 
 # Project lib's import
 from src import Connector, constants
@@ -36,6 +37,35 @@ def count_nested_dict_len(input_dict):
     return length
 
 
+def check_temp_folder_size():
+    """Check and clean TEMP_FOLDER directory if needed"""
+    logger.info('Checking TEMP_FOLDER directory')
+    if not os.path.exists(constants.TEMP_FOLDER):
+        logger.warning(f'TEMP_FOLDER does not exist: {constants.TEMP_FOLDER}')
+        return
+    
+    temp_dir_list = os.listdir(constants.TEMP_FOLDER)
+    if len(temp_dir_list) > 2:
+        if 'command_file' in temp_dir_list:
+            temp_dir_list.remove('command_file')
+
+        if 'list_to_scan.txt' in temp_dir_list:
+            temp_dir_list.remove('list_to_scan.txt')
+        
+        cleaned_count = 0
+        for dir_now in temp_dir_list:
+            dir_path = os.path.join(constants.TEMP_FOLDER, dir_now)
+            if os.path.isdir(dir_path):
+                try:
+                    shutil.rmtree(dir_path)
+                    cleaned_count += 1
+                except Exception as ex:
+                    logger.error(f'Error removing directory {dir_path}: {ex}')
+        
+        if cleaned_count > 0:
+            logger.info(f'Cleared {cleaned_count} directories in TEMP_FOLDER')
+
+
 def trace_monitor():
     snapshot = tracemalloc.take_snapshot()
     top_stats = snapshot.compare_to(constants.snap_backup, "lineno")
@@ -57,18 +87,7 @@ def trace_monitor():
     logger.info('Totall size: %d MB', size_count / 1048576)
     logger.info('Totall counter: %d files', counter)
     logger.info('-' * 50)
-    logger.info('Checking TEMP_FOLDER directory')
-    temp_dir_list = os.listdir(constants.TEMP_FOLDER)
-    if len(temp_dir_list) > 2:
-        if 'command_file' in temp_dir_list:
-            temp_dir_list.remove('command_file')
-
-        if 'list_to_scan.txt' in temp_dir_list:
-            temp_dir_list.remove('list_to_scan.txt')
-        for dir_now in temp_dir_list:
-            if os.path.isdir(constants.TEMP_FOLDER + '/' + dir_now):
-                shutil.rmtree(constants.TEMP_FOLDER + '/' + dir_now)
-        logger.info(f'Cleared {len(temp_dir_list) - 1} directory in TEMP_FOLDER directory')
+    check_temp_folder_size()
 
 
 def dumping_data():
@@ -296,3 +315,87 @@ def semantic_check_dork(string_check: str, dork: str):
         return 1
     else:
         return 0
+
+def safe_encode_decode(data, operation: str = 'encode') -> str:
+    """
+    Safely encode/decode data with proper error handling for different encodings.
+    
+    Args:
+        data: String or bytes data to encode/decode
+        operation: 'encode' or 'decode'
+    
+    Returns:
+        Processed string with encoding errors handled
+    """
+    if not data:
+        return str(data) if data is not None else ""
+        
+    try:
+        if operation == 'encode':
+            # Convert string to proper UTF-8 encoded string
+            if isinstance(data, bytes):
+                return data.decode('utf-8', errors='replace')
+            elif isinstance(data, str):
+                # Ensure string is properly encoded
+                return data.encode('utf-8', errors='replace').decode('utf-8')
+            else:
+                return str(data)
+        
+        elif operation == 'decode':
+            # Decode bytes to string using various encodings
+            if isinstance(data, str):
+                # If already string, just return it
+                return data
+            elif isinstance(data, bytes):
+                # Try different encodings for bytes
+                encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
+                for encoding in encodings:
+                    try:
+                        return data.decode(encoding)
+                    except (UnicodeDecodeError, UnicodeEncodeError):
+                        continue
+                # If all encodings fail, use UTF-8 with error replacement
+                return data.decode('utf-8', errors='replace')
+            else:
+                return str(data)
+                
+    except (UnicodeDecodeError, UnicodeEncodeError) as e:
+        logger.warning(f'Encoding error in safe_encode_decode: {e}. Using replacement characters.')
+        # Use replacement characters for problematic bytes
+        if isinstance(data, bytes):
+            return data.decode('utf-8', errors='replace')
+        else:
+            return str(data).encode('utf-8', errors='replace').decode('utf-8')
+    except Exception as e:
+        logger.error(f'Unexpected error in safe_encode_decode: {e}')
+        return str(data) if data else ""
+    
+def remove_token_from_git_config(repos_dir: str, url: str):
+    """Удаляет токен из .git/config файла после клонирования для предотвращения его обнаружения сканерами"""
+    git_config_path = Path(repos_dir) / '.git' / 'config'
+    if git_config_path.exists():
+        try:
+            with open(git_config_path, 'r') as f:
+                config_content = f.read()
+            
+            # Удаляем токен из URL в конфиге (заменяем https://TOKEN@github.com на https://github.com)
+            # Поддерживаем различные форматы токенов
+            cleaned_content = re.sub(
+                r'https://[^@\s]+@github\.com',
+                'https://github.com',
+                config_content
+            )
+            
+            # Также удаляем токены из других Git хостингов если они есть
+            cleaned_content = re.sub(
+                r'https://[^@\s]+@[^/\s]+/',
+                lambda m: 'https://' + m.group(0).split('@')[1],
+                cleaned_content
+            )
+            
+            with open(git_config_path, 'w') as f:
+                f.write(cleaned_content)
+            
+            logger.debug(f'Token removed from .git/config for {url}')
+        except Exception as exc:
+            logger.warning(f'Failed to remove token from .git/config: {exc}')
