@@ -68,6 +68,17 @@ MAX_TIME_TO_SEARCH_GITHUB_REQUEST = 500
 MAX_TIME_TO_CLONE = 500
 
 # =============================================================================
+# GitHub Clone Configuration
+# =============================================================================
+
+# Clone method: 'pygithub' (API-based) or 'git' (subprocess-based)
+# - 'pygithub': Uses GitHub API, no filesystem complexity, better for small repos
+# - 'git': Traditional git clone, better for large repos with binary files
+CLONE_METHOD = 'pygithub'
+# Fallback to git clone if PyGithub fails
+CLONE_FALLBACK_TO_GIT = True
+
+# =============================================================================
 # GitHub API Configuration
 # =============================================================================
 

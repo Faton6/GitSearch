@@ -1,4 +1,4 @@
-# Standart libs import
+# Standard libs import
 import sys
 from random import choice
 import json
@@ -13,6 +13,10 @@ import hashlib
 import git
 import ast
 import threading
+from typing import Optional, Dict, Any
+
+# Third-party imports
+from github import Github, GithubException, RateLimitExceededException
 
 # Project lib's import
 from src import Connector, constants
@@ -171,6 +175,105 @@ class Checker:
             all_names.append('None')
         return all_names
 
+    def _clone_with_pygithub(self) -> bool:
+        """
+        Clone repository using PyGithub API instead of git subprocess.
+        
+        Benefits:
+        - No filesystem complexity or directory management issues
+        - Direct API access through existing rate limiter
+        - Downloads only needed files
+        - Reduced disk space usage
+        
+        Returns:
+            bool: True if cloning was successful, False otherwise
+        """
+        try:
+            # Extract owner and repo name from URL
+            # URL format: https://github.com/owner/repo
+            parts = self.url.rstrip('/').split('/')
+            if len(parts) < 2:
+                logger.error(f'Invalid GitHub URL format: {self.url}')
+                return False
+            
+            owner, repo_name = parts[-2], parts[-1]
+            logger.info(f'Cloning {owner}/{repo_name} using PyGithub API')
+            
+            # Initialize GitHub client with token
+            g = Github(constants.GITHUB_CLONE_TOKEN)
+            
+            try:
+                # Get repository
+                repo = g.get_repo(f'{owner}/{repo_name}')
+                
+                # Create repos directory
+                os.makedirs(self.repos_dir, exist_ok=True)
+                
+                # Download all contents recursively
+                def download_contents(contents, path=""):
+                    """Recursively download repository contents"""
+                    for content_file in contents:
+                        file_path = os.path.join(self.repos_dir, path, content_file.name)
+                        
+                        if content_file.type == "dir":
+                            # Create directory and recurse
+                            os.makedirs(file_path, exist_ok=True)
+                            try:
+                                download_contents(
+                                    repo.get_contents(content_file.path),
+                                    os.path.join(path, content_file.name)
+                                )
+                            except GithubException as e:
+                                logger.warning(f'Cannot access directory {content_file.path}: {e}')
+                        else:
+                            # Download file
+                            try:
+                                # Check if file should be excluded
+                                skip_file = False
+                                for ext in self.file_ignore:
+                                    if content_file.name.endswith(ext):
+                                        skip_file = True
+                                        break
+                                
+                                if not skip_file:
+                                    file_content = content_file.decoded_content
+                                    with open(file_path, 'wb') as f:
+                                        f.write(file_content)
+                            except Exception as e:
+                                logger.warning(f'Cannot download file {content_file.path}: {e}')
+                
+                # Start downloading from root
+                root_contents = repo.get_contents("")
+                download_contents(root_contents)
+                
+                logger.info(f'Successfully cloned {owner}/{repo_name} via API')
+                
+                # Create report directory
+                os.makedirs(self.report_dir, exist_ok=True)
+                
+                # Note: We don't initialize git.Repo here since we didn't use git clone
+                # If git operations are needed later, we can initialize it separately
+                self.repo = None
+                
+                return True
+                
+            except GithubException as e:
+                if e.status == 404:
+                    logger.warning(f'Repository not found: {self.url}')
+                    self.secrets = {'Scan_error': f'Repository not found: {self.url}'}
+                elif e.status == 403:
+                    logger.error(f'Access forbidden or rate limit exceeded: {self.url}')
+                    self.secrets = {'Scan_error': f'Access forbidden: {self.url}'}
+                else:
+                    logger.error(f'GitHub API error for {self.url}: {e}')
+                    self.secrets = {'Scan_error': f'GitHub API error: {str(e)}'}
+                return False
+            
+        except Exception as exc:
+            logger.error(f'PyGithub clone failed for {self.url}: {exc}')
+            self.secrets = {'Scan_error': f'PyGithub clone failed: {str(exc)}'}
+            return False
+
     def clone(self):
         """Clone repository with proper error handling and cleanup"""
         
@@ -193,9 +296,43 @@ class Checker:
             self._clean_repo_dirs()
             self.status |= NOT_CLONED
         else:
-            logger.info('Clonning %s %s %s', self.log_color, self.url, CLR["RESET"])
+            logger.info('Cloning %s %s %s', self.log_color, self.url, CLR["RESET"])
 
             clone_success = False
+            
+            # Try PyGithub first if configured
+            if constants.CLONE_METHOD == 'pygithub':
+                logger.info('Attempting clone via PyGithub API for %s', self.url)
+                
+                # Clean before attempt
+                self._clean_repo_dirs()
+                
+                # Reset cleanup flag to allow directory creation
+                with self._cleanup_lock:
+                    self._cleaned = False
+                
+                clone_success = self._clone_with_pygithub()
+                
+                if clone_success:
+                    # Get contributor stats if needed
+                    try:
+                        self.obj.stats.fetch_contributors_stats()
+                    except Exception as e:
+                        logger.warning(f'Cannot fetch contributor stats via API: {e}')
+                    
+                    logger.info(f'Successfully cloned {self.url} via PyGithub')
+                    self.status |= CLONED
+                    return
+                elif not constants.CLONE_FALLBACK_TO_GIT:
+                    # PyGithub failed and no fallback
+                    logger.error(f'PyGithub clone failed for {self.url}, no fallback enabled')
+                    self._clean_repo_dirs()
+                    self.status |= NOT_CLONED
+                    return
+                else:
+                    logger.warning(f'PyGithub clone failed for {self.url}, falling back to git clone')
+            
+            # Use traditional git clone (either as primary method or fallback)
             for try_clone in range(constants.MAX_TRY_TO_CLONE):
                 try:
                     # Clean before attempt
