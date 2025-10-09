@@ -4,6 +4,17 @@
 This module provides a centralized way to interact with the GitSearch database,
 replacing direct database connections scattered throughout the application.
 Unlike the external API version, this client directly connects to MariaDB.
+
+Field Mapping:
+--------------
+This client implements automatic field name mapping to ensure compatibility
+between different project versions with different database schemas:
+
+- accounts table: 'company_id' -> 'related_company_id'
+  This allows Connector.py to remain synchronized with other projects that
+  use 'company_id', while this database uses 'related_company_id'.
+
+To add new field mappings, update the FIELD_MAPPING dictionary in GitSearchAPIClient class.
 """
 
 import os
@@ -18,6 +29,25 @@ from src.logger import logger
 
 class GitSearchAPIClient:
     """Client for interacting with GitSearch database."""
+    
+    # Маппинг таблиц для совместимости с ver2 API
+    TABLE_MAPPING = {
+        'company': 'companies',
+        'dork': 'dorks',
+        'leak': 'leak',
+        'raw_report': 'raw_report',
+        'leak_stats': 'leak_stats',
+        'account': 'account',
+        'related_accounts_leaks': 'related_accounts_leaks'
+    }
+    
+    # Маппинг полей для совместимости между проектами
+    # Формат: {'table_name': {'source_field': 'target_field'}}
+    FIELD_MAPPING = {
+        'accounts': {
+            'company_id': 'related_company_id'
+        }
+    }
     
     def __init__(self):
         self.db_config = {
@@ -59,17 +89,6 @@ class GitSearchAPIClient:
             limit = data.get('limit', 100)
             offset = data.get('offset', 0)
             
-            # Маппинг таблиц ver2 -> локальная БД
-            table_mapping = {
-                'company': 'companies',  # company в ver2 -> companies в локальной БД
-                'dork': 'dorks',
-                'leak': 'leak',
-                'raw_report': 'raw_report',
-                'leak_stats': 'leak_stats',
-                'account': 'account',
-                'related_accounts_leaks': 'related_accounts_leaks'
-            }
-            
             # Маппинг полей для companies
             field_mapping = {
                 'companies': {
@@ -77,8 +96,8 @@ class GitSearchAPIClient:
                 }
             }
             
-            # Конвертируем имя таблицы
-            actual_table = table_mapping.get(table_name, table_name)
+            # Конвертируем имя таблицы используя маппинг класса
+            actual_table = self.TABLE_MAPPING.get(table_name, table_name)
             
             if action == 'get':
                 results = self.get_data(actual_table, content, limit, offset)
@@ -142,6 +161,9 @@ class GitSearchAPIClient:
         List[Dict[str, Any]]
             List of records as dictionaries
         """
+        # Применяем маппинг таблиц для совместимости с ver2 API
+        actual_table = self.TABLE_MAPPING.get(table_name, table_name)
+        
         results = []
         conn = self._get_connection()
         if not conn:
@@ -151,7 +173,7 @@ class GitSearchAPIClient:
             cursor = conn.cursor(pymysql.cursors.DictCursor)
             
             # Build query
-            query = f"SELECT * FROM {table_name}"
+            query = f"SELECT * FROM {actual_table}"
             params = []
             
             if filters:
@@ -174,6 +196,34 @@ class GitSearchAPIClient:
             if conn:
                 conn.close()
     
+    def _map_fields(self, table_name: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Map field names for compatibility between projects.
+        
+        Parameters
+        ----------
+        table_name : str
+            Name of the table
+        data : dict
+            Original data dictionary
+            
+        Returns
+        -------
+        dict
+            Data with mapped field names
+        """
+        if table_name not in self.FIELD_MAPPING:
+            return data
+        
+        mapped_data = {}
+        field_map = self.FIELD_MAPPING[table_name]
+        
+        for key, value in data.items():
+            # Если есть маппинг для этого поля, используем целевое имя
+            mapped_key = field_map.get(key, key)
+            mapped_data[mapped_key] = value
+        
+        return mapped_data
+    
     def add_data(self, table_name: str, data: Dict[str, Any]) -> Optional[int]:
         """Add data to specified table.
         
@@ -189,6 +239,12 @@ class GitSearchAPIClient:
         int or None
             ID of inserted record, or None on failure
         """
+        # Применяем маппинг таблиц для совместимости с ver2 API
+        actual_table = self.TABLE_MAPPING.get(table_name, table_name)
+        
+        # Применяем маппинг полей для совместимости между проектами
+        mapped_data = self._map_fields(actual_table, data)
+        
         conn = self._get_connection()
         if not conn:
             return None
@@ -197,12 +253,12 @@ class GitSearchAPIClient:
             cursor = conn.cursor()
             
             # Build INSERT query
-            columns = list(data.keys())
+            columns = list(mapped_data.keys())
             placeholders = ', '.join(['%s'] * len(columns))
             column_names = ', '.join(columns)
             
-            query = f"INSERT INTO {table_name} ({column_names}) VALUES ({placeholders})"
-            values = [data[col] for col in columns]
+            query = f"INSERT INTO {actual_table} ({column_names}) VALUES ({placeholders})"
+            values = [mapped_data[col] for col in columns]
             
             cursor.execute(query, values)
             conn.commit()
@@ -236,6 +292,12 @@ class GitSearchAPIClient:
             logger.error(f"upd_data requires 'id' in data for table {table_name}")
             return None
         
+        # Применяем маппинг таблиц для совместимости с ver2 API
+        actual_table = self.TABLE_MAPPING.get(table_name, table_name)
+        
+        # Применяем маппинг полей для совместимости между проектами
+        mapped_data = self._map_fields(actual_table, data)
+        
         conn = self._get_connection()
         if not conn:
             return None
@@ -244,11 +306,11 @@ class GitSearchAPIClient:
             cursor = conn.cursor()
             
             # Build UPDATE query
-            record_id = data['id']
-            update_data = {k: v for k, v in data.items() if k != 'id'}
+            record_id = mapped_data['id']
+            update_data = {k: v for k, v in mapped_data.items() if k != 'id'}
             
             set_clauses = ', '.join([f"{col}=%s" for col in update_data.keys()])
-            query = f"UPDATE {table_name} SET {set_clauses} WHERE id=%s"
+            query = f"UPDATE {actual_table} SET {set_clauses} WHERE id=%s"
             values = list(update_data.values()) + [record_id]
             
             cursor.execute(query, values)

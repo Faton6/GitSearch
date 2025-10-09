@@ -2,9 +2,9 @@
 import time
 from abc import ABC
 import json
-import requests
 from typing import Optional, Dict, List, Any
 import re
+import requests
 
 # Опциональные импорты для AI функционала
 try:
@@ -26,19 +26,9 @@ from src.logger import logger
 
 
 class AIObj(ABC):
-    """
-        Enhanced AI Analysis Class for GitSearch
-        
-        Capabilities:
-        - Multiple LLM provider support
-        - Company relevance analysis
-        - Detailed leak assessment
-        - Backward compatibility with existing code
-    """
     base_prompt_text = 'None'
     
     def __init__(self, secrets: dict, stats_data: dict, leak_info: dict, company_info: Optional[Dict[str, Any]] = None):
-        # Инициализация токенизатора (если доступен)
         if TIKTOKEN_AVAILABLE and tiktoken:
             try:
                 self.tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -49,66 +39,51 @@ class AIObj(ABC):
             logger.debug("tiktoken not available, using simple tokenizer")
             self.tokenizer = None
         
-        # Флаги состояния
         self.ai_requested = False
         self.ai_analysis_completed = False
         
-        # Результаты анализа
-        self.ai_result = -1  # Для обратной совместимости (0/1/-1)
+        self.ai_result = -1
         
-        self.ai_analysis = None  # Расширенный анализ
-        self.ai_report = None  # Для совместимости с тестами и старым кодом
+        self.ai_analysis = None
+        self.ai_report = None
         
-        # Информация о компании
         self.company_info = company_info or {}
         
-        # LLM Manager для доступа к провайдерам (ленивая инициализация)
         self._llm_manager = None
         
-        # Подготовка данных для анализа
         self._prepare_analysis_data(secrets, stats_data, leak_info)
     
     def _prepare_analysis_data(self, secrets: dict, stats_data: dict, leak_info: dict):
-        """Подготовка данных для AI анализа"""
-        
-        # Обработка секретов
         secrets_str = json.dumps(secrets) if secrets else "-"
         
-        # Упрощенный подсчет токенов если tiktoken недоступен
         if self.tokenizer:
             token_limit = constants.AI_CONFIG.get('token_limit', 4000) - 1000
             if len(self.tokenizer.encode(secrets_str)) > token_limit:
                 secrets_str = self.tokenizer.decode(self.tokenizer.encode(secrets_str)[:token_limit])
                 secrets_str += '...Cutted, token limit reached.'
         else:
-            # Упрощенная обрезка по символам
             if len(secrets_str) > 10000:
                 secrets_str = secrets_str[:10000] + '...Cutted, char limit reached.'
         
-        # Подготовка сырого отчета
         if secrets:
             raw_report_str = "\n".join(str(item) for item in secrets)
         else:
             raw_report_str = "-"
         
-        # Безопасное извлечение данных
         size_value = self.safe_val(stats_data.get("size"))
         forks_value = self.safe_val(stats_data.get("forks_count"))
         stargazers_value = self.safe_val(stats_data.get("stargazers_count"))
         description_value = self.safe_val(stats_data.get("description"))
         
-        # Информация о контрибьюторах и коммитерах
         contributers_list = leak_info.get("contributers") or []
         commiters_list = leak_info.get("commiters") or []
         
-        # Основная информация
         self.repo_name = self.safe_val(leak_info.get("repo_name"))
         self.author = self.safe_val(leak_info.get("author"))
         self.dork = self.safe_val(leak_info.get("dork"))
         self.created_at = self.safe_val(leak_info.get("created_at"))
         self.updated_at = self.safe_val(leak_info.get("updated_at"))
         
-        # Сохранение обработанных данных для анализа
         self.processed_data = {
             "secrets": secrets,
             "secrets_str": secrets_str,

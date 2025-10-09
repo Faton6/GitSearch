@@ -56,6 +56,16 @@ class Checker:
         self.dork = dork
         self.mode = mode
         scan_type = 'None'
+        
+        # Ensure temp folder exists before creating paths
+        if not os.path.exists(constants.TEMP_FOLDER):
+            try:
+                os.makedirs(constants.TEMP_FOLDER, exist_ok=True)
+                logger.info(f'Created temp folder: {constants.TEMP_FOLDER}')
+            except Exception as e:
+                logger.error(f'Cannot create temp folder {constants.TEMP_FOLDER}: {e}')
+                raise
+        
         self.repos_dir = constants.TEMP_FOLDER + '/' + url.split('/')[-2] + '---' + url.split('/')[-1]
         self.report_dir = self.repos_dir + '---reports/'
         self.secrets = constants.AutoVivification()
@@ -89,25 +99,66 @@ class Checker:
         }
 
     def _clean_repo_dirs(self):
-        """Безопасное удаление директории репозитория с защитой от race condition"""
+        """
+        Safely remove repository directory with race condition protection.
+        
+        This method ensures:
+        - Only one cleanup happens at a time (thread-safe)
+        - Working directory is preserved
+        - Proper error handling
+        """
         with self._cleanup_lock:
             if self._cleaned:
                 logger.debug(f'Repository {self.repos_dir} already cleaned, skipping')
                 return
             
+            # Save current working directory
+            original_cwd = None
+            try:
+                original_cwd = os.getcwd()
+            except (OSError, FileNotFoundError) as e:
+                logger.warning(f'Cannot get current working directory: {e}')
+                # If we can't get CWD, try to change to a safe location
+                try:
+                    os.chdir(constants.MAIN_FOLDER_PATH)
+                    original_cwd = str(constants.MAIN_FOLDER_PATH)
+                except Exception as e2:
+                    logger.error(f'Cannot change to safe directory: {e2}')
+            
+            # Clean repository directory
             try:
                 if os.path.exists(self.repos_dir):
-                    shutil.rmtree(self.repos_dir)
+                    # Ensure we're not inside the directory we're trying to delete
+                    if original_cwd and self.repos_dir in original_cwd:
+                        try:
+                            os.chdir(constants.MAIN_FOLDER_PATH)
+                        except Exception as e:
+                            logger.warning(f'Cannot change directory before cleanup: {e}')
+                    
+                    shutil.rmtree(self.repos_dir, ignore_errors=True)
                     logger.debug(f'Cleaned repository directory: {self.repos_dir}')
             except Exception as e:
                 logger.error(f'Error cleaning repository directory {self.repos_dir}: {e}')
             
+            # Clean report directory
             try:
                 if os.path.exists(self.report_dir):
-                    shutil.rmtree(self.report_dir)
+                    shutil.rmtree(self.report_dir, ignore_errors=True)
                     logger.debug(f'Cleaned report directory: {self.report_dir}')
             except Exception as e:
                 logger.error(f'Error cleaning report directory {self.report_dir}: {e}')
+            
+            # Restore working directory
+            if original_cwd:
+                try:
+                    os.chdir(original_cwd)
+                except (OSError, FileNotFoundError) as e:
+                    logger.warning(f'Cannot restore working directory to {original_cwd}: {e}')
+                    # Try to change to safe location as fallback
+                    try:
+                        os.chdir(constants.MAIN_FOLDER_PATH)
+                    except Exception as e2:
+                        logger.error(f'Cannot change to safe directory: {e2}')
             
             self._cleaned = True
 
@@ -121,9 +172,11 @@ class Checker:
         return all_names
 
     def clone(self):
-
+        """Clone repository with proper error handling and cleanup"""
+        
         logger.info(f'Repository %s %s %s size: %s %s %s', self.log_color, self.url, CLR["RESET"],
                     self.log_color, self.obj.stats.repo_stats_leak_stats_table["size"], CLR["RESET"])
+        
         if self.obj.stats.repo_stats_leak_stats_table['size'] > constants.REPO_MAX_SIZE:
             logger.info(
                 f'Repository %s %s %s oversize ({self.obj.stats.repo_stats_leak_stats_table["size"]} > {constants.REPO_MAX_SIZE} limit), code not analyze',
@@ -142,51 +195,96 @@ class Checker:
         else:
             logger.info('Clonning %s %s %s', self.log_color, self.url, CLR["RESET"])
 
+            clone_success = False
             for try_clone in range(constants.MAX_TRY_TO_CLONE):
                 try:
+                    # Clean before attempt
                     self._clean_repo_dirs()
+                    
+                    # Reset cleanup flag to allow directory creation
+                    with self._cleanup_lock:
+                        self._cleaned = False
+                    
+                    # Ensure parent directory exists and we can access it
+                    parent_dir = os.path.dirname(self.repos_dir)
+                    if not os.path.exists(parent_dir):
+                        os.makedirs(parent_dir, exist_ok=True)
+                    
+                    # Save current working directory
+                    original_cwd = os.getcwd()
+                    
+                    # Change to parent directory before cloning
+                    try:
+                        os.chdir(parent_dir)
+                    except OSError as e:
+                        logger.error(f'Cannot change to parent directory {parent_dir}: {e}')
+                        raise
+                    
                     repo_url = self.url
                     authenticated_url = repo_url.replace(
                         "https://",
                         f"https://{constants.GITHUB_CLONE_TOKEN}@"
                     )   
-                    # TODO change to pygithub
-                    # self.repo = pygithub.Github(constants.GITHUB_CLONE_TOKEN).get_repo(self.url)
-                    # TODO change to graphql
                     
-                    # Добавляем timeout на клонирование через subprocess, если gitpython не поддерживает timeout напрямую
+                    # Clone with subprocess and timeout
                     import subprocess
-                    clone_timeout = getattr(constants, 'MAX_TIME_TO_CLONE', 500)  # секунд, можно вынести в constants
+                    clone_timeout = getattr(constants, 'MAX_TIME_TO_CLONE', 500)
+                    
                     try:
                         result = subprocess.run([
                             'git', 'clone', '--depth=1', authenticated_url, self.repos_dir
-                        ], timeout=clone_timeout, capture_output=True, text=True)
+                        ], timeout=clone_timeout, capture_output=True, text=True, cwd=parent_dir)
+                        
                         if result.returncode != 0:
-                            if 'not found' in result.stderr or 'not found' in result.stdout:
+                            if 'not found' in result.stderr.lower() or 'not found' in result.stdout.lower():
+                                logger.warning(f'Repository not found: {self.url}')
+                                self.secrets = {'Scan error': f'Repository not found: {self.url}'}
                                 break
-                            logger.error(f'git clone failed: {result.stderr}')
+                            logger.error(f'git clone failed (attempt {try_clone + 1}/{constants.MAX_TRY_TO_CLONE}): {result.stderr}')
+                            continue
                             
                         self.repo = git.Repo(self.repos_dir)
+                        clone_success = True
+                        
                     except subprocess.TimeoutExpired:
-                        logger.error(f'git clone timeout ({clone_timeout}s) for {self.url}')
-                        raise
+                        logger.error(f'git clone timeout ({clone_timeout}s) for {self.url} (attempt {try_clone + 1}/{constants.MAX_TRY_TO_CLONE})')
+                        continue
+                    finally:
+                        # Always restore working directory
+                        try:
+                            os.chdir(original_cwd)
+                        except OSError as e:
+                            logger.error(f'Cannot restore working directory to {original_cwd}: {e}')
                     
-                    # Удаляем токен из .git/config сразу после клонирования
-                    utils.remove_token_from_git_config(self.repos_dir, self.url)
-                    
-                    os.makedirs(self.report_dir)
-                    self.clean_excluded_files()
-                    self.obj.stats.fetch_contributors_stats()  # get stats this to optimize token usage
-                    break
+                    if clone_success:
+                        # Remove token from .git/config after successful clone
+                        utils.remove_token_from_git_config(self.repos_dir, self.url)
+                        
+                        # Create report directory
+                        os.makedirs(self.report_dir, exist_ok=True)
+                        
+                        # Clean excluded files
+                        self.clean_excluded_files()
+                        
+                        # Get contributor stats
+                        self.obj.stats.fetch_contributors_stats()
+                        
+                        logger.info(f'Successfully cloned {self.url}')
+                        break
+                        
                 except Exception as exc:
-                    time.sleep(5)
-                    pass
-            else:
-                logger.error('Failed to clone repo %s', self.url)
-                self.secrets = {'Scan error': f'Failed to clone repo {self.url}'}
+                    logger.error(f'Clone attempt {try_clone + 1}/{constants.MAX_TRY_TO_CLONE} failed for {self.url}: {exc}')
+                    if try_clone < constants.MAX_TRY_TO_CLONE - 1:
+                        time.sleep(5)
+                    continue
+            
+            if not clone_success:
+                logger.error(f'Failed to clone repo {self.url} after {constants.MAX_TRY_TO_CLONE} attempts')
+                self.secrets = {'Scan error': f'Failed to clone repo {self.url} after {constants.MAX_TRY_TO_CLONE} attempts'}
                 self._clean_repo_dirs()
-
-            self.status |= CLONED
+                self.status |= NOT_CLONED
+            else:
+                self.status |= CLONED
 
     def clean_excluded_files(self):
         """Очищает исключенные файлы из репозитория"""
@@ -356,6 +454,16 @@ class Checker:
                     
                     file_path = os.path.join(root, file)
                     
+                    # Проверяем, что файл существует и это не симлинк на несуществующий файл
+                    if not os.path.exists(file_path):
+                        logger.debug(f'Skipping non-existent file: {file_path}')
+                        continue
+                    
+                    # Пропускаем симлинки
+                    if os.path.islink(file_path):
+                        logger.debug(f'Skipping symlink: {file_path}')
+                        continue
+                    
                     try:
                         # Проверяем размер файла
                         file_size = os.path.getsize(file_path)
@@ -373,8 +481,21 @@ class Checker:
                         if len(found_matches) >= constants.MAX_UTIL_RES_LINES * 2:
                             return found_matches[:constants.MAX_UTIL_RES_LINES]
                             
+                    except FileNotFoundError as fnf_error:
+                        # Файл был удален между os.walk и обработкой
+                        logger.debug(f'File disappeared during processing: {file_path}')
+                        continue
+                    except PermissionError as perm_error:
+                        # Нет прав доступа к файлу
+                        logger.debug(f'Permission denied for file: {file_path}')
+                        continue
+                    except OSError as os_error:
+                        # Другие системные ошибки (broken symlinks, etc)
+                        logger.debug(f'OS error processing file {file_path}: {os_error}')
+                        continue
                     except Exception as ex:
-                        logger.error(f'Error processing file {file_path}: {ex}')
+                        # Неожиданные ошибки
+                        logger.warning(f'Unexpected error processing file {file_path}: {ex}')
                         continue
         except FileNotFoundError:
             logger.info(f'Error in file search: {ex}')
@@ -410,8 +531,18 @@ class Checker:
                             # Ограничиваем количество находок на файл
                             if len(matches) >= 50:
                                 return matches
-        except Exception:
-            pass
+        except FileNotFoundError:
+            # Файл был удален между проверкой и открытием
+            logger.debug(f'File not found during search: {file_path}')
+        except PermissionError:
+            # Нет прав доступа
+            logger.debug(f'Permission denied during search: {file_path}')
+        except UnicodeDecodeError:
+            # Бинарный файл или некорректная кодировка (но errors='ignore' должен это предотвратить)
+            logger.debug(f'Encoding error in file: {file_path}')
+        except Exception as ex:
+            # Другие неожиданные ошибки
+            logger.debug(f'Unexpected error searching file {file_path}: {ex}')
             
         return matches
 
@@ -732,9 +863,26 @@ class Checker:
             logger.error(f'Failed to parse detect-secrets output: {ex}')
             return 2
 
+        # Проверяем структуру output
+        if not isinstance(output, dict):
+            logger.error(f'detect-secrets output is not a dict: {type(output)}')
+            return 2
+        
+        results_data = output.get('results', {})
+        if not isinstance(results_data, dict):
+            logger.error(f'detect-secrets results is not a dict: {type(results_data)}')
+            return 2
+
         results = []
-        for file_path, secrets in output.get('results', {}).items():
+        for file_path, secrets in results_data.items():
+            if not isinstance(secrets, list):
+                logger.warning(f'detect-secrets secrets for {file_path} is not a list: {type(secrets)}, skipping')
+                continue
+                
             for sec in secrets:
+                if not isinstance(sec, dict):
+                    logger.warning(f'detect-secrets secret is not a dict: {type(sec)}, skipping')
+                    continue
                 line_num = sec.get('line_number')
                 line_text = ''
                 abs_path = os.path.join(self.repos_dir, file_path)
@@ -832,18 +980,49 @@ class Checker:
             logger.error('Kingfisher JSON decode error: %s', e)
             return 2
 
+        # Проверяем структуру findings
+        if not isinstance(findings, list):
+            logger.error(f'Kingfisher findings is not a list: {type(findings)}')
+            return 2
+
         results = []
         for item in findings:
+            # Проверяем, что item является словарем
+            if not isinstance(item, dict):
+                logger.warning(f'Kingfisher item is not a dict: {type(item)}, skipping')
+                continue
+                
             rule_id = item.get('id', '')
-            for match in item.get('matches', []):
+            matches = item.get('matches', [])
+            
+            # Проверяем, что matches является списком
+            if not isinstance(matches, list):
+                logger.warning(f'Kingfisher matches is not a list: {type(matches)}, skipping')
+                continue
+            
+            for match in matches:
+                # Проверяем, что match является словарем
+                if not isinstance(match, dict):
+                    logger.warning(f'Kingfisher match is not a dict: {type(match)}, skipping')
+                    continue
+                    
                 f = match.get('finding', {})
+                if not isinstance(f, dict):
+                    logger.warning(f'Kingfisher finding is not a dict: {type(f)}, skipping')
+                    continue
+                
                 loc = f'{f.get("path","")}:{f.get("line")}' if f.get('line') else f.get('path','')
+                
+                # Безопасное извлечение validation status
+                validation_data = f.get('validation', {})
+                validation_status = validation_data.get('status') if isinstance(validation_data, dict) else None
+                
                 extra = {
                     'Rule':        rule_id,
                     'Confidence':  f.get('confidence'),
                     'Entropy':     f.get('entropy'),
                     'Fingerprint': f.get('fingerprint'),
-                    'Validation':  f.get('validation', {}).get('status')
+                    'Validation':  validation_status
                 }
                 results.append(
                     self._create_standard_result(match=f.get('snippet','').strip(),
@@ -1153,7 +1332,11 @@ class Checker:
                     if line:
                         try:
                             result = json.loads(line)
-                            trufflehog_list.append(result)
+                            # Проверяем, что result является словарем
+                            if isinstance(result, dict):
+                                trufflehog_list.append(result)
+                            else:
+                                logger.warning(f'TruffleHog result is not a dict: {type(result)}, skipping')
                         except json.JSONDecodeError:
                             continue
         except Exception as ex:
@@ -1256,11 +1439,24 @@ class Checker:
         raw_data = result.get('RawV2') or result.get('Raw', '')
         source_metadata = result.get('SourceMetadata', {})
         
+        # Безопасное извлечение вложенных значений с проверкой типов
+        def safe_nested_get(data, *keys, default=''):
+            """Безопасно получить значение из вложенной структуры словарей"""
+            current = data
+            for key in keys:
+                if isinstance(current, dict):
+                    current = current.get(key)
+                else:
+                    return default
+                if current is None:
+                    return default
+            return current if current is not None else default
+        
         # Анализируем различные части результата
         text_sources = [
             raw_data,
-            source_metadata.get('Data', {}).get('Git', {}).get('file', ''),
-            source_metadata.get('Data', {}).get('Git', {}).get('commit', ''),
+            safe_nested_get(source_metadata, 'Data', 'Git', 'file'),
+            safe_nested_get(source_metadata, 'Data', 'Git', 'commit'),
         ]
         
         full_text = ' '.join(str(source) for source in text_sources if source).lower()
@@ -1409,11 +1605,24 @@ class Checker:
         raw_data = result.get('RawV2') or result.get('Raw', '')
         source_metadata = result.get('SourceMetadata', {})
         
+        # Безопасное извлечение вложенных значений с проверкой типов
+        def safe_nested_get(data, *keys, default=''):
+            """Безопасно получить значение из вложенной структуры словарей"""
+            current = data
+            for key in keys:
+                if isinstance(current, dict):
+                    current = current.get(key)
+                else:
+                    return default
+                if current is None:
+                    return default
+            return current if current is not None else default
+        
         # Собираем весь контекст для анализа
         context_data = [
             raw_data,
-            source_metadata.get('Data', {}).get('Git', {}).get('file', ''),
-            source_metadata.get('Data', {}).get('Git', {}).get('commit', ''),
+            safe_nested_get(source_metadata, 'Data', 'Git', 'file'),
+            safe_nested_get(source_metadata, 'Data', 'Git', 'commit'),
         ]
         
         context_text = ' '.join(str(data) for data in context_data if data).lower()

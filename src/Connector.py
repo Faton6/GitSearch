@@ -1,43 +1,92 @@
-# Standart libs import
+# Standard library imports
 import os
 import time
 import requests
 import json
 import base64
 import bz2
-from src.logger import logger
-from typing import Any, Dict, Union, Set, Tuple
+from typing import Any, Dict, Union, Set, Tuple, Optional, List
 
-# Project lib's import
+# Project library imports
 from src import constants
 from src.logger import logger
 from src import api_client
 from src import utils
 
 
-"""
-    Dump scan result to Data Base
-    Fields to dump:
-    0. ID
-    1. repo_url
-    2. Risk level
-    3. Author
-    4. Founded date
-    5. Repo creation date
-    6. Report
-    8. Result of human check (0 - not seen, 1 - leaks aprove, 2 - leak doesn't found
-    9. Type of leaks (if it leaks)
-    10. Finale result  (0 - leaks doesn't found, add to exclude list
-                        1 - leaks found, sent request to block
-                        2 - leaks found, was more scanned 
-                        3 - leaks found, blocked
-                        4 - not set
-                        5 - need more scan)
-    constants.RESULT_MASS[i][k] - CodeObj, RepoObj, CommitObj or GlistObj
-    k = [self.repo_url, self.level(), self.author_name, self.found_time, self.created_date,
-        self.updated_date, base64.b64encode(bz2.compress(json.dumps(self.secrets, indent=4).encode('utf-8'))),
-        res_human_check, founded_leak, res_check]
+def safe_encode_data(data: Any, compress: bool = True) -> str:
+    """
+    Safely encode data to base64 with UTF-8 error handling.
+    
+    Args:
+        data: Data to encode (dict, list, etc. - will be JSON serialized)
+        compress: Whether to use BZ2 compression (default: True)
         
+    Returns:
+        Base64-encoded string ready for database storage
+    """
+    try:
+        # Handle None or empty data - return encoded empty object
+        if data is None:
+            data = {}
+        
+        # 1. JSON serialize with ensure_ascii=False to preserve unicode
+        json_str = json.dumps(data, indent=4, ensure_ascii=False)
+        
+        # 2. Use utils.safe_encode_decode to safely encode to UTF-8 string
+        #    This handles any problematic characters
+        safe_json_str = utils.safe_encode_decode(json_str, operation='encode')
+        
+        # 3. Convert to bytes
+        json_bytes = safe_json_str.encode('utf-8')
+        
+        # 4. Compress if requested
+        if compress:
+            json_bytes = bz2.compress(json_bytes)
+        
+        # 5. Encode to base64
+        return base64.b64encode(json_bytes).decode('ascii')
+        
+    except Exception as e:
+        logger.error(f"Error in safe_encode_data: {e}. Returning empty encoded object.")
+        # Return base64 encoded empty object
+        return base64.b64encode(b'{}').decode('ascii')
+
+
+"""
+Database connector module for GitSearch.
+
+This module handles all database interactions including:
+- Dumping scan results to database
+- Updating existing leak records
+- Retrieving data from database
+- Managing leak statuses and analysis results
+
+Database Fields:
+    0. ID - Unique identifier
+    1. repo_url - Repository URL
+    2. Risk level - Severity level of the leak
+    3. Author - Repository/commit author
+    4. Found date - When the leak was discovered
+    5. Repo creation date - Repository creation timestamp
+    6. Report - Detailed analysis report
+    8. Human check result:
+        0 - Not reviewed
+        1 - Leak confirmed
+        2 - False positive
+    9. Leak types - Categories of detected leaks
+    10. Final result:
+        0 - No leak found, added to exclude list
+        1 - Leak found, block request sent
+        2 - Leak found, deep scan completed
+        3 - Leak found, blocked
+        4 - Status not set
+        5 - Needs additional scanning
+
+Data Structure:
+    constants.RESULT_MASS[i][k] contains leak objects (CodeObj, RepoObj, CommitObj, GlistObj)
+    where k contains: [repo_url, level, author_name, found_time, created_date,
+                      updated_date, encoded_secrets, human_check_result, leak_type, final_status]
 """
 
 requests.urllib3.disable_warnings()
@@ -107,7 +156,6 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
                 # Определяем, требуется ли анализ и устанавливаем статус ДО обновления
                 if not is_this_need_to_analysis(leak_obj):
                     leak_obj.res_check = constants.RESULT_CODE_LEAK_NOT_FOUND
-                    logger.info(f"Leak marked as false positive (status 0): {leak_obj.repo_url}")
                 
                 if leak_id_existing and leak_id_existing != 0:
                     logger.info(f"Updating existing leak for URL: {leak_obj.repo_url} (Leak ID: {leak_id_existing[1]})")
@@ -122,13 +170,7 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
                 
                 # Логируем статус для отладки
                 leak_status = leak_write_data.get('result', 4)
-                if leak_status == 0:
-                    logger.info(f"Adding new leak with status 0 (false positive): {leak_obj.repo_url}")
-                elif leak_status == 5:
-                    logger.info(f"Adding new leak with status 5 (need more scan): {leak_obj.repo_url}")
-                else:
-                    logger.info(f"Adding new leak with status {leak_status}: {leak_obj.repo_url}")
-                
+
                 data_leak = {
                     'tname': 'leak',
                     'dname': 'GitSearch',
@@ -142,12 +184,8 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
                     'content': {
                         'leak_id': counter,
                         'report_name': leak_obj.repo_url,
-                        'raw_data': base64.b64encode(
-                            bz2.compress(json.dumps(leak_obj.secrets, indent=4).encode('utf-8'))
-                        ),
-                        'ai_report': base64.b64encode(
-                            bz2.compress(json.dumps(leak_obj.ai_analysis, indent=4).encode('utf-8'))
-                        )
+                        'raw_data': safe_encode_data(leak_obj.secrets, compress=True),
+                        'ai_report': safe_encode_data(leak_obj.ai_analysis, compress=True)
                     }
                 }
                 leak_stats_table, accounts_table, commiters_table = leak_obj.get_stats()
@@ -174,9 +212,7 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
                 'content': {
                     'leak_id': result_deepscan[url][0],
                     'report_name': url,
-                    'raw_data': base64.b64encode(
-                        bz2.compress(json.dumps(result_deepscan[url][1], indent=4).encode('utf-8'))
-                    )
+                    'raw_data': safe_encode_data(result_deepscan[url][1], compress=True)
                 }
             }
 
@@ -233,7 +269,6 @@ def dump_to_DB_req(filename, mode=0):
         if mode == 0:
             # 1. Обработка утечки
             leak_response = APIClient._make_request(backup_rep['scan'][i][0])
-            logger.info(f'\nResponse dump data to DB.leak: {leak_response}')
             
             # Проверка и извлечение ID утечки
             if not leak_response.get('auth') or not leak_response.get('content') or 'id' not in leak_response['content']:
@@ -426,8 +461,8 @@ def update_existing_leak(leak_id: int, leak_obj):
             logger.error(f'Unicode decode error in update_existing_leak: {decode_error}. Attempting recovery.')
             # Try to recover with safe encoding
             try:
-                existing_updated_at = utils.safe_encode_decode(existing_leak[0].get('updated_at', ''), 'decode')
-                new_updated_at = utils.safe_encode_decode(leak_obj.write_obj().get('updated_at', ''), 'decode')
+                existing_updated_at = utils.safe_encode_decode(existing_leak[0].get('updated_at', ''), operation='decode')
+                new_updated_at = utils.safe_encode_decode(leak_obj.write_obj().get('updated_at', ''), operation='decode')
             except Exception as recovery_error:
                 logger.error(f'Failed to recover from encoding error: {recovery_error}')
                 existing_updated_at = ''
@@ -440,17 +475,66 @@ def update_existing_leak(leak_id: int, leak_obj):
         
         # Safe decoding of legacy data with encoding error handling
         try:
-            old_raw = decode_legacy_data(raw_report.get('raw_data', ''))
-        except UnicodeDecodeError as decode_error:
-            logger.warning(f'Unicode decode error in legacy data: {decode_error}. Using safe decoding.')
+            raw_data_field = raw_report.get('raw_data', '')
+            if not raw_data_field:
+                logger.debug('No raw_data field in database, using empty dict')
+                old_raw = {}
+            else:
+                old_raw = decode_legacy_data(raw_data_field)
+                if not old_raw:
+                    logger.warning(f'Failed to decode raw_data for leak ID {leak_id}, using empty dict')
+        except Exception as decode_error:
+            logger.warning(f'Error decoding legacy data for leak ID {leak_id}: {decode_error}. Using empty dict.')
             old_raw = {}
         
         # Safe decoding of AI report with encoding error handling  
         try:
-            ai_report_data = raw_report.get('ai_report', '') or '{}'
-            old_ai = json.loads(base64.b64decode(ai_report_data.encode('utf-8')).decode('utf-8'))
-        except (UnicodeDecodeError, json.JSONDecodeError, Exception) as ai_error:
-            logger.warning(f'Error decoding AI report: {ai_error}. Using empty dict.')
+            ai_report_data = raw_report.get('ai_report', '')
+            
+            # Check if ai_report is empty or None
+            if not ai_report_data or ai_report_data.strip() == '':
+                logger.debug(f'No AI report data for leak ID {leak_id}, using empty dict')
+                old_ai = {}
+            else:
+                # Handle case where ai_report_data might already be a dict (from JSON field)
+                if isinstance(ai_report_data, dict):
+                    old_ai = ai_report_data
+                else:
+                    # Decode base64
+                    try:
+                        decoded_bytes = base64.b64decode(ai_report_data)
+                    except Exception as b64_error:
+                        logger.debug(f'Base64 decode failed for AI report: {b64_error}, trying as plain JSON')
+                        # Maybe it's plain JSON string
+                        try:
+                            old_ai = json.loads(ai_report_data)
+                        except:
+                            old_ai = {}
+                    else:
+                        # Check if decoded bytes are empty
+                        if not decoded_bytes or len(decoded_bytes) == 0:
+                            logger.debug(f'Empty AI report after base64 decode for leak ID {leak_id}')
+                            old_ai = {}
+                        else:
+                            # Try BZ2 decompression first (old format)
+                            try:
+                                decompressed = bz2.decompress(decoded_bytes)
+                                json_str = utils.safe_encode_decode(decompressed, operation='decode')
+                            except (OSError, Exception):
+                                # Not BZ2 compressed, use raw bytes
+                                json_str = utils.safe_encode_decode(decoded_bytes, operation='decode')
+                            
+                            # Check if json_str is empty or whitespace only
+                            if not json_str or json_str.strip() == '':
+                                logger.debug(f'Empty JSON string after decode for leak ID {leak_id}')
+                                old_ai = {}
+                            else:
+                                old_ai = json.loads(json_str)
+        except json.JSONDecodeError as json_error:
+            logger.warning(f'JSON decode error in AI report for leak ID {leak_id}: {json_error}. Using empty dict.')
+            old_ai = {}
+        except Exception as ai_error:
+            logger.warning(f'Error decoding AI report for leak ID {leak_id}: {ai_error}. Using empty dict.')
             old_ai = {}
           
         try:
@@ -472,22 +556,16 @@ def update_existing_leak(leak_id: int, leak_obj):
             merged_raw = merge_reports(old_raw, leak_obj.secrets)
             merged_ai = merge_reports(old_ai, leak_obj.ai_analysis)
             
-            # Safe encoding with error handling
-            try:
-                enc_raw = base64.b64encode(json.dumps(merged_raw, ensure_ascii=False).encode('utf-8')).decode('utf-8')
-                enc_ai = base64.b64encode(json.dumps(merged_ai, ensure_ascii=False).encode('utf-8')).decode('utf-8')
-            except UnicodeEncodeError as encode_error:
-                logger.warning(f'Unicode encode error in reports: {encode_error}. Using safe encoding.')
-                # Use safe encoding with replacement characters
-                enc_raw = base64.b64encode(json.dumps(merged_raw, ensure_ascii=True).encode('utf-8', errors='replace')).decode('utf-8')
-                enc_ai = base64.b64encode(json.dumps(merged_ai, ensure_ascii=True).encode('utf-8', errors='replace')).decode('utf-8')
+            # Use safe encoding function
+            enc_raw = safe_encode_data(merged_raw, compress=False)
+            enc_ai = safe_encode_data(merged_ai, compress=False)
 
             if raw_report.get('raw_data', '') != enc_raw:
                 if raw_report_data:
                     APIClient.upd_data('raw_report', {
                         'id': old_raw_id,
                         'leak_id': leak_id,
-                        'report_name': utils.safe_encode_decode(leak_obj.repo_url, 'encode'),
+                        'report_name': utils.safe_encode_decode(leak_obj.repo_url, operation='encode'),
                         'raw_data': enc_raw,
                         'ai_report': enc_ai
                     })
@@ -577,11 +655,10 @@ def _update_accounts(leak_id: int, accounts_table: list, leak_obj) -> None:
             if existing_accounts:
                 acc_id = existing_accounts[0]['id']
             else:
-                # Создаем новый аккаунт
                 acc_data = {
                     'account': acc_name,
                     'need_monitor': account.get('need_monitor', 0),
-                    'company_id': account.get('company_id', 0)
+                    'company_id': account.get('company_id', getattr(leak_obj, 'company_id', 0))
                 }
                 acc_id = APIClient.add_data('accounts', acc_data)
                 if not acc_id:
@@ -716,35 +793,97 @@ def get_company_name(company_id: int) -> str:
         }
 
         company_info = APIClient._make_request(data)
-        company_name = company_info['content'][0]['name']
+        
+        # Детальная проверка и логирование структуры ответа
+        if not isinstance(company_info, dict):
+            logger.error(f"company_info не является словарем: type={type(company_info)}, value={company_info}")
+            raise ValueError(f"Invalid company_info type: {type(company_info)}")
+        
+        if 'content' not in company_info:
+            logger.error(f"Отсутствует ключ 'content' в company_info: {company_info}")
+            raise ValueError("Missing 'content' key in company_info")
+        
+        content = company_info['content']
+        if not isinstance(content, list):
+            logger.error(f"company_info['content'] не является списком: type={type(content)}, value={content}")
+            raise ValueError(f"Invalid content type: {type(content)}")
+        
+        if len(content) == 0:
+            logger.error(f"company_info['content'] пуст для company_id={company_id}")
+            raise ValueError(f"Empty content for company_id={company_id}")
+        
+        first_item = content[0]
+        if not isinstance(first_item, dict):
+            logger.error(f"company_info['content'][0] не является словарем: type={type(first_item)}, value={first_item}")
+            raise ValueError(f"Invalid first_item type: {type(first_item)}")
+        
+        if 'name' not in first_item:
+            logger.error(f"Отсутствует ключ 'name' в company_info['content'][0]: {first_item}")
+            raise ValueError("Missing 'name' key in first_item")
+        
+        company_name = first_item['name']
         return company_name
     except Exception as e:
-        logger.error(f"Ошибка в get_company_name: {e}")
+        logger.error(f"Ошибка в get_company_name для company_id={company_id}: {e}")
         if company_id in company_id_to_name:
             return company_id_to_name[company_id]
         else:
             return f"company_{company_id}"
 
 def decode_legacy_data(encoded_data):
+    """
+    Safely decode legacy data with multiple fallback strategies.
+    Uses utils.safe_encode_decode for proper decoding.
+    
+    Args:
+        encoded_data: Base64-encoded data (possibly BZ2 compressed)
+        
+    Returns:
+        Decoded dictionary or empty dict on error
+    """
     if not encoded_data:
         return {}
+    
+    # Check if encoded_data is bytes or string
+    if isinstance(encoded_data, bytes):
+        try:
+            encoded_data = encoded_data.decode('utf-8', errors='replace')
+        except Exception:
+            logger.warning("Failed to decode encoded_data bytes to string")
+            return {}
 
     try:
         # Декодируем base64
         decoded_bytes = base64.b64decode(encoded_data)
     except Exception as ex:
+        logger.warning(f"Base64 decode failed: {ex}")
         return {}
+    
+    # Check if decoded data looks like valid compressed data
+    if len(decoded_bytes) < 2:
+        logger.warning("Decoded data too short to be valid")
+        return {}
+    
+    # Try BZ2 decompression first (old format)
     try:
         decompressed = bz2.decompress(decoded_bytes)
-        json_str = decompressed.decode('utf-8')
+        # Use utils.safe_encode_decode to handle decoding with error replacement
+        json_str = utils.safe_encode_decode(decompressed, operation='decode')
         return json.loads(json_str)
+    except OSError as bz2_error:
+        # OSError is raised for invalid BZ2 data stream - this is normal for non-compressed data
+        logger.debug(f"Data is not BZ2 compressed, trying raw decode")
     except Exception as bz2_error:
-        logger.debug(f"BZ2 decompression failed, trying raw decode: {bz2_error}")
-        
-        # Если не получилось, пробуем как новый формат (без сжатия)
-        try:
-            json_str = decoded_bytes.decode('utf-8')
-            return json.loads(json_str)
-        except Exception as json_error:
-            logger.error(f"JSON decoding failed: {json_error}")
-        return {}
+        logger.warning(f"BZ2 decompression error: {bz2_error}, trying raw decode")
+    
+    # Если не получилось, пробуем как новый формат (без сжатия)
+    try:
+        # Use utils.safe_encode_decode to handle decoding with error replacement
+        json_str = utils.safe_encode_decode(decoded_bytes, operation='decode')
+        return json.loads(json_str)
+    except json.JSONDecodeError as json_error:
+        logger.error(f"JSON decoding failed - data may be corrupted: {json_error}")
+    except Exception as json_error:
+        logger.error(f"Unexpected error during JSON decoding: {json_error}")
+    
+    return {}

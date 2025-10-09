@@ -1,10 +1,11 @@
-# Standart libs import
+# Standard library imports
 import time
 from abc import ABC
 import asyncio
 import json
+from typing import Dict, Optional, Any
 
-# Project lib's import
+# Project library imports
 from src import constants
 from src import utils
 from src.logger import logger
@@ -12,27 +13,6 @@ from src.LeakAnalyzer import LeakAnalyzer
 
 
 class LeakObj(ABC):
-    """
-        Class LeakObj:
-            Fields:
-            Url - link to repository
-            responce - responce json
-            dork - used dork for search in gihub
-            author_name - repository author
-            repo_name - repository name: author/repo
-            found_time - time of object create (in scan process)
-            created_date - repository created date
-            updated_date - repository updated date
-            lvl - Leak level (low, medium, high)
-            secrets - dict of founded secrets by CheckRepo.Run
-            status - list with founded types of leaks
-
-            Methods:
-            def _check_status - update status field
-            def Level - get actual leak Level
-            def write_obj_dict - get dict of object fields for write in json
-            def write_obj - get list of object fields for write in DB
-    """
 
     def __init__(self, obj_type: str, url: str, responce: dict, dork: str, company_id: int = 1):
 
@@ -69,9 +49,11 @@ class LeakObj(ABC):
         self.profitability_scores = None
         
     def _get_message(self, key: str, lang: str = "ru", **kwargs) -> str:
-        template = constants.LEAK_OBJ_MESSAGES.get(
-            lang, constants.LEAK_OBJ_MESSAGES["en"]
-        ).get(key, "")
+        lang_messages = constants.LEAK_OBJ_MESSAGES.get(lang, constants.LEAK_OBJ_MESSAGES.get("en", {}))
+        if not isinstance(lang_messages, dict):
+            logger.warning(f"LEAK_OBJ_MESSAGES for lang '{lang}' is not a dict: {type(lang_messages)}")
+            lang_messages = {}
+        template = lang_messages.get(key, "")
         try:
             return template.format(**kwargs)
         except Exception:
@@ -82,12 +64,9 @@ class LeakObj(ABC):
         self.company_info = company_info
     
     def _create_ai_obj(self):
-        """Создание объекта AIObj для анализа"""
-        
         if self.ai_obj is None:
             # Lazy import для избежания циклического импорта
             from src.AIObj import AIObj
-            # Подготовка данных для AIObj
             stats_data = {}
             leak_info = {
                 "repo_name": self.repo_name,
@@ -99,7 +78,6 @@ class LeakObj(ABC):
                 "commiters": getattr(self.stats, 'commits_stats_commiters_table', [])
             }
             
-            # Статистика репозитория
             if hasattr(self.stats, 'repo_stats_leak_stats_table'):
                 stats_data = self.stats.repo_stats_leak_stats_table
             
@@ -111,7 +89,6 @@ class LeakObj(ABC):
             )
     
     async def run_ai_analysis(self, force: bool = False):
-        """Run AI analysis on the leak"""
         if not constants.AI_ANALYSIS_ENABLED:
             logger.debug("AI analysis not enabled")
             return
@@ -120,22 +97,18 @@ class LeakObj(ABC):
             logger.debug("AI analysis already completed")
             return
         try:
-            # Создаем AIObj если еще не создан
             self._create_ai_obj()
-            # Запускаем комплексный анализ
             self.ai_analysis = self.ai_obj.analyze_leak_comprehensive()
         except Exception as e:
             logger.error(f"Error during AI analysis for {self.repo_name}: {str(e)}")
     
     def run_ai_analysis_sync(self, force: bool = False):
-        """Synchronous wrapper for AI analysis"""
         if not constants.AI_ANALYSIS_ENABLED:
             return
         
         try:
             logger.info(f"Starting AI analysis for {self.repo_name}")
             
-            # Создаем AIObj если еще не создан
             self._create_ai_obj()
             
             # Запускаем комплексный анализ
@@ -154,18 +127,20 @@ class LeakObj(ABC):
         try:
             # Company relevance
             company_rel = self.ai_analysis.get('company_relevance', {})
-            if company_rel.get('is_related'):
-                self.ai_configence = company_rel.get('confidence', 0.0)
-                self.status.append(self._get_message("ai_analysis_company_related", lang, confidence=self.ai_configence))
-            else:
-                self.ai_configence = company_rel.get('confidence', 0.0)
-                self.status.append(self._get_message("ai_analysis_company_unrelated", lang, confidence=self.ai_configence))
+            if isinstance(company_rel, dict):
+                if company_rel.get('is_related'):
+                    self.ai_configence = company_rel.get('confidence', 0.0)
+                    self.status.append(self._get_message("ai_analysis_company_related", lang, confidence=self.ai_configence))
+                else:
+                    self.ai_configence = company_rel.get('confidence', 0.0)
+                    self.status.append(self._get_message("ai_analysis_company_unrelated", lang, confidence=self.ai_configence))
             
             # Severity assessment
             severity = self.ai_analysis.get('severity_assessment', {})
-            if severity.get('level') in ['high', 'critical']:
-                score = severity.get('score', 0.0)
-                self.status.append(self._get_message("ai_analysis_high_severity", lang, score=score))
+            if isinstance(severity, dict):
+                if severity.get('level') in ['high', 'critical']:
+                    score = severity.get('score', 0.0)
+                    self.status.append(self._get_message("ai_analysis_high_severity", lang, score=score))
             
             # Summary
             summary = self.ai_analysis.get('summary', '')
@@ -181,6 +156,14 @@ class LeakObj(ABC):
             self.status.append(self._get_message("ai_analysis_error", lang))
     
     def _check_status(self):
+        
+        if hasattr(self.stats, 'is_inaccessible') and self.stats.is_inaccessible:
+            self.lvl = 0
+            self.res_check = constants.RESULT_CODE_LEAK_NOT_FOUND
+            reason = getattr(self.stats, 'inaccessibility_reason', 'Репозиторий недоступен')
+            self.status = [f"⚠️ {reason}. Утечка не обнаружена."]
+            logger.info(f"Repository marked as inaccessible: {self.repo_name} - {reason}")
+            return
         
         scan_error = self.secrets.get("Scan error")
 
@@ -220,7 +203,13 @@ class LeakObj(ABC):
             if leak_type in self.repo_name:
                 self.status.append(self._get_message("leak_in_repo_name", lang, leak_type=leak_type, repo_name=self.repo_name))
         
-        description_value = self.stats.repo_stats_leak_stats_table.get("description")
+        # Безопасная проверка типа repo_stats_leak_stats_table
+        if isinstance(self.stats.repo_stats_leak_stats_table, dict):
+            description_value = self.stats.repo_stats_leak_stats_table.get("description")
+        else:
+            logger.warning(f"repo_stats_leak_stats_table is not a dict: {type(self.stats.repo_stats_leak_stats_table)}")
+            description_value = None
+        
         if isinstance(description_value, str) and description_value.strip() not in ["_", "", " "]:
             description = description_value
             if len(description) > constants.MAX_DESCRIPTION_LEN:
@@ -297,10 +286,12 @@ class LeakObj(ABC):
             
             # Update true_positive_chance based on AI analysis
             if self.ai_analysis:
-                ai_tp_prob = self.ai_analysis.get('classification', {}).get('true_positive_probability', 0.0)
-                if ai_tp_prob > 0:
-                    # Combine traditional scoring with AI assessment
-                    true_positive_chance = (true_positive_chance + ai_tp_prob) / 2.0
+                classification = self.ai_analysis.get('classification', {})
+                if isinstance(classification, dict):
+                    ai_tp_prob = classification.get('true_positive_probability', 0.0)
+                    if ai_tp_prob > 0:
+                        # Combine traditional scoring with AI assessment
+                        true_positive_chance = (true_positive_chance + ai_tp_prob) / 2.0
         
         if true_positive_chance < 0.2: # Example thresholds, can be adjusted
             self.lvl = 0  # 'Low'

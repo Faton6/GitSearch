@@ -22,16 +22,57 @@ def _decode_report_data(encoded_data: str) -> dict:
     
     Returns empty dict if decoding fails.
     """
+    if not encoded_data:
+        return {}
+    
+    # Check for empty or whitespace-only strings
+    if isinstance(encoded_data, str) and encoded_data.strip() == '':
+        return {}
+    
+    # If already a dict, return as is
+    if isinstance(encoded_data, dict):
+        return encoded_data
+    
     try:
         # Remove quotes if present (from str() conversion)
         if encoded_data.startswith("b'") and encoded_data.endswith("'"):
             encoded_data = encoded_data[2:-1]
         
         # Decode base64
-        json_data = base64.b64decode(encoded_data)
+        try:
+            json_bytes = base64.b64decode(encoded_data)
+        except Exception:
+            # Maybe it's already plain JSON
+            try:
+                return json.loads(encoded_data)
+            except:
+                return {}
+        
+        # Check if decoded bytes are empty
+        if not json_bytes or len(json_bytes) == 0:
+            return {}
+        
+        # Try BZ2 decompression first (old format)
+        try:
+            import bz2
+            decompressed = bz2.decompress(json_bytes)
+            decoded_str = decompressed.decode('utf-8', errors='replace')
+        except OSError:
+            # Not BZ2 compressed, use raw JSON
+            decoded_str = json_bytes.decode('utf-8', errors='replace')
+        except Exception:
+            # BZ2 decompression failed, use raw JSON
+            decoded_str = json_bytes.decode('utf-8', errors='replace')
+        
+        # Check if decoded string is empty or whitespace only
+        if not decoded_str or decoded_str.strip() == '':
+            return {}
         
         # Parse JSON
-        return json.loads(json_data)
+        return json.loads(decoded_str)
+    except json.JSONDecodeError:
+        # Invalid JSON
+        return {}
     except Exception:
         return {}
 

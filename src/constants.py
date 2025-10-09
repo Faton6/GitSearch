@@ -1,74 +1,155 @@
-# Standart libs import
+# Standard library imports
 from pathlib import Path
 import os
 import json
 import tracemalloc
+from typing import Dict, List, Set, Tuple, Any
 
-# Project lib's import
+# Project library imports
 # from src.logger import logger, CLR
-RUN_TESTS: bool = True
 
+"""
+GitSearch Constants Module
 
+This module contains all global constants, configuration settings, and 
+application-wide variables used throughout the GitSearch application.
+
+The module is divided into several sections:
+- Application metadata
+- File system paths
+- Scanning parameters and timeouts
+- GitHub API configuration
+- AI analysis settings
+- Database result codes
+- Internationalization (i18n)
+- Helper classes
+"""
+
+# =============================================================================
+# Application Metadata
+# =============================================================================
+
+RUN_TESTS: bool = True  # Enable/disable test execution on startup
 __NAME__ = "GitSearch"
+__VERSION__ = "1.0.0"
 DEFAULT_CONFIG_FILE = f".{__NAME__}.yml"
-MAIN_FOLDER_PATH = Path(Path(__file__).parent).parent
-SEARCH_FOLDER_PATH = f"{str(MAIN_FOLDER_PATH)}/src/searcher"
-COMMAND_FILE = str(SEARCH_FOLDER_PATH) + '/command_file'
-LOGS_PATH = str(MAIN_FOLDER_PATH) + '/logs'
-LIBS_PATH = str(MAIN_FOLDER_PATH) + '/lib'
-TEMP_FOLDER = str(MAIN_FOLDER_PATH) + '/temp'
-RESULTS = str(MAIN_FOLDER_PATH) + '/results'
+# =============================================================================
+# File System Paths
+# =============================================================================
+
+MAIN_FOLDER_PATH = Path(Path(__file__).parent).parent  # Project root directory
+SEARCH_FOLDER_PATH = f"{str(MAIN_FOLDER_PATH)}/src/searcher"  # Scanner modules
+COMMAND_FILE = str(SEARCH_FOLDER_PATH) + '/command_file'  # Command file for scanners
+LOGS_PATH = str(MAIN_FOLDER_PATH) + '/logs'  # Application logs
+LIBS_PATH = str(MAIN_FOLDER_PATH) + '/lib'  # External libraries
+TEMP_FOLDER = str(MAIN_FOLDER_PATH) + '/temp'  # Temporary files (cloned repos, etc.)
+RESULTS = str(MAIN_FOLDER_PATH) + '/results'  # Scan results output
+
+# Ensure required directories exist
 if not os.path.exists(LOGS_PATH):
     os.makedirs(LOGS_PATH)
 if not os.path.exists(TEMP_FOLDER):
     os.makedirs(TEMP_FOLDER)
 if not os.path.exists(RESULTS):
     os.makedirs(RESULTS)
-# seconds to scan by git-secrets/gitleaks/whisper/trufflehpg/deepsecret
-MAX_TEMP_FOLDER_SIZE = 10 * 1024 * 1024 * 1024 # TODO add ckecking of size and deleting old temp folders
+# =============================================================================
+# Scanning Parameters and Timeouts (in seconds)
+# =============================================================================
+
+# Maximum size of temp folder before cleanup (10GB)
+MAX_TEMP_FOLDER_SIZE = 10 * 1024 * 1024 * 1024
+# Timeout for default scanning tools (detect-secrets, etc.)
 MAX_TIME_TO_SCAN_BY_UTIL_DEFAULT = 100
+# Timeout for deep scanning tools (trufflehog, deepsecrets, etc.)
 MAX_TIME_TO_SCAN_BY_UTIL_DEEP = 3000
-MAX_TIME_TO_SEARCH_GITHUB_REQUEST = 500  # seconds to search by github API
-MAX_TIME_TO_CLONE = 500  # seconds to clone repo
+# Timeout for GitHub API search requests
+MAX_TIME_TO_SEARCH_GITHUB_REQUEST = 500
+# Timeout for git clone operations
+MAX_TIME_TO_CLONE = 500
+
+# =============================================================================
+# GitHub API Configuration
+# =============================================================================
+
+# Cooldown between GitHub API requests (seconds)
 GITHUB_REQUEST_COOLDOWN: float = 60.0
+# Rate limit for GitHub requests per minute
 GITHUB_REQUEST_RATE_LIMIT: float = 10.0
-GITHUB_REPO_COUNT_AT_REQUEST_LIMIT: int = 1000  # Github api restriction https://docs.github.com/rest/search/search#search-code
+# Maximum results per search (GitHub API restriction)
+# See: https://docs.github.com/rest/search/search#search-code
+GITHUB_REPO_COUNT_AT_REQUEST_LIMIT: int = 1000
+# Number of results per page in GitHub API requests
 GITHUB_REQUEST_REPO_PER_PAGE: int = 100
-RESULT_CODES = ['1', '2', '3']  # Field from DB that conatain status if founded leak
-RESULT_CODE_STILL_ACCESS = 1
-RESULT_CODE_TO_DEEPSCAN = 5
-RESULT_CODE_LEAK_NOT_FOUND = 0
-RESULT_CODE_TO_SEND = 4
-all_dork_counter = 0 # quantity of all dorks
-# Dork counterts
-dork_search_counter = 0  # quantity of searches in gihtub
-all_dork_search_counter = 0  # stable quantity of searches in gihtub
-# quantity of MAX searches in gihtub before neccessary dump to DB
+# =============================================================================
+# Database Result Codes
+# =============================================================================
+
+# Status codes for confirmed leaks (used in queries)
+RESULT_CODES = ['1', '2', '3']
+
+# Individual result code definitions:
+RESULT_CODE_LEAK_NOT_FOUND = 0      # No leak found, added to exclude list
+RESULT_CODE_STILL_ACCESS = 1         # Leak found, block request sent
+RESULT_CODE_TO_SEND = 4              # Status not set, needs review
+RESULT_CODE_TO_DEEPSCAN = 5          # Needs additional deep scanning
+
+# =============================================================================
+# Scanning Limits and Counters
+# =============================================================================
+
+# Dork counters (will be updated during runtime)
+all_dork_counter = 0                 # Total quantity of all dorks
+dork_search_counter = 0              # Current number of searches in GitHub
+all_dork_search_counter = 0          # Total stable quantity of searches
+
+# Dump to database after this many searches (prevents memory overflow)
 MAX_SEARCH_BEFORE_DUMP = 15
-quantity_obj_before_send = 0
-MAX_OBJ_BEFORE_SEND = 5
-REPO_MAX_SIZE = 300000
-MAX_UTIL_RES_LINES = 200  # максимальное число строк результата работы каждого из сканеров, которое будет отправлено в отчет
-MAX_LINE_LEAK_LEN = 100  # максимальная длина строки с найденной утечкой
-MAX_TRY_TO_CLONE = 3
-GREP_SCAN_WAIT_TIMEOUT = 20  # seconds to wait for grep_scan before giving up
-MAX_COMMITERS_DISPLAY = 5 # max number of commiters to display in report
-MAX_DESCRIPTION_LEN = 50 # max length of description in report
-LOW_LVL_THRESHOLD = 5  # low lvl of leaks - from 0 to LVL_LOW_THRESHOLD - 1
-# medium lvl of leaks - from LVL_LOW_THRESHOLD to LVL_LOW_THRESHOLD - 1
-MEDIUM_LOW_THRESHOLD = 15
-LANGUAGE = 'ru'  # default language for messages
 
-# AI Analysis configuration
-AI_ANALYSIS_ENABLED = True
-AI_ANALYSIS_TIMEOUT = 30  # seconds
-AI_MAX_CONTEXT_LENGTH = 4000  # characters
-AI_COMPANY_RELEVANCE_THRESHOLD = 0.5
-AI_TRUE_POSITIVE_THRESHOLD = 0.6
-AI_PROVIDER_CHECK_INTERVAL = 5  # Check provider availability every N requests (0 = check every time)
+# Object sending limits
+quantity_obj_before_send = 0         # Current count of objects before send
+MAX_OBJ_BEFORE_SEND = 5              # Maximum objects before triggering send
 
-COUNTRY_PROFILING: bool = True
-COMPANY_COUNTRY_MAP_DEFAULT: str = "ru"  # Default country for companies without specific mapping
+# Repository and output limits
+REPO_MAX_SIZE = 300000               # Maximum repo size in KB (300MB)
+MAX_UTIL_RES_LINES = 200             # Max lines from each scanner in report
+MAX_LINE_LEAK_LEN = 100              # Max length of leak line in characters
+MAX_TRY_TO_CLONE = 3                 # Number of retry attempts for git clone
+GREP_SCAN_WAIT_TIMEOUT = 20          # Timeout for grep scan operations
+MAX_COMMITERS_DISPLAY = 5            # Max committers to show in report
+MAX_DESCRIPTION_LEN = 50             # Max description length in report
+
+# =============================================================================
+# Leak Severity Thresholds
+# =============================================================================
+
+LOW_LVL_THRESHOLD = 5                # Low severity: 0 to 4
+MEDIUM_LOW_THRESHOLD = 15            # Medium severity: 5 to 14
+                                     # High severity: 15+
+
+# =============================================================================
+# Internationalization
+# =============================================================================
+
+LANGUAGE = 'ru'                      # Default language for messages ('ru' or 'en')
+
+# =============================================================================
+# AI Analysis Configuration
+# =============================================================================
+
+AI_ANALYSIS_ENABLED = True           # Enable/disable AI-powered analysis
+AI_ANALYSIS_TIMEOUT = 30             # Timeout for AI API requests (seconds)
+AI_MAX_CONTEXT_LENGTH = 4000         # Maximum context length for AI (characters)
+AI_COMPANY_RELEVANCE_THRESHOLD = 0.5 # Minimum confidence for company relevance (0.0-1.0)
+AI_TRUE_POSITIVE_THRESHOLD = 0.6     # Minimum confidence for true positive (0.0-1.0)
+AI_PROVIDER_CHECK_INTERVAL = 5       # Check provider availability every N requests
+                                     # (0 = check every time)
+
+# =============================================================================
+# Country Profiling Configuration
+# =============================================================================
+
+COUNTRY_PROFILING: bool = True       # Enable geographic profiling
+COMPANY_COUNTRY_MAP_DEFAULT: str = "ru"  # Default country for unmapped companies
 COMPANY_COUNTRY_MAP: dict[str, str] = {
     # Russian companies
     "VTB": "ru",
@@ -155,6 +236,16 @@ if env_variables:
 else:
     url_DB = CONFIG_FILE['url_DB']
     token_DB = CONFIG_FILE['token_DB']
+
+# Initialize GitHub Rate Limiter after token_tuple is ready
+def _init_rate_limiter():
+    """Initialize rate limiter after module load."""
+    try:
+        from src.github_rate_limiter import initialize_rate_limiter, is_initialized
+        if token_tuple and not is_initialized():
+            initialize_rate_limiter(token_tuple)
+    except Exception:
+        pass  # Rate limiter is optional
 
 TEXT_FILE_EXTS = {
     '.txt', '.md', '.rst', '.py', '.js', '.ts', '.java', '.cpp', '.c', '.h', '.hpp',

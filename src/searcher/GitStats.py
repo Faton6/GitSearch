@@ -55,10 +55,12 @@ class GitParserStats:
         
         self.ai_result = -1 # 1 - ai found leak, 0 - ai not found leak, -1 - ai not used
         
-        # Флаги состояния получения статистики
         self.repo_stats_getted = False
         self.coll_stats_getted = False
         self.comm_stats_getted = False
+        
+        self.is_inaccessible = False
+        self.inaccessibility_reason = ""
 
         if self.login_repo is None:
             raise ValueError("Attribute url is not overloaded!")
@@ -94,15 +96,194 @@ class GitParserStats:
             
         # Return 1 if score >= 1 (needs monitoring), 0 otherwise
         return 1 if score >= 1 else 0
+    
+    def _handle_github_error_response(self, response: dict, context: str = "") -> bool:
+        if not isinstance(response, dict) or 'message' not in response:
+            return False
+        
+        status = response.get('status', '')
+        message = response.get('message', '')
+        
+        if status == '409' and 'empty' in message.lower():
+            logger.info(f'Repository is empty ({context}): {self.login_repo}')
+            self.is_inaccessible = True
+            self.inaccessibility_reason = 'Репозиторий пустой (нет коммитов)'
+            return True
+        elif status == '404':
+            logger.warning(f'Resource not found ({context}): {self.login_repo}')
+            self.is_inaccessible = True
+            self.inaccessibility_reason = 'Репозиторий не найден (удален или приватный)'
+            return True
+        elif status == '403':
+            logger.warning(f'Access forbidden ({context}): {self.login_repo}')
+            self.is_inaccessible = True
+            self.inaccessibility_reason = 'Доступ к репозиторию запрещен'
+            return True
+        else:
+            logger.error(f'Got message from github request ({context}): {self.log_color} {response} {CLR["RESET"]}')
+            return True
 
+    def _fetch_stats_via_graphql(self) -> bool:
+        try:
+            from src.searcher.graphql_client import get_graphql_client
+            
+            graphql_client = get_graphql_client()
+            
+            query = """
+            query GetRepoStats($owner: String!, $name: String!) {
+              repository(owner: $owner, name: $name) {
+                createdAt
+                updatedAt
+                pushedAt
+                description
+                stargazerCount
+                forkCount
+                watchers { totalCount }
+                issues(states: OPEN) { totalCount }
+                hasIssuesEnabled
+                hasProjectsEnabled
+                hasWikiEnabled
+                diskUsage
+                repositoryTopics(first: 10) {
+                  nodes { topic { name } }
+                }
+                defaultBranchRef {
+                  target {
+                    ... on Commit {
+                      history { totalCount }
+                    }
+                  }
+                }
+              }
+            }
+            """
+            
+            owner, name = self.login_repo.split('/')
+            variables = {'owner': owner, 'name': name}
+            
+            data = graphql_client.execute_query(query, variables)
+            
+            if data and 'data' in data and data['data'] and 'repository' in data['data']:
+                repo = data['data']['repository']
+                
+                # Parse timestamps
+                self.created_at = time.strftime('%Y-%m-%d %H:%M:%S',
+                    time.strptime(repo['createdAt'], '%Y-%m-%dT%H:%M:%SZ'))
+                self.updated_at = time.strftime('%Y-%m-%d %H:%M:%S',
+                    time.strptime(repo['updatedAt'], '%Y-%m-%dT%H:%M:%SZ'))
+                
+                # Безопасное извлечение вложенных значений с проверкой типов
+                def safe_get_count(data, key, default=0):
+                    """Безопасно получить totalCount из вложенной структуры"""
+                    value = data.get(key)
+                    if isinstance(value, dict):
+                        return value.get('totalCount', default)
+                    elif isinstance(value, list):
+                        return len(value)
+                    elif isinstance(value, int):
+                        return value
+                    return default
+                
+                def safe_get_nested(data, *keys, default=None):
+                    """Безопасно получить значение из вложенной структуры словарей"""
+                    current = data
+                    for key in keys:
+                        if isinstance(current, dict):
+                            current = current.get(key)
+                        else:
+                            return default
+                        if current is None:
+                            return default
+                    return current if current is not None else default
+                
+                # Безопасное извлечение topics
+                topics_value = '_'
+                repo_topics = repo.get('repositoryTopics')
+                if isinstance(repo_topics, dict):
+                    nodes = repo_topics.get('nodes', [])
+                    if isinstance(nodes, list):
+                        topics_value = ','.join([t['topic']['name'] for t in nodes if isinstance(t, dict) and 'topic' in t and 'name' in t.get('topic', {})]) or '_'
+                
+                self.repo_stats_leak_stats_table = {
+                    'size': repo.get('diskUsage', 0),
+                    'stargazers_count': repo.get('stargazerCount', 0),
+                    'has_issues': 1 if repo.get('hasIssuesEnabled') else 0,
+                    'has_projects': 1 if repo.get('hasProjectsEnabled') else 0,
+                    'has_downloads': 0,
+                    'has_wiki': 1 if repo.get('hasWikiEnabled') else 0,
+                    'has_pages': 0,
+                    'forks_count': repo.get('forkCount', 0),
+                    'open_issues_count': safe_get_count(repo, 'issues', 0),
+                    'subscribers_count': safe_get_count(repo, 'watchers', 0),
+                    'topics': topics_value,
+                    'contributors_count': 0,
+                    'commits_count': safe_get_nested(repo, 'defaultBranchRef', 'target', 'history', 'totalCount', default=0),
+                    'commiters_count': 0,
+                    'ai_result': -1,
+                    'description': repo.get('description', '_') or '_'
+                }
+                
+                self.repo_stats_getted = True
+                logger.debug(f'Fetched stats via GraphQL for {self.login_repo}')
+                return True
+            elif data and 'errors' in data:
+                logger.debug(f'GraphQL query returned errors: {data["errors"]}')
+        except Exception as e:
+            logger.debug(f'GraphQL stats fetch failed: {e}')
+        
+        return False
+    
     # check repository stats:
     def fetch_repository_stats(self):  # Renamed from get_repo_stats for better clarity
-        diff: float = self.rate_limit + self.last_request - time.time()
-        if diff > 0.3:
-            time.sleep(diff)
+        if self.type == 'Repository' and not self.repo_stats_getted:
+            try:
+                from src.searcher.graphql_client import get_graphql_client
+                graphql_client = get_graphql_client()
+                if not graphql_client._graphql_disabled:
+                    if self._fetch_stats_via_graphql():
+                        return
+            except:
+                pass
+        
+        # Use rate limiter if available
         try:
-            response = self.request_page(self.repo_url).json()
+            from src.github_rate_limiter import get_rate_limiter, is_initialized
+            if is_initialized():
+                rate_limiter = get_rate_limiter()
+                token = rate_limiter.get_best_token()
+                if token is None:
+                    logger.warning("No tokens available for stats, waiting...")
+                    time.sleep(60)
+                    token = rate_limiter.get_best_token()
+            else:
+                raise ImportError()
+        except (RuntimeError, ImportError):
+            # Fallback to old rate limiting
+            diff: float = self.rate_limit + self.last_request - time.time()
+            if diff > 0.3:
+                time.sleep(diff)
+            token = next(constants.token_generator())
+        
+        try:
+            headers = {'Authorization': f'Token {token}'} if token else {}
+            api_response = requests.get(self.repo_url, headers=headers, timeout=self.timeout)
             self.last_request = time.time()
+            
+            # Update rate limit if using rate limiter
+            try:
+                from src.github_rate_limiter import get_rate_limiter, is_initialized
+                if is_initialized():
+                    rate_limiter = get_rate_limiter()
+                    rate_limiter.update_quota_from_headers(token, api_response.headers)
+                    if api_response.status_code in (403, 429):
+                        retry_after = api_response.headers.get('Retry-After')
+                        if retry_after:
+                            retry_after = int(retry_after)
+                        rate_limiter.handle_rate_limit_error(token, retry_after)
+            except (RuntimeError, ImportError):
+                pass
+            
+            response = api_response.json()
             #logger.info(f'Performed Github api request to {self.type} stats of %s %s %s {self.type}',
             #            self.log_color, self.repo_url, CLR["RESET"])
         except requests.RequestException as ex:
@@ -119,8 +300,30 @@ class GitParserStats:
                 if self.type == 'Gist':
                     full_size = 0
                     if 'files' in response:
-                        for file in response['files'].keys():
-                            full_size += response['files'][file]['size']
+                        files_data = response['files']
+                        if isinstance(files_data, dict):
+                            for file_name in files_data.keys():
+                                file_info = files_data[file_name]
+                                if isinstance(file_info, dict) and 'size' in file_info:
+                                    full_size += file_info['size']
+                                else:
+                                    logger.warning(f"Unexpected file_info structure for {file_name}: {type(file_info)}")
+                        else:
+                            logger.warning(f"Unexpected files structure: {type(files_data)}")
+                    
+                    # Handle forks - can be a list or not present
+                    forks_count = 0
+                    if 'forks' in response:
+                        if isinstance(response['forks'], list):
+                            forks_count = len(response['forks'])
+                        elif isinstance(response['forks'], int):
+                            forks_count = response['forks']
+                    
+                    # Handle description - can be None
+                    description = response.get('description', '_')
+                    if description is None:
+                        description = '_'
+                    
                     self.repo_stats_leak_stats_table = {'size': full_size,
                                                         'stargazers_count': 0,
                                                         'has_issues': 0,
@@ -128,7 +331,7 @@ class GitParserStats:
                                                         'has_downloads': 0,
                                                         'has_wiki': 0,
                                                         'has_pages': 0,
-                                                        'forks_count': len(response['forks']),
+                                                        'forks_count': forks_count,
                                                         'open_issues_count': 0,
                                                         'subscribers_count': 0,
                                                         'topics': '_',
@@ -136,29 +339,40 @@ class GitParserStats:
                                                         'commits_count': 0,
                                                         'commiters_count': 0,
                                                         'ai_result': -1, # 1 - ai found leak, 0 - ai not found leak, -1 - ai not used
-                                                        'description': response['description']
+                                                        'description': description
                                                         }
                 else:
-                    self.repo_stats_leak_stats_table = {'size': response['size'],
-                                                        'stargazers_count': response['stargazers_count'],
-                                                        'has_issues': response['has_issues'],
-                                                        'has_projects': response['has_projects'],
-                                                        'has_downloads': response['has_downloads'],
-                                                        'has_wiki': response['has_wiki'],
-                                                        'has_pages': response['has_pages'],
-                                                        'forks_count': response['forks_count'],
-                                                        'open_issues_count': response['open_issues_count'],
-                                                        'subscribers_count': response['subscribers_count'],
-                                                        'topics': '_'.join(response['topics']),
+                    # Handle topics - can be a list or not present
+                    topics = response.get('topics', [])
+                    if isinstance(topics, list):
+                        topics_str = '_'.join(topics) if topics else '_'
+                    else:
+                        topics_str = '_'
+                    
+                    # Handle description - can be None
+                    description = response.get('description', '_')
+                    if description is None:
+                        description = '_'
+                    
+                    self.repo_stats_leak_stats_table = {'size': response.get('size', 0),
+                                                        'stargazers_count': response.get('stargazers_count', 0),
+                                                        'has_issues': response.get('has_issues', False),
+                                                        'has_projects': response.get('has_projects', False),
+                                                        'has_downloads': response.get('has_downloads', False),
+                                                        'has_wiki': response.get('has_wiki', False),
+                                                        'has_pages': response.get('has_pages', False),
+                                                        'forks_count': response.get('forks_count', 0),
+                                                        'open_issues_count': response.get('open_issues_count', 0),
+                                                        'subscribers_count': response.get('subscribers_count', 0),
+                                                        'topics': topics_str,
                                                         'contributors_count': 0,
                                                         'commits_count': 0,
                                                         'commiters_count': 0,
                                                         'ai_result': -1, # 1 - ai found leak, 0 - ai not found leak, -1 - ai not used
-                                                        'description': response['description']
+                                                        'description': description
                                                         }
             else:
-                logger.error('Got message from github request: %s %s %s', self.log_color,
-                             str(response), CLR["RESET"])
+                self._handle_github_error_response(response, 'fetch_repository_stats')
         self.repo_stats_getted = True
 
     def fetch_contributors_stats(self):  # Renamed from get_contributors_stats for better clarity
@@ -190,8 +404,7 @@ class GitParserStats:
                                                                            'need_monitor': 0
                                                                            })
                 else:
-                    logger.error('Got message from github request: %s %s %s', self.log_color,
-                                 str(response), CLR["RESET"])
+                    self._handle_github_error_response(response, 'fetch_contributors_stats')
                     self.repo_stats_leak_stats_table['contributors_count'] = len(self.contributors_stats_accounts_table)
             self.coll_stats_getted = True
 
@@ -252,9 +465,8 @@ class GitParserStats:
                                                                            'related_account_id': 0
                                                                            })
             else:
-                logger.error('Got message from github request: %s %s %s', self.log_color,
-                             str(response), CLR["RESET"])
-                self.repo_stats_leak_stats_table['commits_count'] = len(response)
+                self._handle_github_error_response(response, 'fetch_commits_stats')
+                self.repo_stats_leak_stats_table['commits_count'] = len(response) if isinstance(response, list) else 0
                 self.repo_stats_leak_stats_table['commiters_count'] = len(self.commits_stats_commiters_table)
 
         self.comm_stats_getted = True

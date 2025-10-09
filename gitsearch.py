@@ -1,10 +1,10 @@
-# Standart libs import
+# Standard library imports
 import sys
 import os
 import subprocess
 import signal
 
-# Project lib's import
+# Project library imports
 from src import constants
 from src import Connector
 from src.logger import logger
@@ -14,14 +14,29 @@ from src import deepscan
 from src import utils
 
 
-def signal_shutdown():
-    logger.info('Stopping gently. Ctrl+C again to force')
+def signal_shutdown(signum=None, frame=None):
+    """
+    Handle shutdown signal gracefully.
+    
+    Args:
+        signum: Signal number (optional)
+        frame: Current stack frame (optional)
+    """
+    logger.info('Stopping gracefully. Press Ctrl+C again to force quit')
     Connector.dump_to_DB()
     sys.exit(0)
 
 
 if __name__ == "__main__":
     subprocess.run(['git', 'config', '--global', '--add', 'safe.directory', '/app'])
+    
+    # Initialize GitHub Rate Limiter
+    try:
+        constants._init_rate_limiter()
+        logger.info('GitHub Rate Limiter initialized')
+    except Exception as e:
+        logger.warning(f'Failed to initialize Rate Limiter: {e}')
+    
     # DEBUG TESTS:
     if constants.RUN_TESTS:
         logger.info('Running tests...')
@@ -74,7 +89,7 @@ if __name__ == "__main__":
 
     old_dir = os.getcwd()
     os.chdir(constants.SEARCH_FOLDER_PATH)
-    logger.info(f'Curent directory: {constants.SEARCH_FOLDER_PATH}')
+    logger.info(f'Current directory: {constants.SEARCH_FOLDER_PATH}')
 
     # List scan
     logger.info('Start List scan')
@@ -82,7 +97,7 @@ if __name__ == "__main__":
 
     # Github Gist scan
     logger.info('Start Gist scan')
-    GlistScan.run(filter_='updated', quantity=30)
+    #GlistScan.run(filter_='updated', quantity=30)
     utils.dumping_data()
 
     # Github scan
@@ -96,6 +111,18 @@ if __name__ == "__main__":
     constants.RESULT_MASS = constants.AutoVivification()
     deep_scan_manager = deepscan.DeepScanManager()
     deep_scan_manager.run()
+    
+    # Print GitHub API usage statistics
+    try:
+        from src.github_rate_limiter import get_rate_limiter, is_initialized
+        if is_initialized():
+            logger.info('=' * 80)
+            logger.info('GitHub API Usage Summary')
+            logger.info('=' * 80)
+            rate_limiter = get_rate_limiter()
+            rate_limiter.print_status()
+    except Exception as e:
+        logger.debug(f'Could not print rate limiter status: {e}')
 
 
     logger.info('Start Re scan')

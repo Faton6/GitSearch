@@ -1,32 +1,3 @@
-"""
-Deep Scanning Module for GitSearch
-
-This module provides functionality for performing deep scans on repositories
-and scanning repositories from provided URL lists.
-
-Classes:
-    DeepScanManager: Manages comprehensive deep scanning of repositories marked in database
-    ListScanManager: Handles scanning of repositories from URL lists
-
-Functions:
-    deep_scan(): Legacy wrapper for deep scanning functionality  
-    list_search(): Scans repositories from a file containing URLs
-    _list_scan(): Deprecated legacy function for list scanning
-
-Usage:
-    # Deep scan repositories marked in database
-    deep_scan()
-    
-    # Scan repositories from URL list file  
-    list_search("/path/to/urls.txt")
-    
-    # Or use default file location
-    list_search()  # Uses temp/list_to_scan.txt
-
-Author: GitSearch Team
-Date: 2025-01-14
-"""
-
 import os
 from typing import Dict, List, Optional, Any, Tuple
 
@@ -38,7 +9,6 @@ from src import filters
 from src import utils
 from src.searcher.scanner import Scanner
 
-# Deep scan configuration constants
 DEEP_SCAN_CONFIG = {
     'max_retries': 3,
     'timeout_multiplier': 3.0,
@@ -56,23 +26,11 @@ LIST_SCAN_CONFIG = {
 
 
 class DeepScanManager:
-    """
-    Manages deep scanning operations for repositories.
-    
-    This class handles the process of performing comprehensive scans on repositories
-    that have been marked for deep scanning in the database.
-    """
     
     def __init__(self):
         self.urls_to_scan: constants.AutoVivification = constants.AutoVivification()
         
     def _get_urls_for_deep_scan(self) -> Dict[str, List[Any]]:
-        """
-        Retrieve URLs from database that are marked for deep scanning.
-        
-        Returns:
-            Dict containing URLs and their associated data for deep scanning
-        """
         urls_to_scan = constants.AutoVivification()
         url_dump = Connector.dump_from_DB(mode=1)
         
@@ -88,13 +46,6 @@ class DeepScanManager:
  
  
     def _get_urls_for_deep_scan_with_no_results(self):
-        """
-        Retrieve URLs from database that are marked as not research yet (4).
-        
-        Returns:
-            Dict containing URLs and their associated data for deep rescanning
-        """
-        
         urls_to_scan = constants.AutoVivification()
         url_dump = Connector.dump_from_DB(mode=1)
         
@@ -109,16 +60,6 @@ class DeepScanManager:
         return urls_to_scan
     
     def _perform_gistobj_deep_scan(self, url: str, leak_id: int, company_id: int) -> Tuple[Optional[Dict], Optional[Dict]]:
-        """
-        Perform deep scan on a single Gist URL.
-        
-        Args:
-            url: Gist URL to scan
-            leak_id: Database identifier for the Gist
-            
-        Returns:
-            Tuple of (obj)
-        """
         try:
             # Create a mock GlistObj for the checker
             mock_repo_data = {
@@ -138,19 +79,11 @@ class DeepScanManager:
             return glist_obj
             
         except Exception as e:
+            import traceback
             logger.error(f"Error during deep scan of {url}: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
     def _perform_leakobj_deep_scan(self, url: str, leak_id: int, company_id: int) -> Tuple[Optional[Dict], Optional[Dict]]:
-        """
-        Perform deep scan on a single repository URL.
-        
-        Args:
-            url: Repository URL to scan
-            leak_id: Database identifier for the repository
-            
-        Returns:
-            Tuple of (obj)
-        """
         try:
             # Create a mock RepoObj for the checker
             mock_repo_data = {
@@ -171,14 +104,13 @@ class DeepScanManager:
             return repo_obj
             
         except Exception as e:
+            import traceback
             logger.error(f"Error during deep scan of {url}: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
     
  
     def run(self, mode=0) -> None:
-        """
-        Execute the complete deep scanning process.
-        """
         logger.info("Starting deep scan process")
         
         if mode == 0:
@@ -193,32 +125,25 @@ class DeepScanManager:
             logger.info("No URLs found for deep scanning")
             return
         
-        # Step 2: Process URLs in batches
         url_list = list(self.urls_to_scan.keys())
         batch_size = DEEP_SCAN_CONFIG['batch_size']
         counter = 0
         if len(url_list) > 500:
-            url_list = url_list[:500]  # Limit to first 500 URLs for performance
+            url_list = url_list[:500]
         for i in range(0, len(url_list), batch_size):
             batch_urls = url_list[i:i + batch_size]
             logger.info(f"Processing batch {i//batch_size + 1}: {len(batch_urls)} URLs. I={i}")
-            # counter теперь увеличивается на каждом обработанном URL
             counter += self._process_batch(batch_urls)
-            # send_objs вызывается после каждого batch
             self.send_objs()
-        # Финальный вызов send_objs для отправки оставшихся объектов
         self.send_objs()
     
     def send_objs(self):
-        # Обрабатываем только те объекты, которые были успешно просканированы и еще не отправлены
         urls_to_remove = []
         for url, data in list(self.urls_to_scan.items()):
             leak_obj = data[1]
-            # leak_obj должен быть валидным и не должен быть уже в RESULT_MASS
             if leak_obj and leak_obj.repo_name not in constants.RESULT_MASS["deep_scan"]:
                 constants.RESULT_MASS["deep_scan"][leak_obj.repo_name] = leak_obj
                 urls_to_remove.append(url)
-        # Удаляем только те url, которые были обработаны
         for url in urls_to_remove:
             del self.urls_to_scan[url]
 
@@ -230,12 +155,6 @@ class DeepScanManager:
         logger.info("Deep scan process completed")
     
     def _process_batch(self, batch_urls: List[str]) -> None:
-        """
-        Process a batch of URLs for deep scanning.
-        
-        Args:
-            batch_urls: List of URLs to process in this batch
-        """
         counter = 0
         for url in batch_urls:
             if isinstance(self.urls_to_scan[url][0], (int, str)):
@@ -266,31 +185,12 @@ class DeepScanManager:
 
 
 class ListScanManager:
-    """
-    Manages scanning of repositories from a provided list of URLs.
-    
-    This class handles the process of scanning GitHub repositories
-    from a list provided in a text file.
-    """
     
     def __init__(self, input_file_path: Optional[str] = None):
-        """
-        Initialize the ListScanManager.
-        
-        Args:
-            input_file_path: Path to file containing URLs to scan.
-                           Defaults to temp/list_to_scan.txt if not provided.
-        """
         self.input_file_path = (input_file_path if input_file_path 
                                else str(constants.MAIN_FOLDER_PATH / "temp" / "list_to_scan.txt"))
     
     def _read_urls_from_file(self) -> List[str]:
-        """
-        Read and validate URLs from the input file.
-        
-        Returns:
-            List of valid URLs to scan
-        """
         if not os.path.exists(self.input_file_path):
             logger.info(f"List scan file not found: {self.input_file_path}")
             return []
@@ -306,7 +206,6 @@ class ListScanManager:
                 logger.info("No valid URLs found in the list scan file.")
                 return []
             
-            # Validate URLs
             valid_urls = []
             for url in url_list:
                 if self._is_valid_github_url(url):
@@ -322,19 +221,9 @@ class ListScanManager:
             return []
     
     def _is_valid_github_url(self, url: str) -> bool:
-        """
-        Validate if the URL is a valid GitHub repository URL.
-        
-        Args:
-            url: URL to validate
-            
-        Returns:
-            True if valid GitHub URL, False otherwise
-        """
         if not LIST_SCAN_CONFIG['url_validation_enabled']:
             return True
             
-        # Check if URL contains supported hosts
         for host in LIST_SCAN_CONFIG['supported_hosts']:
             if host in url and url.startswith(('https://', 'http://')):
                 try:
@@ -345,15 +234,6 @@ class ListScanManager:
         return False
     
     def _create_repo_objects(self, url_list: List[str]) -> List[RepoObj]:
-        """
-        Convert URLs to RepoObj instances for scanning.
-        
-        Args:
-            url_list: List of repository URLs
-            
-        Returns:
-            List of RepoObj instances
-        """
         repo_objs = []
         
         for url in url_list:
@@ -379,12 +259,6 @@ class ListScanManager:
         return repo_objs
     
     def _mark_urls_as_processed(self, url_list: List[str]) -> None:
-        """
-        Mark processed URLs by prefixing them with '//' in the file.
-        
-        Args:
-            url_list: List of URLs that were processed
-        """
         try:
             with open(self.input_file_path, 'w', encoding='utf-8') as file:
                 for url in url_list:
@@ -394,31 +268,21 @@ class ListScanManager:
             logger.error(f"Error marking URLs as processed: {e}")
     
     def _scan_repositories(self, repo_objs: List[RepoObj]) -> None:
-        """
-        Scan the repository objects using the Scanner.
-        
-        Args:
-            repo_objs: List of repository objects to scan
-        """
         if not repo_objs:
             logger.info("No repository objects to scan")
             return
         
         try:
-            # Create a temporary entry in dork_dict for the scanner
             temp_key = 'list_scan_temp'
             if temp_key not in constants.dork_dict:
                 constants.dork_dict[temp_key] = []
             
-            # Add repository URLs to the temporary dork_dict entry
             repo_urls = [obj.repo_url for obj in repo_objs]
             constants.dork_dict[temp_key].extend(repo_urls)
             
-            # Use the existing Scanner to process the repositories
             scanner = Scanner(temp_key)
             scanner.gitscan()
             
-            # Clean up temporary entry
             if temp_key in constants.dork_dict:
                 del constants.dork_dict[temp_key]
                 
@@ -429,26 +293,19 @@ class ListScanManager:
             raise
     
     def run(self) -> None:
-        """
-        Execute the complete list scanning process.
-        """
         logger.info(f"Starting list scan from file: {self.input_file_path}")
         
-        # Step 1: Read URLs from file
         url_list = self._read_urls_from_file()
         if not url_list:
             return
         
-        # Step 2: Create repository objects
         repo_objs = self._create_repo_objects(url_list)
         if not repo_objs:
             logger.warning("No valid repository objects created")
             return
         
-        # Step 3: Scan repositories
         self._scan_repositories(repo_objs)
         
-        # Step 4: Dump results and mark URLs as processed
         utils.dumping_data()
         self._mark_urls_as_processed(url_list)
         
@@ -456,13 +313,6 @@ class ListScanManager:
 
 
 def list_search(input_file_path: Optional[str] = None) -> None:
-    """
-    Scans GitHub repositories from a list of URLs provided in a file.
-    
-    Args:
-        input_file_path: Path to file containing URLs to scan.
-                        If not provided, defaults to temp/list_to_scan.txt.
-    """
     try:
         list_scan_manager = ListScanManager(input_file_path)
         list_scan_manager.run()
