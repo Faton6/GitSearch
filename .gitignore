@@ -1,16 +1,53 @@
-/whispers.log
+# Secrets and sensitive files
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*_private*
+secrets.json
+credentials.json
+
+# Private configuration
+docker-compose_private.yml
+Gitsearch_DB_private.sql
+Gitsearch_DB_private — копия.sql
+config.json
+db_gitsearch_old_vk_tink.7z
+
+# IDE and editor
 /.idea/*
-__pycache__
 .vscode
-/lib/*
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+.eggs/
+*.egg-info/
+*.egg
+
+# Logs and data
+/whispers.log
+logs/*
+data/
 /reports/*
 /temp/*
-config.json
-logs/*
-data
-docker-compose_private.yml
-db_gitsearch_old_vk_tink.7z
-Gitsearch_DB_private — копия.sql
-stacks
-Gitsearch_DB_private.sql
-.env
+/lib/*
+stacks/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+

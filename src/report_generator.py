@@ -45,7 +45,7 @@ def _decode_report_data(encoded_data: str) -> dict:
             # Maybe it's already plain JSON
             try:
                 return json.loads(encoded_data)
-            except:
+            except (json.JSONDecodeError, TypeError, ValueError):
                 return {}
         
         # Check if decoded bytes are empty

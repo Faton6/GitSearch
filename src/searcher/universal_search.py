@@ -111,19 +111,23 @@ class UniversalGitHubSearch:
         }
     
     def _get_token(self) -> Optional[str]:
+        # Determine resource type based on search type
+        is_code_search = self.search_type == SearchType.CODE
+        resource_type = 'search_code' if is_code_search else 'search'
+        
         try:
             from src.github_rate_limiter import get_rate_limiter
             rate_limiter = get_rate_limiter()
             
-            # Wait for rate limit
+            # Wait for rate limit (10/min for code, 30/min for others)
             if self.search_type in (SearchType.REPOSITORIES, SearchType.CODE, SearchType.COMMITS):
-                rate_limiter.wait_for_search_rate_limit()
+                rate_limiter.wait_for_search_rate_limit(is_code_search=is_code_search)
             
-            token = rate_limiter.get_best_token()
+            token = rate_limiter.get_best_token(resource=resource_type)
             if token is None:
                 logger.warning("No tokens available, waiting 60s...")
                 time.sleep(60)
-                token = rate_limiter.get_best_token()
+                token = rate_limiter.get_best_token(resource=resource_type)
             
             return token
         except (RuntimeError, ImportError):
@@ -131,10 +135,14 @@ class UniversalGitHubSearch:
             return next(constants.token_generator())
     
     def _update_rate_limit(self, token: str, headers: Dict[str, str]):
+        # Determine resource type based on search type
+        is_code_search = self.search_type == SearchType.CODE
+        resource_type = 'search_code' if is_code_search else 'search'
+        
         try:
             from src.github_rate_limiter import get_rate_limiter
             rate_limiter = get_rate_limiter()
-            rate_limiter.update_quota_from_headers(token, headers)
+            rate_limiter.update_quota_from_headers(token, headers, resource=resource_type)
             
             if int(headers.get('X-RateLimit-Remaining', 5000)) < 100:
                 logger.warning(
@@ -144,6 +152,10 @@ class UniversalGitHubSearch:
             pass
     
     def _handle_rate_limit_error(self, token: str, response: requests.Response):
+        # Determine resource type based on search type
+        is_code_search = self.search_type == SearchType.CODE
+        resource_type = 'search_code' if is_code_search else 'search'
+        
         try:
             from src.github_rate_limiter import get_rate_limiter
             rate_limiter = get_rate_limiter()
@@ -151,7 +163,7 @@ class UniversalGitHubSearch:
             retry_after = response.headers.get('Retry-After')
             if retry_after:
                 retry_after = int(retry_after)
-            rate_limiter.handle_rate_limit_error(token, retry_after)
+            rate_limiter.handle_rate_limit_error(token, retry_after, resource=resource_type)
         except (RuntimeError, ImportError):
             # Fallback
             retry_after = int(response.headers.get('Retry-After', 60))
@@ -356,8 +368,8 @@ class UniversalGitHubSearch:
                 from src.searcher.graphql_client import get_graphql_client
                 graphql_client = get_graphql_client()
                 graphql_available = not graphql_client._graphql_disabled
-            except:
-                pass
+            except (ImportError, RuntimeError, AttributeError) as e:
+                logger.debug(f'GraphQL client not available: {e}')
         
         if graphql_available:
             try:

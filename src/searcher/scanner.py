@@ -1,4 +1,5 @@
 # Standart libs import
+import atexit
 import time
 from random import choice
 from concurrent.futures import ThreadPoolExecutor, Future, wait, FIRST_COMPLETED, ProcessPoolExecutor
@@ -11,6 +12,22 @@ from src import utils
 from src import Connector
 from src.logger import logger, CLR
 from src.searcher.parsers import (GitParserSearch, GitRepoParser, GitCodeParser, GitCommitParser)
+
+# Track active scanners for cleanup
+_active_scanners = []
+
+
+def _cleanup_all_scanners():
+    """Cleanup handler called at program exit to ensure data is saved."""
+    for scanner in list(_active_scanners):
+        try:
+            scanner.cleanup()
+        except Exception as e:
+            logger.warning(f"Error during scanner cleanup: {e}")
+
+
+# Register cleanup at module load
+atexit.register(_cleanup_all_scanners)
 
 
 def check_obj_pool_size():
@@ -26,11 +43,31 @@ class Scanner():
     clone_workers = 1
 
     def __init__(self, organization: int | None = None):
-        self.checked: list = []  # checked repos
+        self.checked: set = set()  # checked repos (set for O(1) lookup)
         self.org = organization
-
-    def __del__(self):
+        self._cleanup_registered = False
+        self._register_cleanup()
+    
+    def _register_cleanup(self):
+        """Register cleanup handler using atexit instead of unreliable __del__."""
+        if not self._cleanup_registered:
+            _active_scanners.append(self)
+            self._cleanup_registered = True
+    
+    def cleanup(self):
+        """Explicit cleanup method - dumps data to DB."""
+        if self in _active_scanners:
+            _active_scanners.remove(self)
         Connector.dump_to_DB()
+    
+    def __del__(self):
+        # Minimal __del__ - just remove from tracking list
+        # Actual cleanup is done via atexit or explicit cleanup() call
+        try:
+            if self in _active_scanners:
+                _active_scanners.remove(self)
+        except (TypeError, AttributeError):
+            pass  # Module may be partially unloaded
 
     def search(self):  # -> Generator[tuple[tuple[str], str]]:
         for i, dork in enumerate(const.dork_dict_from_DB[self.org]):
@@ -72,12 +109,13 @@ class Scanner():
                         # logger.info('End %s search', scan_name)
 
                     targets: dict[Future, Checker] = {}
+                    result = None  # Initialize result to avoid UnboundLocalError
 
                     for obj in temp_obj_list:
                         if obj.repo_name in self.checked or obj.repo_name in const.RESULT_MASS[scan_name]:
                             continue
                         else:
-                            self.checked.append(obj.repo_name)
+                            self.checked.add(obj.repo_name)
 
                         obj.stats.fetch_repository_stats()
 
@@ -111,7 +149,9 @@ class Scanner():
                                 # if result == 1:
                                 for j in obj_list:
                                     if j.repo_name not in const.RESULT_MASS[scan_name]:
-                                        # HACK what is this
+                                        # Store all objects from current batch in RESULT_MASS when scan completes.
+                                        # This ensures found repositories are tracked even if individual
+                                        # scan results vary. The scan_name key groups results by parser type.
                                         const.RESULT_MASS[scan_name][j.repo_name] = j
                                 # return
 
@@ -122,5 +162,5 @@ class Scanner():
                                 targets[scan_exec.submit(checker.run)] = checker
                     check_obj_pool_size()
                     if result == 1:
-                        logger.info('8' * 80)
+                        logger.info('Scan terminated early due to result=1 condition')
                         return

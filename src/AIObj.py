@@ -5,6 +5,8 @@ import json
 from typing import Optional, Dict, List, Any
 import re
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Опциональные импорты для AI функционала
 try:
@@ -23,6 +25,9 @@ except ImportError:
 
 from src import constants
 from src.logger import logger
+from src.exceptions import (
+    LLMAPIError, LLMProviderUnavailableError, RateLimitError, AIAnalysisError
+)
 
 
 class AIObj(ABC):
@@ -376,7 +381,22 @@ class AIObj(ABC):
 
 
 class LLMProviderManager:
-    """Менеджер для работы с множественными LLM провайдерами"""
+    """
+    Менеджер для работы с множественными LLM провайдерами.
+    
+    Оптимизации:
+    - Пул HTTP-соединений с keep-alive
+    - Автоматические повторные попытки с экспоненциальным backoff
+    - Кеширование доступности провайдеров
+    """
+    
+    # Конфигурация повторных попыток
+    RETRY_CONFIG = {
+        'total': 3,
+        'backoff_factor': 0.5,
+        'status_forcelist': [429, 500, 502, 503, 504],
+        'allowed_methods': ['POST', 'GET']
+    }
     
     def __init__(self):
         self.providers = {}
@@ -384,7 +404,49 @@ class LLMProviderManager:
         self._providers_available = None  # Кеш доступности провайдеров
         self._request_counter = 0  # Счетчик запросов для периодической проверки
         self._last_check_time = 0  # Время последней проверки
+        
+        # Инициализируем сессию с пулом соединений и retry-логикой
+        self._session = self._create_session()
+        
         self._load_providers()
+    
+    def _create_session(self) -> requests.Session:
+        """
+        Создает сессию с пулом соединений и автоматическими повторами.
+        
+        Returns:
+            requests.Session с настроенными адаптерами
+        """
+        session = requests.Session()
+        
+        # Настраиваем retry-стратегию
+        retry_strategy = Retry(
+            total=self.RETRY_CONFIG['total'],
+            backoff_factor=self.RETRY_CONFIG['backoff_factor'],
+            status_forcelist=self.RETRY_CONFIG['status_forcelist'],
+            allowed_methods=self.RETRY_CONFIG['allowed_methods'],
+            raise_on_status=False  # Не выбрасываем исключение, обрабатываем сами
+        )
+        
+        # Создаем адаптер с пулом соединений
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=10,  # Максимум соединений в пуле
+            pool_maxsize=10,      # Максимум соединений в keep-alive
+            pool_block=False      # Не блокировать при переполнении пула
+        )
+        
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+        
+        logger.info("🔌 HTTP connection pool initialized with retry strategy")
+        return session
+    
+    def close(self):
+        """Закрывает сессию и освобождает ресурсы."""
+        if self._session:
+            self._session.close()
+            logger.info("🔌 HTTP connection pool closed")
     
     def _load_providers(self):
         """Загрузка провайдеров из конфигурации"""
@@ -494,7 +556,8 @@ class LLMProviderManager:
         }
         
         try:
-            response = requests.post(
+            # Используем сессию с пулом соединений и автоматическими повторами
+            response = self._session.post(
                 f"{provider['base_url']}/chat/completions",
                 headers=headers,
                 json=payload,
@@ -505,19 +568,29 @@ class LLMProviderManager:
                 provider["requests_count"] += 1
                 provider["last_request_time"] = time.time()
                 provider["error_count"] = 0
-                
+                logger.debug(f"✅ LLM request successful via {provider['name']}")
                 return response.json()
             elif response.status_code == 429:
-                logger.warning(f"Provider {provider['name']} rate limited")
+                logger.warning(f"⚠️ Provider {provider['name']} rate limited (429)")
                 provider["error_count"] += 1
+                # Увеличиваем время ожидания для этого провайдера
+                provider["last_request_time"] = time.time() + 60  # Блокируем на минуту
                 return None
             else:
-                logger.error(f"Provider {provider['name']} back with status: {response.status_code}: {response.text}")
+                logger.error(f"❌ Provider {provider['name']} returned status: {response.status_code}: {response.text[:200]}")
                 provider["error_count"] += 1
                 return None
         
+        except requests.exceptions.Timeout:
+            logger.error(f"⏱️ Timeout for provider {provider['name']}")
+            provider["error_count"] += 1
+            return None
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"🔌 Connection error for provider {provider['name']}: {str(e)}")
+            provider["error_count"] += 1
+            return None
         except Exception as e:
-            logger.error(f"Error in request to provider {provider['name']}: {str(e)}")
+            logger.error(f"💥 Unexpected error for provider {provider['name']}: {str(e)}")
             provider["error_count"] += 1
             return None
 

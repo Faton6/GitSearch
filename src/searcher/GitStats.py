@@ -172,29 +172,8 @@ class GitParserStats:
                 self.updated_at = time.strftime('%Y-%m-%d %H:%M:%S',
                     time.strptime(repo['updatedAt'], '%Y-%m-%dT%H:%M:%SZ'))
                 
-                # Безопасное извлечение вложенных значений с проверкой типов
-                def safe_get_count(data, key, default=0):
-                    """Безопасно получить totalCount из вложенной структуры"""
-                    value = data.get(key)
-                    if isinstance(value, dict):
-                        return value.get('totalCount', default)
-                    elif isinstance(value, list):
-                        return len(value)
-                    elif isinstance(value, int):
-                        return value
-                    return default
-                
-                def safe_get_nested(data, *keys, default=None):
-                    """Безопасно получить значение из вложенной структуры словарей"""
-                    current = data
-                    for key in keys:
-                        if isinstance(current, dict):
-                            current = current.get(key)
-                        else:
-                            return default
-                        if current is None:
-                            return default
-                    return current if current is not None else default
+                # Import safe helpers from utils
+                from src.utils import safe_get_count, safe_get_nested
                 
                 # Безопасное извлечение topics
                 topics_value = '_'
@@ -242,8 +221,8 @@ class GitParserStats:
                 if not graphql_client._graphql_disabled:
                     if self._fetch_stats_via_graphql():
                         return
-            except:
-                pass
+            except (ImportError, RuntimeError, Exception) as e:
+                logger.debug(f'GraphQL client initialization failed: {e}')
         
         # Use rate limiter if available
         try:
@@ -269,17 +248,17 @@ class GitParserStats:
             api_response = requests.get(self.repo_url, headers=headers, timeout=self.timeout)
             self.last_request = time.time()
             
-            # Update rate limit if using rate limiter
+            # Update rate limit if using rate limiter (core API)
             try:
                 from src.github_rate_limiter import get_rate_limiter, is_initialized
                 if is_initialized():
                     rate_limiter = get_rate_limiter()
-                    rate_limiter.update_quota_from_headers(token, api_response.headers)
+                    rate_limiter.update_quota_from_headers(token, api_response.headers, resource='core')
                     if api_response.status_code in (403, 429):
                         retry_after = api_response.headers.get('Retry-After')
                         if retry_after:
                             retry_after = int(retry_after)
-                        rate_limiter.handle_rate_limit_error(token, retry_after)
+                        rate_limiter.handle_rate_limit_error(token, retry_after, resource='core')
             except (RuntimeError, ImportError):
                 pass
             
@@ -478,13 +457,61 @@ class GitParserStats:
     def fetch_repo_stats_leak_stats_table(self):
         return self.repo_stats_leak_stats_table
     
+    # HTTP Session for connection pooling (class-level)
+    _session: requests.Session = None
+    
+    @classmethod
+    def _get_session(cls) -> requests.Session:
+        """Get or create HTTP session with connection pooling."""
+        if cls._session is None:
+            cls._session = requests.Session()
+            # Configure connection pool
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=10,
+                pool_maxsize=20,
+                max_retries=3
+            )
+            cls._session.mount('https://', adapter)
+            cls._session.mount('http://', adapter)
+        return cls._session
+    
     def request_page(self, url) -> requests.Response:
-        token = next(constants.token_generator())
-        return requests.get(
-            url=url,
-            headers={'Authorization': f'Token {token}'}
-            if token else {},
-            timeout=self.timeout)
+        """Send API request with rate limiting and connection pooling."""
+        # Use rate limiter if available
+        try:
+            from src.github_rate_limiter import get_rate_limiter, is_initialized
+            if is_initialized():
+                rate_limiter = get_rate_limiter()
+                token = rate_limiter.get_best_token()
+                if token is None:
+                    logger.warning("No tokens available, waiting 60s...")
+                    time.sleep(60)
+                    token = rate_limiter.get_best_token()
+            else:
+                raise ImportError()
+        except (RuntimeError, ImportError):
+            # Fallback to old behavior
+            token = next(constants.token_generator())
+        
+        headers = {'Authorization': f'Token {token}'} if token else {}
+        session = self._get_session()
+        response = session.get(url=url, headers=headers, timeout=self.timeout)
+        
+        # Update quota from response if using rate limiter (core API)
+        try:
+            from src.github_rate_limiter import get_rate_limiter, is_initialized
+            if is_initialized():
+                rate_limiter = get_rate_limiter()
+                rate_limiter.update_quota_from_headers(token, response.headers, resource='core')
+                if response.status_code in (403, 429):
+                    retry_after = response.headers.get('Retry-After')
+                    if retry_after:
+                        retry_after = int(retry_after)
+                    rate_limiter.handle_rate_limit_error(token, retry_after, resource='core')
+        except (RuntimeError, ImportError):
+            pass
+        
+        return response
 
     def prepare_stats(self):
         self.fetch_contributors_stats()

@@ -230,18 +230,21 @@ class APICache:
     
     def _cleanup_expired(self):
         """Remove all expired entries."""
+        expired_count = 0
         with self._lock:
-            expired_keys = [
-                key for key, entry in self._cache.items()
-                if entry.is_expired
-            ]
+            # Optimization: Use list() to avoid RuntimeError during iteration
+            # but process incrementally to reduce memory usage
+            keys_to_check = list(self._cache.keys())
             
-            for key in expired_keys:
-                self._remove_entry(key, reason="cleanup expired")
-                self._stats.expirations += 1
+            for key in keys_to_check:
+                entry = self._cache.get(key)
+                if entry and entry.is_expired:
+                    self._remove_entry(key, reason="cleanup expired")
+                    self._stats.expirations += 1
+                    expired_count += 1
             
-            if expired_keys:
-                logger.info(f"Cleaned up {len(expired_keys)} expired cache entries")
+            if expired_count > 0:
+                logger.info(f"Cleaned up {expired_count} expired cache entries")
     
     def _cleanup_loop(self):
         """Background cleanup thread."""

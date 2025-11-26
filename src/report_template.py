@@ -4,10 +4,37 @@
 This module contains all HTML templates and styling for generating 
 beautiful reports. It is separated from the data collection logic
 to maintain clean separation of concerns.
+
+CSS styles are loaded from external file `report_styles.css` for better
+maintainability and caching.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List
+
+
+# Cache for CSS content
+_css_cache: str = None
+
+
+def _load_css_from_file() -> str:
+    """Load CSS styles from external file with caching."""
+    global _css_cache
+    if _css_cache is not None:
+        return _css_cache
+    
+    css_file = Path(__file__).parent / 'report_styles.css'
+    try:
+        with open(css_file, 'r', encoding='utf-8') as f:
+            _css_cache = f.read()
+    except FileNotFoundError:
+        # Fallback to minimal inline styles if file not found
+        _css_cache = """
+        .fade-in-up { animation: fadeInUp 0.6s ease-out; }
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        """
+    return _css_cache
 
 
 def _truncate(text: str, max_len: int = 100) -> str:
@@ -25,220 +52,33 @@ class ReportTemplate:
         pass
     
     def get_css_styles(self) -> str:
-        """Get CSS styles for the report."""
-        return """<script src="https://cdn.tailwindcss.com"></script>
+        """Get CSS styles for the report.
+        
+        Loads styles from external CSS file for better maintainability.
+        Includes Tailwind CSS CDN and Google Fonts.
+        """
+        css_content = _load_css_from_file()
+        return f"""<script src="https://cdn.tailwindcss.com"></script>
         <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    fontFamily: {
+        tailwind.config = {{
+            theme: {{
+                extend: {{
+                    fontFamily: {{
                         'sans': ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
-                    },
-                    animation: {
+                    }},
+                    animation: {{
                         'pulse-slow': 'pulse 3s ease-in-out infinite',
                         'bounce-slow': 'bounce 2s infinite',
                         'fade-in': 'fadeIn 0.6s ease-out',
                         'slide-up': 'slideUp 0.5s ease-out',
-                    }
-                }
-            }
-        }
+                    }}
+                }}
+            }}
+        }}
         </script>
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
         <style>
-        .progress-bar {
-            transition: width 0.5s ease-in-out;
-        }
-        
-        .chart-bar {
-            transition: all 0.3s ease;
-        }
-        
-        .chart-bar:hover {
-            opacity: 0.8;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-        }
-        
-        .severity-badge {
-            font-size: 12px;
-            font-weight: 600;
-            padding: 4px 12px;
-            border-radius: 9999px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        
-        .trend-icon {
-            display: inline-block;
-            width: 16px;
-            height: 16px;
-            margin-right: 4px;
-        }
-        
-        .gauge-circle {
-            transition: stroke-dashoffset 0.5s ease-in-out;
-        }
-        
-        .interactive-card {
-            transition: all 0.3s ease;
-            cursor: pointer;
-        }
-        
-        .interactive-card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 10px 25px rgba(0,0,0,0.15);
-        }
-        
-        .data-point {
-            transition: all 0.2s ease;
-        }
-        
-        .data-point:hover {
-            transform: scale(1.1);
-            z-index: 10;
-        }
-        
-        .tooltip {
-            position: absolute;
-            background: rgba(0,0,0,0.9);
-            color: white;
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-size: 12px;
-            opacity: 0;
-            pointer-events: none;
-            transition: opacity 0.2s ease;
-            z-index: 1000;
-        }
-        
-        .tooltip-trigger:hover .tooltip {
-            opacity: 1;
-        }
-        
-        .gradient-bg {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        }
-        
-        .glass-effect {
-            background: rgba(255, 255, 255, 0.25);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.18);
-        }
-        
-        .pattern-grid {
-            background-image: 
-                radial-gradient(circle at 2px 2px, rgba(255,255,255,0.15) 1px, transparent 0);
-            background-size: 20px 20px;
-        }
-        
-        @keyframes fadeInUp {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-        
-        @keyframes slideUp {
-            from {
-                opacity: 0;
-                transform: translateY(30px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-        
-        @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
-        }
-        
-        @keyframes pulse-ring {
-            0% {
-                transform: scale(0.33);
-            }
-            40%, 50% {
-                opacity: 1;
-            }
-            100% {
-                opacity: 0;
-                transform: scale(1.2);
-            }
-        }
-        
-        .fade-in-up {
-            animation: fadeInUp 0.6s ease-out;
-        }
-        
-        .chart-container {
-            position: relative;
-            overflow: visible;
-        }
-        
-        .status-indicator {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 8px;
-        }
-        
-        .status-online { background-color: #10b981; }
-        .status-warning { background-color: #f59e0b; }
-        .status-error { background-color: #ef4444; }
-        .status-offline { background-color: #6b7280; }
-        
-        .ripple-effect {
-            position: relative;
-            overflow: hidden;
-        }
-        
-        .ripple-effect::before {
-            content: '';
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            width: 0;
-            height: 0;
-            border-radius: 50%;
-            background: rgba(255,255,255,0.3);
-            transition: width 0.3s, height 0.3s, top 0.3s, left 0.3s;
-            transform: translate(-50%, -50%);
-        }
-        
-        .ripple-effect:hover::before {
-            width: 100%;
-            height: 100%;
-        }
-        
-        .modern-table {
-            border-collapse: separate;
-            border-spacing: 0;
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-        }
-        
-        .modern-table th {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }
-        
-        .modern-table tr:nth-child(even) {
-            background-color: rgba(0,0,0,0.02);
-        }
-        
-        .modern-table tr:hover {
-            background-color: rgba(79, 70, 229, 0.05);
-            transform: scale(1.01);
-            transition: all 0.2s ease;
-        }
+{css_content}
         </style>"""
     
     def get_header_section(self, report_title: str, start_date: str, end_date: str, current_date: str) -> str:

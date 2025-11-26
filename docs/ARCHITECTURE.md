@@ -171,7 +171,7 @@ class LeakObj(ABC):
     company_id: int            # ID компании
     secrets: dict              # Найденные секреты
     ai_analysis: dict          # Результаты AI анализа
-    ai_configence: float       # Уверенность AI (0-1)
+    ai_confidence: float       # Уверенность AI (0-1)
     lvl: int                   # Уровень критичности
     res_check: int             # Финальный статус
     stats: GitParserStats      # Статистика репозитория

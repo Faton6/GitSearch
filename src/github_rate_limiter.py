@@ -3,10 +3,16 @@ GitHub API Rate Limiter
 Manages rate limits for multiple GitHub tokens with automatic quota tracking.
 
 This module provides intelligent rate limiting for GitHub API requests:
-- Tracks quotas for multiple tokens
+- Tracks quotas for multiple tokens with SEPARATE limits for different resource types
 - Automatic token rotation
 - Handles rate limit errors gracefully
-- Enforces Search API specific limits (30 requests/minute)
+- Enforces Search API specific limits
+
+GitHub Rate Limits (authenticated):
+- Core REST API: 5000 requests/hour
+- Search API (repos, issues, commits, etc.): 30 requests/minute
+- Search Code API: 10 requests/minute
+- GraphQL API: 5000 points/hour
 
 Usage:
     from src.github_rate_limiter import initialize_rate_limiter, get_rate_limiter
@@ -17,12 +23,12 @@ Usage:
     # Get rate limiter instance
     rate_limiter = get_rate_limiter()
     
-    # Before making a search request
-    rate_limiter.wait_for_search_rate_limit()
-    token = rate_limiter.get_best_token()
+    # Before making a code search request
+    rate_limiter.wait_for_search_rate_limit(is_code_search=True)
+    token = rate_limiter.get_best_token(resource='search_code')
     
-    # After receiving response
-    rate_limiter.update_quota_from_headers(token, response.headers)
+    # After receiving response - specify resource type!
+    rate_limiter.update_quota_from_headers(token, response.headers, resource='search_code')
 
 Author: GitSearch Team  
 Date: 2025-10-03
@@ -30,77 +36,130 @@ Date: 2025-10-03
 
 import time
 import threading
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 from src.logger import logger
 
 
+# GitHub API Resource Types and their limits
+RESOURCE_LIMITS = {
+    'core': {'limit': 5000, 'window': 3600},        # 5000/hour
+    'search': {'limit': 30, 'window': 60},          # 30/minute (repos, issues, commits, users, topics)
+    'search_code': {'limit': 10, 'window': 60},     # 10/minute (code search only)
+    'graphql': {'limit': 5000, 'window': 3600},     # 5000 points/hour
+}
+
+
 @dataclass
-class TokenQuota:
-    """Stores quota information for a single GitHub token."""
-    token: str
-    remaining: int = 5000
-    limit: int = 5000
+class ResourceQuota:
+    """Stores quota information for a specific API resource type."""
+    resource: str
+    remaining: int = field(default=0)
+    limit: int = field(default=0)
     reset_time: float = 0.0
     last_check: float = field(default_factory=time.time)
-    consecutive_errors: int = 0
-    is_blocked: bool = False
     
-    @property
-    def usage_percentage(self) -> float:
-        """Calculate percentage of quota used."""
-        if self.limit == 0:
-            return 100.0
-        return ((self.limit - self.remaining) / self.limit) * 100
+    def __post_init__(self):
+        """Initialize with default limits from RESOURCE_LIMITS."""
+        if self.limit == 0 and self.resource in RESOURCE_LIMITS:
+            self.limit = RESOURCE_LIMITS[self.resource]['limit']
+            self.remaining = self.limit
     
     @property
     def seconds_until_reset(self) -> float:
         """Calculate seconds until quota reset."""
         return max(0, self.reset_time - time.time())
     
-    def is_available(self, min_remaining: int = 100) -> bool:
+    def is_available(self, min_remaining: int = 1) -> bool:
+        """Check if resource has enough quota remaining."""
+        # If reset time passed, quota should be available
+        if self.reset_time > 0 and time.time() >= self.reset_time:
+            return True
+        return self.remaining >= min_remaining
+
+
+@dataclass
+class TokenQuota:
+    """Stores quota information for a single GitHub token with multiple resources."""
+    token: str
+    # Separate quotas for each resource type
+    resources: Dict[str, ResourceQuota] = field(default_factory=dict)
+    consecutive_errors: int = 0
+    is_blocked: bool = False
+    block_until: float = 0.0
+    last_check: float = field(default_factory=time.time)
+    
+    def __post_init__(self):
+        """Initialize resource quotas."""
+        for resource in RESOURCE_LIMITS:
+            if resource not in self.resources:
+                self.resources[resource] = ResourceQuota(resource=resource)
+    
+    def get_resource_quota(self, resource: str) -> ResourceQuota:
+        """Get quota for specific resource, creating if needed."""
+        if resource not in self.resources:
+            self.resources[resource] = ResourceQuota(resource=resource)
+        return self.resources[resource]
+    
+    @property
+    def core_remaining(self) -> int:
+        """Get remaining core API quota."""
+        return self.resources.get('core', ResourceQuota(resource='core')).remaining
+    
+    @property
+    def search_remaining(self) -> int:
+        """Get remaining search API quota."""
+        return self.resources.get('search', ResourceQuota(resource='search')).remaining
+    
+    @property
+    def search_code_remaining(self) -> int:
+        """Get remaining search code API quota."""
+        return self.resources.get('search_code', ResourceQuota(resource='search_code')).remaining
+    
+    def is_available_for(self, resource: str = 'core', min_remaining: int = 1) -> bool:
         """
-        Check if token has enough quota remaining.
+        Check if token is available for specific resource type.
         
         Args:
+            resource: Resource type ('core', 'search', 'search_code', 'graphql')
             min_remaining: Minimum quota required
-            
-        Returns:
-            True if token is available and has sufficient quota
         """
         if self.is_blocked:
-            # Check if block should be lifted
-            if time.time() >= self.reset_time:
+            if time.time() >= self.block_until:
                 self.is_blocked = False
                 self.consecutive_errors = 0
-                logger.info(f"Token unblocked: {self.token[:8]}...")
-                return True
-            return False
-        return self.remaining >= min_remaining
+                logger.info(f"Token unblocked: {self.token[:12]}...")
+            else:
+                return False
+        
+        quota = self.get_resource_quota(resource)
+        return quota.is_available(min_remaining)
 
 
 class GitHubRateLimiter:
     """
-    Manages GitHub API rate limits for multiple tokens.
+    Manages GitHub API rate limits for multiple tokens with resource-specific tracking.
     
     Features:
-    - Automatic quota tracking from response headers
-    - Smart token rotation based on remaining quotas
+    - Separate quota tracking for core, search, search_code, graphql resources
+    - Automatic token rotation based on remaining quotas
     - Backoff strategies for rate limit errors
-    - Health monitoring for all tokens
-    - Search API specific rate limiting (30 requests/minute)
+    - Per-minute tracking for search APIs
     
-    Attributes:
-        SEARCH_LIMIT_PER_MINUTE: GitHub Search API limit (30 requests/minute)
-        REST_LIMIT_PER_HOUR: GitHub REST API limit (5000 requests/hour for authenticated)
-        MIN_REMAINING_QUOTA: Reserve quota for critical requests
+    GitHub Rate Limits (authenticated):
+    - Core: 5000 requests/hour
+    - Search: 30 requests/minute
+    - Search Code: 10 requests/minute
     """
     
-    # GitHub API rate limits (from official documentation)
-    SEARCH_LIMIT_PER_MINUTE = 30  # Special limit for Search API
-    REST_LIMIT_PER_HOUR = 5000  # For authenticated requests
-    MIN_REMAINING_QUOTA = 100  # Reserve quota for critical requests
+    # Reserve quotas for different resources
+    MIN_REMAINING = {
+        'core': 100,        # Reserve 100 for core API
+        'search': 2,        # Reserve 2 for search
+        'search_code': 1,   # Reserve 1 for code search
+        'graphql': 100,     # Reserve 100 for graphql
+    }
     
     def __init__(self, tokens: Tuple[str, ...]):
         """
@@ -112,15 +171,15 @@ class GitHubRateLimiter:
         # Initialize token quotas (filter out invalid tokens)
         self.tokens: Dict[str, TokenQuota] = {
             token: TokenQuota(token=token) 
-            for token in tokens if token and token != '-'
+            for token in tokens if token and token.strip() and token != '-'
         }
         
         # Thread safety
         self._lock = threading.Lock()
         
-        # Search API rate limiting
-        self._last_search_time = 0.0
+        # Per-minute tracking for search APIs (separate from header-based tracking)
         self._search_requests_this_minute = 0
+        self._search_code_requests_this_minute = 0
         self._minute_start = time.time()
         
         # Statistics
@@ -132,282 +191,289 @@ class GitHubRateLimiter:
         else:
             logger.info(f"GitHubRateLimiter initialized with {len(self.tokens)} tokens")
     
-    def get_best_token(self) -> Optional[str]:
+    def get_best_token(self, resource: str = 'core') -> Optional[str]:
         """
-        Select the best available token based on remaining quota.
+        Select the best available token for a specific resource type.
         
-        Selection strategy:
-        1. Filter out blocked tokens
-        2. Filter tokens with insufficient quota
-        3. Select token with highest remaining quota
+        Args:
+            resource: Resource type ('core', 'search', 'search_code', 'graphql')
         
         Returns:
             Token string or None if no tokens available
         """
+        min_remaining = self.MIN_REMAINING.get(resource, 1)
+        
         with self._lock:
             if not self.tokens:
                 logger.error("No tokens configured!")
                 return None
             
-            # Filter available tokens
+            # Filter available tokens for this resource
             available_tokens = [
                 quota for quota in self.tokens.values() 
-                if quota.is_available(self.MIN_REMAINING_QUOTA)
+                if quota.is_available_for(resource, min_remaining)
             ]
             
             if not available_tokens:
-                # All tokens exhausted, find one with earliest reset
-                earliest_reset = min(
-                    self.tokens.values(), 
-                    key=lambda q: q.reset_time
-                )
-                wait_time = earliest_reset.seconds_until_reset
+                # All tokens exhausted for this resource
+                # Find token with earliest reset for this resource
+                def get_reset_time(tq: TokenQuota) -> float:
+                    rq = tq.get_resource_quota(resource)
+                    return rq.reset_time if rq.reset_time > 0 else float('inf')
+                
+                earliest_reset = min(self.tokens.values(), key=get_reset_time)
+                rq = earliest_reset.get_resource_quota(resource)
+                wait_time = rq.seconds_until_reset
                 
                 logger.warning(
-                    f"All tokens exhausted. Next reset in {wait_time:.0f} seconds. "
+                    f"All tokens exhausted for '{resource}'. "
+                    f"Next reset in {wait_time:.0f}s. "
                     f"Total tokens: {len(self.tokens)}"
                 )
                 
-                # Return the token that resets earliest (caller should wait)
                 return earliest_reset.token
             
-            # Select token with highest remaining quota
-            best_token = max(available_tokens, key=lambda q: q.remaining)
+            # Select token with highest remaining quota for this resource
+            def get_remaining(tq: TokenQuota) -> int:
+                return tq.get_resource_quota(resource).remaining
+            
+            best_token = max(available_tokens, key=get_remaining)
             
             logger.debug(
-                f"Selected token {best_token.token[:8]}... "
-                f"(remaining: {best_token.remaining}/{best_token.limit}, "
-                f"usage: {best_token.usage_percentage:.1f}%)"
+                f"Selected token {best_token.token[:12]}... for '{resource}' "
+                f"(remaining: {get_remaining(best_token)})"
             )
             
             return best_token.token
     
-    def update_quota_from_headers(self, token: str, headers: Dict[str, str]):
+    def _detect_resource_from_headers(self, headers: Dict[str, str]) -> str:
+        """
+        Detect resource type from rate limit headers.
+        
+        GitHub returns X-RateLimit-Resource header (if available) or we can
+        infer from the limit value.
+        """
+        # Check for explicit resource header (newer GitHub API)
+        resource = headers.get('X-RateLimit-Resource', '').lower()
+        if resource in RESOURCE_LIMITS:
+            return resource
+        
+        # Also check lowercase version
+        resource = headers.get('x-ratelimit-resource', '').lower()
+        if resource in RESOURCE_LIMITS:
+            return resource
+        
+        # Infer from limit value
+        try:
+            limit = int(headers.get('X-RateLimit-Limit', headers.get('x-ratelimit-limit', 0)))
+            if limit == 10:
+                return 'search_code'
+            elif limit == 30:
+                return 'search'
+            elif limit >= 5000:
+                return 'core'
+        except (ValueError, TypeError):
+            pass
+        
+        return 'core'  # Default to core
+    
+    def update_quota_from_headers(
+        self, 
+        token: str, 
+        headers: Dict[str, str],
+        resource: Optional[str] = None
+    ):
         """
         Update token quota from GitHub API response headers.
         
+        IMPORTANT: Specify the resource type to avoid mixing quotas!
+        
         Headers processed:
-        - X-RateLimit-Limit: Maximum quota per hour
+        - X-RateLimit-Limit: Maximum quota
         - X-RateLimit-Remaining: Remaining quota
         - X-RateLimit-Reset: Unix timestamp when quota resets
-        - X-RateLimit-Used: Number of requests used
+        - X-RateLimit-Resource: Resource type (if available)
         
         Args:
             token: GitHub token used for the request
             headers: Response headers from GitHub API
+            resource: Resource type ('core', 'search', 'search_code'). 
+                     If None, will try to detect from headers.
         """
-        with self._lock:
-            if token not in self.tokens:
-                logger.warning(f"Attempting to update quota for unknown token: {token[:8]}...")
+        try:
+            # Support both cases for headers
+            new_limit = None
+            new_remaining = None
+            new_reset = None
+            
+            for key in headers:
+                key_lower = key.lower()
+                if key_lower == 'x-ratelimit-limit':
+                    new_limit = int(headers[key])
+                elif key_lower == 'x-ratelimit-remaining':
+                    new_remaining = int(headers[key])
+                elif key_lower == 'x-ratelimit-reset':
+                    new_reset = float(headers[key])
+            
+            if new_limit is None and new_remaining is None and new_reset is None:
                 return
             
-            quota = self.tokens[token]
+            # Detect or use specified resource
+            if resource is None:
+                resource = self._detect_resource_from_headers(headers)
             
-            try:
-                # Parse rate limit headers
-                updated = False
-                
-                if 'X-RateLimit-Limit' in headers:
-                    quota.limit = int(headers['X-RateLimit-Limit'])
-                    updated = True
-                    
-                if 'X-RateLimit-Remaining' in headers:
-                    quota.remaining = int(headers['X-RateLimit-Remaining'])
-                    updated = True
-                    
-                if 'X-RateLimit-Reset' in headers:
-                    quota.reset_time = float(headers['X-RateLimit-Reset'])
-                    updated = True
-                
-                if updated:
-                    quota.last_check = time.time()
-                    quota.consecutive_errors = 0  # Reset error counter on successful update
-                    
-                    # Log warning if quota is low
-                    if quota.remaining < self.MIN_REMAINING_QUOTA:
-                        logger.warning(
-                            f"Token {token[:8]}... quota low: "
-                            f"{quota.remaining}/{quota.limit} "
-                            f"(resets in {quota.seconds_until_reset:.0f}s)"
-                        )
-                    
-                    # Log info for very low quota
-                    if quota.remaining < 50:
-                        logger.error(
-                            f"Token {token[:8]}... quota critical: "
-                            f"{quota.remaining}/{quota.limit} "
-                            f"(resets at {datetime.fromtimestamp(quota.reset_time).strftime('%H:%M:%S')})"
-                        )
-                
-            except (ValueError, KeyError) as e:
-                logger.error(f"Error parsing rate limit headers: {e}")
-            except Exception as e:
-                logger.error(f"Unexpected error updating quota: {e}", exc_info=True)
+        except (ValueError, KeyError) as e:
+            logger.error(f"Error parsing rate limit headers: {e}")
+            return
+        
+        with self._lock:
+            if token not in self.tokens:
+                logger.warning(f"Unknown token: {token[:12]}...")
+                return
+            
+            token_quota = self.tokens[token]
+            resource_quota = token_quota.get_resource_quota(resource)
+            
+            if new_limit is not None:
+                resource_quota.limit = new_limit
+            if new_remaining is not None:
+                resource_quota.remaining = new_remaining
+            if new_reset is not None:
+                resource_quota.reset_time = new_reset
+            
+            resource_quota.last_check = time.time()
+            token_quota.last_check = time.time()
+            token_quota.consecutive_errors = 0
+        
+        # Log warnings outside lock
+        if new_remaining is not None:
+            min_reserve = self.MIN_REMAINING.get(resource, 1)
+            if new_remaining < min_reserve:
+                reset_in = max(0, new_reset - time.time()) if new_reset else 0
+                logger.warning(
+                    f"Token {token[:12]}... '{resource}' quota low: "
+                    f"{new_remaining}/{new_limit or '?'} "
+                    f"(resets in {reset_in:.0f}s)"
+                )
     
-    def handle_rate_limit_error(self, token: str, retry_after: Optional[int] = None):
+    def handle_rate_limit_error(
+        self, 
+        token: str, 
+        retry_after: Optional[int] = None,
+        resource: str = 'core'
+    ):
         """
         Handle rate limit exceeded error for a token.
-        
-        Actions taken:
-        1. Increment consecutive error counter
-        2. Update reset time if Retry-After header present
-        3. Block token if too many consecutive errors
-        4. Log detailed error information
         
         Args:
             token: GitHub token that hit rate limit
             retry_after: Retry-After header value (seconds)
+            resource: Resource type that was rate limited
         """
         with self._lock:
             if token not in self.tokens:
                 return
             
-            quota = self.tokens[token]
-            quota.consecutive_errors += 1
+            token_quota = self.tokens[token]
+            token_quota.consecutive_errors += 1
             self._rate_limit_hits += 1
             
-            # Update reset time if provided
+            # Update resource quota
+            resource_quota = token_quota.get_resource_quota(resource)
+            resource_quota.remaining = 0
+            
             if retry_after:
-                quota.reset_time = time.time() + retry_after
+                resource_quota.reset_time = time.time() + retry_after
                 logger.warning(
-                    f"Token {token[:8]}... rate limited. "
-                    f"Retry after {retry_after}s (error #{quota.consecutive_errors})"
+                    f"Token {token[:12]}... '{resource}' rate limited. "
+                    f"Retry after {retry_after}s"
                 )
             else:
+                # Default wait times based on resource
+                default_wait = RESOURCE_LIMITS.get(resource, {}).get('window', 60)
+                resource_quota.reset_time = time.time() + default_wait
                 logger.warning(
-                    f"Token {token[:8]}... rate limited (error #{quota.consecutive_errors})"
+                    f"Token {token[:12]}... '{resource}' rate limited. "
+                    f"Default wait: {default_wait}s"
                 )
             
-            # Block token temporarily if repeated errors
-            if quota.consecutive_errors >= 3:
-                quota.is_blocked = True
-                quota.remaining = 0  # Mark as exhausted
+            # Block token if too many errors
+            if token_quota.consecutive_errors >= 3:
+                token_quota.is_blocked = True
+                token_quota.block_until = resource_quota.reset_time
                 logger.error(
-                    f"Token {token[:8]}... BLOCKED due to repeated rate limit errors. "
-                    f"Will retry after {quota.seconds_until_reset:.0f}s"
+                    f"Token {token[:12]}... BLOCKED due to repeated errors"
                 )
     
-    def wait_for_search_rate_limit(self):
+    def wait_for_search_rate_limit(self, is_code_search: bool = False):
         """
-        Enforce Search API rate limit (30 requests/minute).
+        Enforce Search API rate limit.
         
-        GitHub Search API has a special limit of 30 requests per minute,
-        separate from the general REST API limit.
-        
-        This method ensures we don't exceed this limit by:
-        1. Tracking requests per minute
-        2. Waiting if limit is reached
-        3. Resetting counter each minute
+        Args:
+            is_code_search: True for code search (10/min), False for other search (30/min)
         """
         current_time = time.time()
+        limit = 10 if is_code_search else 30
+        counter_attr = '_search_code_requests_this_minute' if is_code_search else '_search_requests_this_minute'
         
         with self._lock:
             # Reset counter if we're in a new minute
             if current_time - self._minute_start >= 60:
                 self._minute_start = current_time
                 self._search_requests_this_minute = 0
-                logger.debug("Search API rate limit counter reset")
+                self._search_code_requests_this_minute = 0
+                logger.debug("Search rate limit counters reset")
             
-            # Check if we've hit the per-minute limit
-            if self._search_requests_this_minute >= self.SEARCH_LIMIT_PER_MINUTE:
+            counter = getattr(self, counter_attr)
+            
+            if counter >= limit:
                 time_to_wait = 60 - (current_time - self._minute_start)
                 
                 if time_to_wait > 0:
+                    search_type = "code search" if is_code_search else "search"
                     logger.info(
-                        f"Search API rate limit reached "
-                        f"({self.SEARCH_LIMIT_PER_MINUTE} requests/minute). "
-                        f"Waiting {time_to_wait:.1f}s for reset..."
+                        f"{search_type.title()} rate limit reached ({limit}/min). "
+                        f"Waiting {time_to_wait:.1f}s..."
                     )
                     
-                    # Release lock while sleeping
                     self._lock.release()
                     try:
-                        time.sleep(time_to_wait)
+                        time.sleep(time_to_wait + 0.5)  # Small buffer
                     finally:
                         self._lock.acquire()
                     
-                    # Reset counters after waiting
                     self._minute_start = time.time()
                     self._search_requests_this_minute = 0
+                    self._search_code_requests_this_minute = 0
             
-            # Increment counter
-            self._search_requests_this_minute += 1
+            # Increment appropriate counter
+            setattr(self, counter_attr, getattr(self, counter_attr) + 1)
             self._total_requests += 1
-            self._last_search_time = time.time()
     
-    def wait_for_token_reset(self, token: str, timeout: int = 3600):
-        """
-        Wait for a specific token's quota to reset.
-        
-        Args:
-            token: Token to wait for
-            timeout: Maximum time to wait (seconds)
-        """
-        if token not in self.tokens:
-            return
-        
-        quota = self.tokens[token]
-        wait_time = min(quota.seconds_until_reset, timeout)
-        
-        if wait_time > 0:
-            logger.info(
-                f"Waiting {wait_time:.0f}s for token {token[:8]}... quota reset"
-            )
-            time.sleep(wait_time)
-            
-            # Unblock token after reset
-            with self._lock:
-                quota.is_blocked = False
-                quota.consecutive_errors = 0
-    
-    def get_status_report(self) -> Dict[str, any]:
-        """
-        Generate comprehensive status report for all tokens.
-        
-        Returns:
-            Dictionary with detailed status information:
-            - total_tokens: Number of configured tokens
-            - available_tokens: Tokens with sufficient quota
-            - blocked_tokens: Tokens currently blocked
-            - total_remaining_quota: Sum of all remaining quotas
-            - total_requests: Total requests made this session
-            - rate_limit_hits: Number of rate limit errors
-            - tokens: Detailed info for each token
-        """
+    def get_status_report(self) -> Dict:
+        """Generate comprehensive status report."""
         with self._lock:
-            available_count = sum(
-                1 for q in self.tokens.values() 
-                if q.is_available()
-            )
-            blocked_count = sum(
-                1 for q in self.tokens.values() 
-                if q.is_blocked
-            )
-            total_remaining = sum(
-                q.remaining for q in self.tokens.values()
-            )
-            
             return {
                 'total_tokens': len(self.tokens),
-                'available_tokens': available_count,
-                'blocked_tokens': blocked_count,
-                'total_remaining_quota': total_remaining,
                 'total_requests': self._total_requests,
                 'rate_limit_hits': self._rate_limit_hits,
-                'search_requests_this_minute': self._search_requests_this_minute,
+                'search_this_minute': self._search_requests_this_minute,
+                'search_code_this_minute': self._search_code_requests_this_minute,
                 'tokens': [
                     {
-                        'token': f"{q.token[:8]}...",
-                        'remaining': q.remaining,
-                        'limit': q.limit,
-                        'usage': f"{q.usage_percentage:.1f}%",
-                        'reset_in': f"{q.seconds_until_reset:.0f}s",
-                        'reset_at': datetime.fromtimestamp(q.reset_time).strftime('%Y-%m-%d %H:%M:%S'),
-                        'is_blocked': q.is_blocked,
-                        'consecutive_errors': q.consecutive_errors,
-                        'last_check': datetime.fromtimestamp(q.last_check).strftime('%Y-%m-%d %H:%M:%S')
+                        'token': f"{tq.token[:12]}...",
+                        'is_blocked': tq.is_blocked,
+                        'consecutive_errors': tq.consecutive_errors,
+                        'resources': {
+                            name: {
+                                'remaining': rq.remaining,
+                                'limit': rq.limit,
+                                'reset_in': f"{rq.seconds_until_reset:.0f}s"
+                            }
+                            for name, rq in tq.resources.items()
+                        }
                     }
-                    for q in self.tokens.values()
+                    for tq in self.tokens.values()
                 ]
             }
     
@@ -417,25 +483,18 @@ class GitHubRateLimiter:
         
         logger.info("=" * 80)
         logger.info("GitHub Rate Limiter Status")
-        logger.info("=" * 80)
-        logger.info(f"Total tokens: {status['total_tokens']}")
-        logger.info(f"Available tokens: {status['available_tokens']}")
-        logger.info(f"Blocked tokens: {status['blocked_tokens']}")
-        logger.info(f"Total remaining quota: {status['total_remaining_quota']}")
-        logger.info(f"Total requests (session): {status['total_requests']}")
-        logger.info(f"Rate limit hits: {status['rate_limit_hits']}")
-        logger.info(f"Search requests this minute: {status['search_requests_this_minute']}/{self.SEARCH_LIMIT_PER_MINUTE}")
-        logger.info("-" * 80)
+        logger.info(f"Tokens: {status['total_tokens']} | "
+                   f"Requests: {status['total_requests']} | "
+                   f"Rate limit hits: {status['rate_limit_hits']}")
+        logger.info(f"Search this minute: {status['search_this_minute']}/30 | "
+                   f"Code search: {status['search_code_this_minute']}/10")
         
         for token_info in status['tokens']:
-            status_icon = "✓" if not token_info['is_blocked'] else "✗"
-            logger.info(
-                f"{status_icon} Token {token_info['token']}: "
-                f"{token_info['remaining']}/{token_info['limit']} "
-                f"({token_info['usage']}) - "
-                f"resets in {token_info['reset_in']}"
-            )
-        
+            blocked = " [BLOCKED]" if token_info['is_blocked'] else ""
+            logger.info(f"\nToken {token_info['token']}{blocked}")
+            for res_name, res_info in token_info['resources'].items():
+                logger.info(f"  {res_name}: {res_info['remaining']}/{res_info['limit']} "
+                           f"(reset in {res_info['reset_in']})")
         logger.info("=" * 80)
 
 
@@ -444,32 +503,16 @@ _rate_limiter: Optional[GitHubRateLimiter] = None
 
 
 def initialize_rate_limiter(tokens: Tuple[str, ...]):
-    """
-    Initialize the global rate limiter instance.
-    
-    Args:
-        tokens: Tuple of GitHub personal access tokens
-    """
+    """Initialize the global rate limiter instance."""
     global _rate_limiter
     _rate_limiter = GitHubRateLimiter(tokens)
     logger.info("Global rate limiter initialized")
 
 
 def get_rate_limiter() -> GitHubRateLimiter:
-    """
-    Get the global rate limiter instance.
-    
-    Returns:
-        GitHubRateLimiter instance
-        
-    Raises:
-        RuntimeError: If rate limiter not initialized
-    """
+    """Get the global rate limiter instance."""
     if _rate_limiter is None:
-        raise RuntimeError(
-            "Rate limiter not initialized. "
-            "Call initialize_rate_limiter() first."
-        )
+        raise RuntimeError("Rate limiter not initialized. Call initialize_rate_limiter() first.")
     return _rate_limiter
 
 

@@ -8,6 +8,20 @@ services:
         environment:
             DB_USER: ${DB_USER:-root}
             DB_PASSWORD: ${DB_PASSWORD:-changeme}
+            LOG_LEVEL: ${LOG_LEVEL:-INFO}
+            GITHUB_TOKEN_1: ${GITHUB_TOKEN_1:-}
+            GITHUB_TOKEN_2: ${GITHUB_TOKEN_2:-}
+            GITHUB_CLONE_TOKEN: ${GITHUB_CLONE_TOKEN:-}
+            AI_ANALYSIS_ENABLED: ${AI_ANALYSIS_ENABLED:-true}
+            TOGETHER_API_KEY: ${TOGETHER_API_KEY:-}
+            OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+            FIREWORKS_API_KEY: ${FIREWORKS_API_KEY:-}
+        healthcheck:
+            test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+            interval: 60s
+            timeout: 10s
+            retries: 3
+            start_period: 30s
         deploy:
           resources:
             limits:
@@ -17,7 +31,8 @@ services:
           gitsearch_network:
             ipv4_address: 172.32.0.99
         depends_on:
-          - db
+          db:
+            condition: service_healthy
 
     db:
       image: mariadb:10.6

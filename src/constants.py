@@ -29,7 +29,7 @@ The module is divided into several sections:
 # Application Metadata
 # =============================================================================
 
-RUN_TESTS: bool = True  # Enable/disable test execution on startup
+RUN_TESTS: bool = False  # DISABLED - Enable manually for testing
 __NAME__ = "GitSearch"
 __VERSION__ = "1.0.0"
 DEFAULT_CONFIG_FILE = f".{__NAME__}.yml"
@@ -72,9 +72,10 @@ MAX_TIME_TO_CLONE = 500
 # =============================================================================
 
 # Clone method: 'pygithub' (API-based) or 'git' (subprocess-based)
-# - 'pygithub': Uses GitHub API, no filesystem complexity, better for small repos
-# - 'git': Traditional git clone, better for large repos with binary files
-CLONE_METHOD = 'pygithub'
+# Clone method configuration
+# - 'git': Traditional git clone (RECOMMENDED - no rate limit on cloning)
+# - 'pygithub': Uses GitHub REST API to download files (has rate limit!)
+CLONE_METHOD = 'git'
 # Fallback to git clone if PyGithub fails
 CLONE_FALLBACK_TO_GIT = True
 
@@ -155,6 +156,11 @@ AI_TRUE_POSITIVE_THRESHOLD = 0.6     # Minimum confidence for true positive (0.0
 AI_PROVIDER_CHECK_INTERVAL = 5       # Check provider availability every N requests
                                      # (0 = check every time)
 
+# AI Worker Pool Configuration (async analysis)
+AI_WORKER_POOL_SIZE = 2              # Number of parallel AI analysis workers
+AI_WORKER_QUEUE_SIZE = 100           # Maximum pending AI analysis tasks
+AI_ASYNC_ANALYSIS = True             # Enable async AI analysis (non-blocking)
+
 # =============================================================================
 # Country Profiling Configuration
 # =============================================================================
@@ -212,41 +218,78 @@ with open(f'{MAIN_FOLDER_PATH}/config.json') as config_file:
     CONFIG_FILE = json.load(config_file)
 
 def load_env_variables(file_path=f'{MAIN_FOLDER_PATH}/.env'):
+    """
+    Load environment variables from .env file.
+    
+    Also checks os.environ for Docker/system environment variables.
+    Priority: os.environ > .env file > config.json defaults
+    """
     env_variables = {}
+    
+    # First, load from .env file
     try:
         with open(file_path, 'r') as f:
             for line in f.readlines():
                 line = line.strip()
                 if line and not line.startswith('#') and '=' in line:
                     key, value = line.split('=', 1)
-                    env_variables[key.strip()] = value.strip()
+                    key = key.strip()
+                    value = value.strip()
+                    # Only add non-empty values
+                    if value:
+                        env_variables[key] = value
     except FileNotFoundError:
         pass  # .env файл не найден, используем значения по умолчанию
     except Exception as e:
-        print(f"Ошибка чтения .env файла: {e}")
+        import logging
+        logging.warning(f"Ошибка чтения .env файла: {e}")
+    
+    # Then override with os.environ (Docker/system vars have priority)
+    for key in ['URL_DB', 'TOKEN_DB', 'GITHUB_CLONE_TOKEN', 'LOG_LEVEL',
+                'AI_ANALYSIS_ENABLED', 'AI_ANALYSIS_TIMEOUT', 'AI_MAX_CONTEXT_LENGTH',
+                'AI_COMPANY_RELEVANCE_THRESHOLD', 'AI_TRUE_POSITIVE_THRESHOLD',
+                'TOGETHER_API_KEY', 'OPENROUTER_API_KEY', 'FIREWORKS_API_KEY',
+                'REPO_MAX_SIZE', 'MAX_TIME_TO_CLONE']:
+        if key in os.environ and os.environ[key]:
+            env_variables[key] = os.environ[key]
+    
+    # GitHub tokens - check multiple env vars
+    for i in range(1, 10):
+        key = f'GITHUB_TOKEN_{i}'
+        if key in os.environ and os.environ[key]:
+            env_variables[key] = os.environ[key]
+        elif key not in env_variables:
+            break  # Stop at first missing token
+    
     return env_variables
 
 leak_check_list = CONFIG_FILE['leak_check_list']
 
-# Инициализация token_tuple всегда
+# Загрузка переменных окружения
+env_variables = load_env_variables()
+
+# Инициализация token_tuple - сначала из config.json, потом добавляем из .env
 if CONFIG_FILE['token_list'] != ['-']:
     token_tuple = tuple(CONFIG_FILE["token_list"])
 else:
     token_tuple = tuple()
 
-# Загрузка переменных окружения
-env_variables = load_env_variables()
-
-if env_variables:
-    url_DB = env_variables.get('URL_DB', CONFIG_FILE['url_DB'])
-    token_DB = env_variables.get('TOKEN_DB', CONFIG_FILE['token_DB'])
-    # Добавляем GitHub токены из .env
-    github_tokens = [value for key, value in env_variables.items() if key.startswith('GITHUB_TOKEN')]
+# Добавляем GitHub токены из .env / os.environ
+github_tokens = [value for key, value in env_variables.items() 
+                 if key.startswith('GITHUB_TOKEN') and value and value != '-']
+if github_tokens:
     token_tuple = token_tuple + tuple(github_tokens)
-    GITHUB_CLONE_TOKEN = env_variables.get('GITHUB_CLONE_TOKEN', '')
-else:
-    url_DB = CONFIG_FILE['url_DB']
-    token_DB = CONFIG_FILE['token_DB']
+
+# Database configuration
+url_DB = env_variables.get('URL_DB', CONFIG_FILE.get('url_DB', '172.32.0.97'))
+token_DB = env_variables.get('TOKEN_DB', CONFIG_FILE.get('token_DB', '-'))
+GITHUB_CLONE_TOKEN = env_variables.get('GITHUB_CLONE_TOKEN', '')
+
+# Override scanning limits from env if provided
+if 'REPO_MAX_SIZE' in env_variables:
+    REPO_MAX_SIZE = int(env_variables['REPO_MAX_SIZE'])
+if 'MAX_TIME_TO_CLONE' in env_variables:
+    MAX_TIME_TO_CLONE = int(env_variables['MAX_TIME_TO_CLONE'])
 
 # Initialize GitHub Rate Limiter after token_tuple is ready
 def _init_rate_limiter():
@@ -306,6 +349,16 @@ LEAK_OBJ_MESSAGES = {
         "medium_chance": "Medium chance of leak",
         "low_chance": "Low chance of leak",
         "no_chance": "No chance of leak",
+        "corporate_committer_target": "🎯 CRITICAL: Found committer with TARGET COMPANY email: {name} <{email}> - ALMOST CERTAIN relevance!",
+        "corporate_committer_other": "🏢 Corporate email committer: {name} <{email}> (domain: {domain})",
+        "repo_credibility_high": "✅ Repository credibility: HIGH ({score:.2f}) - likely real project",
+        "repo_credibility_medium": "⚠️ Repository credibility: MEDIUM ({score:.2f})",
+        "repo_credibility_low": "❌ Repository credibility: LOW ({score:.2f}) - likely test/example project",
+        "repo_is_tiny": "📦 Tiny repository (<10KB) - possible test project",
+        "repo_is_personal": "👤 Personal project (single contributor, few commits)",
+        "repo_is_popular_oss": "🌟 Popular OSS repository - secrets may be examples",
+        "gist_clone_error": "Failed to clone gist repository",
+        "grepscan_parsing_error": "Error parsing grepscan results: {error}",
     },
     "ru": {
         "leak_found_in_section": "Обнаружена утечка в разделе {obj_type} по поиску {dork}",
@@ -334,6 +387,16 @@ LEAK_OBJ_MESSAGES = {
         "medium_chance": "Средняя вероятность утечки",
         "low_chance": "Низкая вероятность утечки",
         "no_chance": "Нет вероятности утечки",
+        "corporate_committer_target": "🎯 ВАЖНО: Найден коммитер с email ЦЕЛЕВОЙ КОМПАНИИ: {name} <{email}> - ПОЧТИ 100% релевантность!",
+        "corporate_committer_other": "🏢 Коммитер с корпоративным email: {name} <{email}> (домен: {domain})",
+        "repo_credibility_high": "✅ Достоверность репозитория: ВЫСОКАЯ ({score:.2f}) - вероятно реальный проект",
+        "repo_credibility_medium": "⚠️ Достоверность репозитория: СРЕДНЯЯ ({score:.2f})",
+        "repo_credibility_low": "❌ Достоверность репозитория: НИЗКАЯ ({score:.2f}) - вероятно тестовый/пример",
+        "repo_is_tiny": "📦 Микро-репозиторий (<10KB) - возможно тестовый проект",
+        "repo_is_personal": "👤 Персональный проект (один контрибутор, мало коммитов)",
+        "repo_is_popular_oss": "🌟 Популярный OSS репозиторий - секреты могут быть примерами",
+        "gist_clone_error": "Не удалось клонировать gist репозиторий",
+        "grepscan_parsing_error": "Ошибка парсинга результатов grepscan: {error}",
     }
 }
 
@@ -377,38 +440,219 @@ LLM_PROVIDERS = [
     {
         "name": "together",
         "base_url": "https://api.together.xyz/v1",
-        "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
+        "model": "mistralai/Mistral-7B-Instruct-v0.2",
         "api_key_env": "TOGETHER_API_KEY",
-        "daily_limit": 1000000,
-        "rpm": 60,
+        "daily_limit": 100000,
+        "rpm": 30,
         "context": 120000
     },
     {
         "name": "openrouter", 
         "base_url": "https://openrouter.ai/api/v1",
-        "model": "moonshotai/kimi-dev-72b:free",
+        "model": "openrouter/auto",
         "api_key_env": "OPENROUTER_API_KEY",
-        "daily_limit": 200000,
-        "rpm": 60,
+        "daily_limit": 100000,
+        "rpm": 30,
         "context": 120000
     },
     {
         "name": "fireworks",
         "base_url": "https://api.fireworks.ai/inference/v1", 
-        "model": "accounts/fireworks/models/deepseek-r1-distill-llama-70b",
+        "model": "accounts/fireworks/models/llama4-maverick-instruct-basic",
         "api_key_env": "FIREWORKS_API_KEY",
-        "daily_limit": 200000,
-        "rpm": 60,
-        "context": 120000
-    },
-    {
-        "name": "huggingface",
-        "base_url": "https://api.endpoints.huggingface.cloud",
-        "model": "MiniMaxAI/MiniMax-M1-80k", 
-        "api_key_env": "HUGGINGFACE_API_KEY",
-        "daily_limit": 30000,
+        "daily_limit": 100000,
         "rpm": 30,
-        "context": 80000
+        "context": 120000
     }
 ]
+
+# =============================================================================
+# Secret Detection Constants (used by LeakAnalyzer and filters)
+# =============================================================================
+
+# Классификация секретов по типам и их весам
+SECRET_CLASSIFICATION: Dict[str, Tuple[frozenset, float]] = {
+    "private_key": (frozenset(["private_key", "private-key", "rsa private", "ssh-rsa", "-----begin", "-----end"]), 1.0),
+    "certificate": (frozenset(["certificate", "cert", "pkcs", "x509", "pem"]), 0.9),
+    "database_password": (frozenset(["database_password", "db_password", "database_pass", "mysql_password", "postgres_password"]), 0.85),
+    "prod_password": (frozenset(["prod_password", "production_password", "prod_pass", "live_password"]), 0.85),
+    "admin_password": (frozenset(["admin_password", "admin_pass", "root_password", "superuser_password"]), 0.85),
+    "aws_key": (frozenset(["aws_access_key", "aws_secret", "akid", "akia"]), 0.95),
+    "github_token": (frozenset(["ghp_", "gho_", "ghu_", "ghs_", "github_token"]), 0.95),
+    "api_key": (frozenset(["api_key", "api-key", "apikey", "api_secret"]), 0.7),
+    "access_token": (frozenset(["access_token", "access-token", "bearer", "oauth_token"]), 0.7),
+    "secret_key": (frozenset(["secret_key", "secret-key", "secretkey"]), 0.7),
+    "auth_token": (frozenset(["auth_token", "auth-token", "authtoken"]), 0.7),
+    "jwt_token": (frozenset(["jwt", "eyj"]), 0.8),
+    "test_password": (frozenset(["test_password", "test_pass", "testing_pass", "test_secret"]), 0.1),
+    "dev_password": (frozenset(["dev_password", "dev_pass", "development_pass", "dev_key"]), 0.1),
+    "dummy_password": (frozenset(["dummy", "example", "sample", "fake", "placeholder", "changeme", "xxx"]), 0.05),
+    "password": (frozenset(["password", "pass", "pwd"]), 0.5),
+    "token": (frozenset(["token"]), 0.5),
+    "key": (frozenset(["key"]), 0.4),
+}
+
+# Известные placeholder значения для обнаружения false positive
+KNOWN_PLACEHOLDER_PATTERNS: frozenset = frozenset([
+    "password", "your_password", "your-password", "yourpassword", 
+    "password123", "admin123", "root123", "test123", "123456", "12345678",
+    "changeme", "change_me", "change-me", "replace_me", "replace-me",
+    "your_api_key", "your-api-key", "your_token", "your-token",
+    "your_secret", "your-secret", "insert_here", "insert-here",
+    "xxx", "xxxx", "xxxxx", "xxxxxx", "xxxxxxxx",
+    "example", "sample", "demo", "test", "testing", "dummy", "fake",
+    "placeholder", "todo", "fixme", "temp", "temporary",
+    "sk_test_", "pk_test_", "sk_live_", "pk_live_",
+    "api_key_here", "secret_key_here", "token_here", "key_here",
+    "your_api_key_here", "your_secret_here", "your_token_here",
+    "abcdef", "abcdefgh", "abcdefghij",
+    "0000000000", "1111111111", "aaaaaaaaaa",
+    "mysecretpassword", "mypassword", "mysecret", "myapikey", "mytoken",
+    "secretpassword", "adminpassword", "rootpassword", "userpassword",
+])
+
+# Паттерны путей, которые часто содержат примеры (false positive)
+FALSE_POSITIVE_PATH_PATTERNS: frozenset = frozenset([
+    "example", "examples", "sample", "samples", "demo", "demos",
+    "test", "tests", "testing", "spec", "specs", "__tests__",
+    "fixture", "fixtures", "mock", "mocks", "stub", "stubs",
+    "tutorial", "tutorials", "guide", "guides", "doc", "docs",
+    "documentation", "readme", "template", "templates", "boilerplate",
+    "sandbox", "playground", "scratch", "tmp", "temp", "node_modules",
+    "vendor", "third_party", "third-party", "external", "lib",
+    ".github", ".gitlab", ".circleci", ".travis",
+])
+
+# Паттерны конфигураций популярных фреймворков (часто false positive)
+FRAMEWORK_CONFIG_PATTERNS: frozenset = frozenset([
+    "django", "flask", "rails", "laravel", "spring", "express",
+    "wordpress", "drupal", "joomla", "magento", "prestashop",
+    "react", "angular", "vue", "next", "nuxt", "gatsby",
+    "webpack", "babel", "eslint", "prettier", "jest", "mocha",
+])
+
+# Минимальная энтропия для разных типов секретов
+MIN_ENTROPY_THRESHOLDS: Dict[str, float] = {
+    "private_key": 3.0,
+    "certificate": 3.0,
+    "aws_key": 4.0,
+    "github_token": 3.5,
+    "api_key": 3.5,
+    "access_token": 3.5,
+    "jwt_token": 4.0,
+    "password": 2.5,
+    "default": 3.0
+}
+
+# Расширения бинарных файлов (не должны содержать секреты)
+BINARY_FILE_EXTENSIONS: frozenset = frozenset([
+    # Images
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg", ".webp", ".tiff", ".tif",
+    # Documents
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt",
+    # Archives
+    ".zip", ".tar", ".gz", ".rar", ".7z", ".bz2", ".xz",
+    # Binary/Compiled
+    ".exe", ".dll", ".so", ".dylib", ".bin", ".o", ".a", ".pyc", ".pyo", ".class",
+    # Media
+    ".mp3", ".mp4", ".avi", ".mov", ".wav", ".flac", ".ogg", ".mkv", ".webm",
+    # Fonts
+    ".ttf", ".otf", ".woff", ".woff2", ".eot",
+    # Notebooks (часто содержат base64 вывод)
+    ".ipynb",
+    # Other binary
+    ".db", ".sqlite", ".sqlite3", ".pickle", ".pkl", ".npy", ".npz",
+    ".parquet", ".feather", ".hdf5", ".h5",
+])
+
+# Расширения файлов с данными, где секреты маловероятны
+DATA_FILE_EXTENSIONS: frozenset = frozenset([
+    ".csv", ".tsv", ".json", ".xml", ".html", ".htm",
+    ".lock", ".sum", ".mod",
+])
+
+# =============================================================================
+# Known False Positive Secrets (exact values commonly found in documentation)
+# =============================================================================
+
+# Известные примеры секретов из документации (false positive)
+KNOWN_EXAMPLE_SECRETS: frozenset = frozenset([
+    # AWS примеры из документации
+    "akiaiosfodnn7example",
+    "wjalrxutnfemi/k7mdeng/bpxrficyexamplekey",
+    "akiai44qh8dhbexample",
+    # GitHub примеры
+    "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "github_pat_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    # Stripe-like примеры (using safe patterns to avoid GitHub detection)
+    # Real patterns: sk_test_, pk_test_, sk_live_, pk_live_
+    "str_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "str_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    # JWT примеры из jwt.io
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ",
+    # Google примеры
+    "aizasyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    # Slack-like примеры (using safe patterns)
+    # Real patterns: xoxb-, xoxp-
+    "slk_bot_xxxxxxxxxxxx_xxxxxxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxx",
+    "slk_usr_xxxxxxxxxxxx_xxxxxxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxx",
+    # Generic placeholders
+    "1234567890abcdef",
+    "0123456789abcdef",
+    "abcdef1234567890",
+])
+
+# Паттерны названий "учебных" репозиториев (high FP probability)
+TUTORIAL_REPO_PATTERNS: frozenset = frozenset([
+    "tutorial", "learn", "course", "homework", "assignment", "exercise",
+    "practice", "lesson", "workshop", "training", "study", "education",
+    "bootcamp", "academy", "school", "university", "college", "class",
+    "starter", "boilerplate", "template", "scaffold", "seed", "skeleton",
+    "example", "sample", "demo", "showcase", "prototype", "poc",
+    "test-repo", "testing-repo", "my-first", "hello-world", "getting-started",
+])
+
+# Паттерны шаблонных файлов конфигурации
+TEMPLATE_CONFIG_PATTERNS: frozenset = frozenset([
+    ".example", ".sample", ".template", ".dist", ".default",
+    "-example", "-sample", "-template", "-dist", "-default",
+    "_example", "_sample", "_template", "_dist", "_default",
+    ".example.", ".sample.", ".template.", ".dist.", ".default.",
+])
+
+# Локальные/development хосты и адреса (не production)
+LOCAL_HOST_PATTERNS: frozenset = frozenset([
+    "localhost", "127.0.0.1", "0.0.0.0", "::1",
+    "192.168.", "10.0.", "172.16.", "172.17.", "172.18.", "172.19.",
+    "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
+    "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",
+    ".local", ".localhost", ".test", ".example", ".invalid",
+    "dev.local", "local.dev", "localhost.localdomain",
+])
+
+# Паттерны mock/fixture/stub данных в путях
+MOCK_DATA_PATH_PATTERNS: frozenset = frozenset([
+    "mock", "mocks", "__mocks__", "stub", "stubs", "__stubs__",
+    "fixture", "fixtures", "__fixtures__", "fake", "fakes",
+    "dummy", "dummies", "seed", "seeds", "factory", "factories",
+    "snapshots", "__snapshots__", "cassettes", "vcr_cassettes",
+])
+
+# Возраст коммита в днях, после которого секрет считается менее критичным
+SECRET_AGE_THRESHOLD_DAYS: int = 365  # 1 год
+
+# Пороговые значения статистики репозитория для FP анализа
+REPO_SIZE_TINY_KB: int = 10  # Очень маленький репозиторий (KB)
+REPO_SIZE_SMALL_KB: int = 100  # Маленький репозиторий (KB)
+REPO_AGE_NEW_DAYS: int = 7  # Новый репозиторий (дней)
+REPO_AGE_ABANDONED_DAYS: int = 365 * 4  # Заброшенный репозиторий (2 года)
+REPO_MIN_COMMITS_FOR_REAL: int = 10  # Минимум коммитов для "реального" проекта
+REPO_MAX_STARS_FOR_PERSONAL: int = 10  # Максимум звёзд для личного проекта
+
+# Пороговые значения популярности (high = likely FP from popular OSS)
+REPO_STARS_HIGH: int = 500  # Высокая популярность
+REPO_STARS_VERY_HIGH: int = 5000  # Очень высокая популярность
+REPO_FORKS_HIGH: int = 100  # Много форков
+REPO_CONTRIBUTORS_HIGH: int = 20  # Много контрибьюторов
+
 

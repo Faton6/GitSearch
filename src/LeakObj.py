@@ -31,13 +31,13 @@ class LeakObj(ABC):
 
         self.found_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
         
-        # Отложенный импорт для избежания циклических импортов
+        # ???????????????????? ???????????? ?????? ?????????????????? ?????????????????????? ????????????????
         from src.searcher.GitStats import GitParserStats
         self.stats = GitParserStats(self.repo_url)
 
         self.secrets = {'Not state': 'Not state'}
         self.ai_analysis = None  # Will store AI analysis results
-        self.ai_configence = 0.0
+        self.ai_confidence = 0.0  # Confidence score for AI analysis (0.0-1.0)
         self.company_info = None  # Will store company information for analysis
         self.ai_obj = None  # AIObj instance for analysis
         self.status = []
@@ -65,7 +65,7 @@ class LeakObj(ABC):
     
     def _create_ai_obj(self):
         if self.ai_obj is None:
-            # Lazy import для избежания циклического импорта
+            # Lazy import ?????? ?????????????????? ???????????????????????? ??????????????
             from src.AIObj import AIObj
             stats_data = {}
             leak_info = {
@@ -111,7 +111,7 @@ class LeakObj(ABC):
             
             self._create_ai_obj()
             
-            # Запускаем комплексный анализ
+            # ?????????????????? ?????????????????????? ????????????
             self.ai_analysis = self.ai_obj.analyze_leak_comprehensive()
 
         except Exception as e:
@@ -129,11 +129,11 @@ class LeakObj(ABC):
             company_rel = self.ai_analysis.get('company_relevance', {})
             if isinstance(company_rel, dict):
                 if company_rel.get('is_related'):
-                    self.ai_configence = company_rel.get('confidence', 0.0)
-                    self.status.append(self._get_message("ai_analysis_company_related", lang, confidence=self.ai_configence))
+                    self.ai_confidence = company_rel.get('confidence', 0.0)
+                    self.status.append(self._get_message("ai_analysis_company_related", lang, confidence=self.ai_confidence))
                 else:
-                    self.ai_configence = company_rel.get('confidence', 0.0)
-                    self.status.append(self._get_message("ai_analysis_company_unrelated", lang, confidence=self.ai_configence))
+                    self.ai_confidence = company_rel.get('confidence', 0.0)
+                    self.status.append(self._get_message("ai_analysis_company_unrelated", lang, confidence=self.ai_confidence))
             
             # Severity assessment
             severity = self.ai_analysis.get('severity_assessment', {})
@@ -160,8 +160,8 @@ class LeakObj(ABC):
         if hasattr(self.stats, 'is_inaccessible') and self.stats.is_inaccessible:
             self.lvl = 0
             self.res_check = constants.RESULT_CODE_LEAK_NOT_FOUND
-            reason = getattr(self.stats, 'inaccessibility_reason', 'Репозиторий недоступен')
-            self.status = [f"⚠️ {reason}. Утечка не обнаружена."]
+            reason = getattr(self.stats, 'inaccessibility_reason', '?????????????????????? ????????????????????')
+            self.status = [f"?????? {reason}. ???????????? ???? ????????????????????."]
             logger.info(f"Repository marked as inaccessible: {self.repo_name} - {reason}")
             return
         
@@ -177,17 +177,73 @@ class LeakObj(ABC):
         self._check_stats()
         lang = constants.LANGUAGE # Assuming LANGUAGE is defined in constants.py
 
-        # Run AI analysis if enabled and not already run
+        # Submit AI analysis asynchronously (non-blocking)
+        # Analysis will complete in background while other scans continue
         if constants.AI_ANALYSIS_ENABLED and not self.ai_analysis:
-            self.run_ai_analysis_sync()
+            try:
+                from src.ai_worker import submit_ai_analysis, AITask
+                
+                # Determine priority based on early signals
+                priority = AITask.NORMAL
+                # High priority if corporate committer found
+                if hasattr(self, 'stats') and hasattr(self.stats, 'committers'):
+                    for committer in self.stats.committers or []:
+                        if committer.get('matches_company'):
+                            priority = AITask.HIGH
+                            break
+                
+                # Submit for async analysis
+                submit_ai_analysis(self, priority=priority)
+                logger.debug(f"Submitted {self.repo_name} for async AI analysis")
+            except ImportError:
+                # Fallback to sync if ai_worker not available
+                self.run_ai_analysis_sync()
+            except Exception as e:
+                logger.warning(f"Failed to submit async AI analysis: {e}, using sync")
+                self.run_ai_analysis_sync()
+        
         if not self.ai_analysis:
             self.ai_analysis = {'Thinks': 'Not state'}
+        
+        # Используем LeakAnalyzer для анализа
+        bad_file_ext = len(self.status) > 0 and 'File extension' in self.status[0]
+        leak_analyzer = LeakAnalyzer(self, bad_file_ext=bad_file_ext)
+        
         # Get final assessment from LeakAnalyzer and insert as the first line
-        if len(self.status) > 0 and 'File extension' in self.status[0]:
-            final_assessment = LeakAnalyzer(self, bad_file_ext=True).get_final_assessment()
-        else:
-            final_assessment = LeakAnalyzer(self, bad_file_ext=False).get_final_assessment()
+        final_assessment = leak_analyzer.get_final_assessment()
         self.status.insert(0, final_assessment)
+        
+        # ===== CRITICAL: Highlight corporate committers (almost 100% relevance!) =====
+        corporate_committers = leak_analyzer.get_corporate_committers()
+        for committer in corporate_committers:
+            if committer.get('matches_company'):
+                # TARGET COMPANY EMAIL - MOST IMPORTANT SIGNAL!
+                self.status.insert(1, self._get_message("corporate_committer_target", lang,
+                    name=committer.get('commiter_name', 'Unknown'),
+                    email=committer.get('commiter_email', '')))
+            else:
+                # Other corporate email
+                self.status.append(self._get_message("corporate_committer_other", lang,
+                    name=committer.get('commiter_name', 'Unknown'),
+                    email=committer.get('commiter_email', ''),
+                    domain=committer.get('domain', '')))
+        
+        # ===== Repository credibility assessment =====
+        credibility_score = leak_analyzer._calculate_repo_credibility_score()
+        if credibility_score >= 0.7:
+            self.status.append(self._get_message("repo_credibility_high", lang, score=credibility_score))
+        elif credibility_score >= 0.4:
+            self.status.append(self._get_message("repo_credibility_medium", lang, score=credibility_score))
+        else:
+            self.status.append(self._get_message("repo_credibility_low", lang, score=credibility_score))
+        
+        # Add context warnings
+        if leak_analyzer._is_tiny_repository():
+            self.status.append(self._get_message("repo_is_tiny", lang))
+        if leak_analyzer._is_likely_personal_project():
+            self.status.append(self._get_message("repo_is_personal", lang))
+        if leak_analyzer._is_very_popular_repository():
+            self.status.append(self._get_message("repo_is_popular_oss", lang))
 
         self.status.append(self._get_message("leak_found_in_section", lang, obj_type=self.obj_type, dork=self.dork))
         
@@ -203,7 +259,7 @@ class LeakObj(ABC):
             if leak_type in self.repo_name:
                 self.status.append(self._get_message("leak_in_repo_name", lang, leak_type=leak_type, repo_name=self.repo_name))
         
-        # Безопасная проверка типа repo_stats_leak_stats_table
+        # ???????????????????? ???????????????? ???????? repo_stats_leak_stats_table
         if isinstance(self.stats.repo_stats_leak_stats_table, dict):
             description_value = self.stats.repo_stats_leak_stats_table.get("description")
         else:
@@ -262,11 +318,8 @@ class LeakObj(ABC):
         self.status.append(self._get_message("total_leaks_found", lang, total_count=sum_leaks_count))
         self.status.append(self._get_message("full_report_length", lang, length=utils.count_nested_dict_len(self.secrets)))
         
-        # Moved profitability calculation before AI analysis to ensure AI can use it
-        if len(self.status) > 0 and 'File extension' in self.status[0]:
-            self.profitability_scores = LeakAnalyzer(self, bad_file_ext=True).calculate_profitability()
-        else:
-            self.profitability_scores = LeakAnalyzer(self, bad_file_ext=False).calculate_profitability()
+        # ???????????????????????????? ?????????? ?????????????????? leak_analyzer ?????? ?????????????? profitability
+        self.profitability_scores = leak_analyzer.calculate_profitability()
         
         
         if self.profitability_scores:

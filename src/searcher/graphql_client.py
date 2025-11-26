@@ -25,7 +25,8 @@ class GitHubGraphQLClient:
     _tokens_without_graphql = set()
     _tokens_with_graphql = set()
     
-    # Combined search query that gets repo data + stats in one request
+    # Optimized search query with REQUIRED fields
+    # Uses smaller batch size (10-15) to stay within complexity limits
     SEARCH_REPOS_WITH_STATS = """
     query SearchReposWithStats($query: String!, $first: Int!, $after: String) {
       search(query: $query, type: REPOSITORY, first: $first, after: $after) {
@@ -61,7 +62,7 @@ class GitHubGraphQLClient:
             primaryLanguage {
               name
             }
-            languages(first: 10) {
+            languages(first: 5) {
               edges {
                 size
                 node {
@@ -69,7 +70,7 @@ class GitHubGraphQLClient:
                 }
               }
             }
-            repositoryTopics(first: 10) {
+            repositoryTopics(first: 5) {
               nodes {
                 topic {
                   name
@@ -81,13 +82,6 @@ class GitHubGraphQLClient:
                 ... on Commit {
                   history(first: 1) {
                     totalCount
-                  }
-                  author {
-                    name
-                    email
-                    user {
-                      login
-                    }
                   }
                 }
               }
@@ -107,7 +101,7 @@ class GitHubGraphQLClient:
     }
     """
     
-    # Limited version without collaborators (doesn't require special permissions)
+    # Limited version without collaborators (doesn't require push access)
     SEARCH_REPOS_WITH_STATS_LIMITED = """
     query SearchReposWithStats($query: String!, $first: Int!, $after: String) {
       search(query: $query, type: REPOSITORY, first: $first, after: $after) {
@@ -143,7 +137,7 @@ class GitHubGraphQLClient:
             primaryLanguage {
               name
             }
-            languages(first: 10) {
+            languages(first: 5) {
               edges {
                 size
                 node {
@@ -151,7 +145,7 @@ class GitHubGraphQLClient:
                 }
               }
             }
-            repositoryTopics(first: 10) {
+            repositoryTopics(first: 5) {
               nodes {
                 topic {
                   name
@@ -163,13 +157,6 @@ class GitHubGraphQLClient:
                 ... on Commit {
                   history(first: 1) {
                     totalCount
-                  }
-                  author {
-                    name
-                    email
-                    user {
-                      login
-                    }
                   }
                 }
               }
@@ -226,25 +213,36 @@ class GitHubGraphQLClient:
     """
     
     def __init__(self):
-        """Initialize GraphQL client."""
+        """Initialize GraphQL client with HTTP session pooling."""
         self.use_limited_queries = False  # Flag to use queries without special permissions
+        self._session = None
+    
+    def _get_session(self) -> requests.Session:
+        """Get or create HTTP session with connection pooling."""
+        if self._session is None:
+            self._session = requests.Session()
+            # Configure connection pool for GraphQL endpoint
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=5,
+                pool_maxsize=10,
+                max_retries=requests.adapters.Retry(
+                    total=3,
+                    backoff_factor=1,
+                    status_forcelist=[500, 502, 503, 504]
+                )
+            )
+            self._session.mount('https://', adapter)
+        return self._session
     
     def _get_token(self) -> Optional[str]:
         try:
             from src.github_rate_limiter import get_rate_limiter
             rate_limiter = get_rate_limiter()
             
-            if self._tokens_with_graphql:
-                for token in self._tokens_with_graphql:
-                    try:
-                        quota = rate_limiter.tokens.get(token)
-                        if quota and quota.search_remaining > 0:
-                            return token
-                    except:
-                        pass
-            
+            # Get best available token from rate limiter
             token = rate_limiter.get_best_token()
             
+            # Skip tokens known to lack GraphQL access
             if token and token in self._tokens_without_graphql:
                 all_tokens = constants.GITHUB_TOKENS if hasattr(constants, 'GITHUB_TOKENS') else []
                 for alt_token in all_tokens:
@@ -275,12 +273,14 @@ class GitHubGraphQLClient:
                 reset_time = datetime.fromisoformat(reset_at.replace('Z', '+00:00'))
                 headers['X-RateLimit-Reset'] = str(int(reset_time.timestamp()))
             
-            rate_limiter.update_quota_from_headers(token, headers)
+            # Update graphql resource quota specifically
+            rate_limiter.update_quota_from_headers(token, headers, resource='graphql')
             
-            logger.debug(
-                f"GraphQL rate limit: {rate_limit_data.get('remaining')}/{rate_limit_data.get('limit')} "
-                f"(cost: {rate_limit_data.get('cost', 1)})"
-            )
+            # Log GraphQL query cost for debugging
+            cost = rate_limit_data.get('cost', 1)
+            remaining = rate_limit_data.get('remaining', 0)
+            logger.debug(f"GraphQL query cost: {cost}, remaining: {remaining}")
+            
         except (RuntimeError, ImportError):
             pass
     
@@ -291,7 +291,8 @@ class GitHubGraphQLClient:
         try:
             from src.github_rate_limiter import get_rate_limiter
             rate_limiter = get_rate_limiter()
-            rate_limiter.wait_for_search_rate_limit()
+            # GraphQL doesn't have per-minute limit like search, use core limit tracking
+            # but we can still check if we need to wait
         except (RuntimeError, ImportError):
             time.sleep(constants.GITHUB_REQUEST_RATE_LIMIT)
         
@@ -311,7 +312,8 @@ class GitHubGraphQLClient:
         }
         
         try:
-            response = requests.post(
+            session = self._get_session()
+            response = session.post(
                 self.GRAPHQL_ENDPOINT,
                 json=payload,
                 headers=headers,
@@ -326,6 +328,7 @@ class GitHubGraphQLClient:
                         error_msg = error.get('message', 'Unknown error')
                         error_type = error.get('type', '')
                         
+                        # Handle permission errors (token lacks GraphQL scope)
                         if ('not accessible' in error_msg.lower() or 
                             'forbidden' in error_msg.lower() or
                             'scope' in error_msg.lower() or
@@ -333,8 +336,15 @@ class GitHubGraphQLClient:
                             
                             self._tokens_without_graphql.add(token)
                             
-                            all_tokens = constants.GITHUB_TOKENS if hasattr(constants, 'GITHUB_TOKENS') else []
-                            tokens_to_check = len(all_tokens)
+                            # Get total number of tokens from rate limiter
+                            try:
+                                from src.github_rate_limiter import get_rate_limiter
+                                rate_limiter = get_rate_limiter()
+                                tokens_to_check = len(rate_limiter.tokens)
+                            except (ImportError, RuntimeError, AttributeError) as e:
+                                logger.debug(f'Could not get rate limiter token count: {e}')
+                                tokens_to_check = len(constants.GITHUB_TOKENS) if hasattr(constants, 'GITHUB_TOKENS') else 2
+                            
                             tokens_checked = len(self._tokens_without_graphql) + len(self._tokens_with_graphql)
                             
                             if tokens_checked >= tokens_to_check and tokens_to_check > 0:
@@ -343,6 +353,12 @@ class GitHubGraphQLClient:
                                     self._graphql_disabled = True
                             else:
                                 logger.debug(f"Current token lacks GraphQL access ({len(self._tokens_without_graphql)}/{tokens_to_check} tokens checked). Error: {error_msg}")
+                        
+                        # Handle query complexity errors - disable GraphQL for this session
+                        elif 'resource limits' in error_msg.lower() or 'exceeds maximum' in error_msg.lower():
+                            logger.warning(f"GraphQL query too complex: {error_msg}. This should not happen with optimized queries. Disabling GraphQL for this session.")
+                            self._graphql_disabled = True
+                        
                         else:
                             logger.error(f"GraphQL error: {error_msg}")
                     return None
@@ -364,7 +380,7 @@ class GitHubGraphQLClient:
                     retry_after = response.headers.get('Retry-After')
                     if retry_after:
                         retry_after = int(retry_after)
-                    rate_limiter.handle_rate_limit_error(token, retry_after)
+                    rate_limiter.handle_rate_limit_error(token, retry_after, resource='graphql')
                 except (RuntimeError, ImportError):
                     pass
                 return None
@@ -395,10 +411,15 @@ class GitHubGraphQLClient:
         has_next_page = True
         cursor = None
         
+        # Use small batch size (10) to stay within complexity limits
+        # Query includes expensive nested fields: languages, topics, defaultBranchRef, collaborators
+        # GitHub GraphQL cost = base_cost + (result_count × field_complexity)
+        BATCH_SIZE = 10
+        
         while has_next_page and len(results) < max_results:
             variables = {
                 'query': query,
-                'first': min(100, max_results - len(results)),
+                'first': min(BATCH_SIZE, max_results - len(results)),
                 'after': cursor
             }
             
@@ -447,13 +468,14 @@ class GitHubGraphQLClient:
                         'size': node.get('diskUsage', 0),
                         'language': node.get('primaryLanguage', {}).get('name') if node.get('primaryLanguage') else None,
                         # Extended stats from GraphQL
-                        'topics': [t['topic']['name'] for t in node.get('repositoryTopics', {}).get('nodes', [])],
+                        'topics': [t['topic']['name'] for t in node.get('repositoryTopics', {}).get('nodes', []) if t and t.get('topic')],
                         'languages': {
                             edge['node']['name']: edge['size'] 
                             for edge in node.get('languages', {}).get('edges', [])
+                            if edge and edge.get('node')
                         },
                         'collaborators_count': node.get('collaborators', {}).get('totalCount', 0),
-                        'commit_count': node.get('defaultBranchRef', {}).get('target', {}).get('history', {}).get('totalCount', 0),
+                        'commit_count': node.get('defaultBranchRef', {}).get('target', {}).get('history', {}).get('totalCount', 0) if node.get('defaultBranchRef') else 0,
                     }
                     results.append(repo_data)
             
@@ -481,10 +503,13 @@ class GitHubGraphQLClient:
         has_next_page = True
         cursor = None
         
+        # Use small batch size for code search (text content is expensive)
+        BATCH_SIZE = 10
+        
         while has_next_page and len(results) < max_results:
             variables = {
                 'query': query,
-                'first': min(100, max_results - len(results)),
+                'first': min(BATCH_SIZE, max_results - len(results)),
                 'after': cursor
             }
             

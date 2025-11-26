@@ -1,5 +1,6 @@
 # Standart libs import
 from abc import ABC, abstractmethod
+import json
 import time
 import requests
 from math import ceil
@@ -14,7 +15,10 @@ from src.LeakObj import CodeObj, RepoObj, CommitObj
 from src import constants
 
 
-# TODO max pages
+# TODO: Implement configurable max pages limit
+# Currently pagination continues until all results are fetched or rate limit hit.
+# Add MAX_PAGES constant to limit memory usage and API calls for large result sets.
+# Suggested implementation: Add `max_pages` parameter to get_pages() method.
 
 class GitParserSearch(ABC):
     # attrs to override
@@ -56,19 +60,23 @@ class GitParserSearch(ABC):
 
     def request_page(self) -> requests.Response:
         """Send API request with rate limiting."""
+        # Determine resource type based on parser class
+        is_code_search = 'code' in self.url.lower()
+        resource_type = 'search_code' if is_code_search else 'search'
+        
         try:
             from src.github_rate_limiter import get_rate_limiter
             rate_limiter = get_rate_limiter()
             
-            # Enforce Search API limit (30 req/min)
-            rate_limiter.wait_for_search_rate_limit()
+            # Enforce Search API limit (10/min for code, 30/min for others)
+            rate_limiter.wait_for_search_rate_limit(is_code_search=is_code_search)
             
-            # Get best available token
-            token = rate_limiter.get_best_token()
+            # Get best available token for this resource type
+            token = rate_limiter.get_best_token(resource=resource_type)
             if token is None:
                 logger.warning("No tokens available, waiting 60s...")
                 time.sleep(60)
-                token = rate_limiter.get_best_token()
+                token = rate_limiter.get_best_token(resource=resource_type)
         except (RuntimeError, ImportError):
             # Fallback to old behavior if rate limiter not available
             token = next(constants.token_generator())
@@ -81,18 +89,18 @@ class GitParserSearch(ABC):
             timeout=self.timeout
         )
         
-        # Update quota from response
+        # Update quota from response with correct resource type
         try:
             from src.github_rate_limiter import get_rate_limiter
             rate_limiter = get_rate_limiter()
-            rate_limiter.update_quota_from_headers(token, response.headers)
+            rate_limiter.update_quota_from_headers(token, response.headers, resource=resource_type)
             
             # Handle rate limit errors
             if response.status_code in (403, 429):
                 retry_after = response.headers.get('Retry-After')
                 if retry_after:
                     retry_after = int(retry_after)
-                rate_limiter.handle_rate_limit_error(token, retry_after)
+                rate_limiter.handle_rate_limit_error(token, retry_after, resource=resource_type)
         except (RuntimeError, ImportError):
             pass
         
@@ -132,7 +140,7 @@ class GitParserSearch(ABC):
                 elif response.status_code in (403, 429):
                     try:
                         error_msg = response.json().get('message', '').lower()
-                    except:
+                    except (json.JSONDecodeError, ValueError, AttributeError):
                         error_msg = response.text.lower()
                     
                     if 'rate limit' in error_msg or 'api rate limit' in error_msg:
@@ -158,7 +166,7 @@ class GitParserSearch(ABC):
                     try:
                         error_data = response.json()
                         logger.error(f"Invalid query (422): {error_data.get('message', response.text)}")
-                    except:
+                    except (json.JSONDecodeError, ValueError):
                         logger.error(f'Invalid query (422): {response.text}')
                     return  # Stop this dork
                 

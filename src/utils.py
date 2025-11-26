@@ -38,32 +38,93 @@ def count_nested_dict_len(input_dict):
 
 
 def check_temp_folder_size():
-    """Check and clean TEMP_FOLDER directory if needed"""
+    """
+    Check and clean TEMP_FOLDER directory if needed.
+    
+    Uses intelligent LRU (Least Recently Used) cleanup strategy:
+    - Monitors folder size against MAX_TEMP_FOLDER_SIZE limit
+    - Keeps most recently used repositories
+    - Provides cache hit/miss statistics
+    
+    Returns:
+        Tuple of (repos_removed, bytes_freed) or None on error
+    """
     logger.info('Checking TEMP_FOLDER directory')
+    
     if not os.path.exists(constants.TEMP_FOLDER):
         logger.warning(f'TEMP_FOLDER does not exist: {constants.TEMP_FOLDER}')
-        return
+        return None
     
-    temp_dir_list = os.listdir(constants.TEMP_FOLDER)
-    if len(temp_dir_list) > 2:
-        if 'command_file' in temp_dir_list:
-            temp_dir_list.remove('command_file')
+    try:
+        # Use new TempFolderManager for intelligent cleanup
+        from src.temp_manager import get_temp_manager
+        
+        manager = get_temp_manager()
+        stats = manager.get_stats()
+        
+        logger.info(
+            f'Temp folder stats: size={stats["total_size_gb"]:.2f}GB/{stats["max_size_gb"]:.1f}GB '
+            f'({stats["usage_percent"]:.1f}%), repos={stats["repo_count"]}/{stats["max_repos"]}, '
+            f'cache_hit_rate={stats["cache_hit_rate"]:.1f}%'
+        )
+        
+        # Cleanup if needed
+        repos_removed, bytes_freed = manager.cleanup_if_needed()
+        
+        if repos_removed > 0:
+            logger.info(
+                f'LRU cleanup: removed {repos_removed} repos, '
+                f'freed {bytes_freed / (1024**3):.2f}GB'
+            )
+        
+        return repos_removed, bytes_freed
+        
+    except ImportError:
+        # Fallback to legacy cleanup if temp_manager not available
+        logger.debug('TempFolderManager not available, using legacy cleanup')
+        return _legacy_temp_cleanup()
+    except Exception as e:
+        logger.error(f'Error in check_temp_folder_size: {e}')
+        return None
 
-        if 'list_to_scan.txt' in temp_dir_list:
-            temp_dir_list.remove('list_to_scan.txt')
+
+def _legacy_temp_cleanup():
+    """
+    Legacy temp folder cleanup (fallback).
+    Removes all directories except protected files.
+    """
+    temp_dir_list = os.listdir(constants.TEMP_FOLDER)
+    
+    # Protected files to keep
+    protected = {'command_file', 'list_to_scan.txt', '.gitkeep'}
+    
+    cleaned_count = 0
+    bytes_freed = 0
+    
+    for item_name in temp_dir_list:
+        if item_name in protected:
+            continue
+            
+        item_path = os.path.join(constants.TEMP_FOLDER, item_name)
         
-        cleaned_count = 0
-        for dir_now in temp_dir_list:
-            dir_path = os.path.join(constants.TEMP_FOLDER, dir_now)
-            if os.path.isdir(dir_path):
-                try:
-                    shutil.rmtree(dir_path)
-                    cleaned_count += 1
-                except Exception as ex:
-                    logger.error(f'Error removing directory {dir_path}: {ex}')
-        
-        if cleaned_count > 0:
-            logger.info(f'Cleared {cleaned_count} directories in TEMP_FOLDER')
+        if os.path.isdir(item_path):
+            try:
+                # Calculate size before deletion
+                item_size = sum(
+                    os.path.getsize(os.path.join(dirpath, filename))
+                    for dirpath, _, filenames in os.walk(item_path)
+                    for filename in filenames
+                )
+                shutil.rmtree(item_path)
+                cleaned_count += 1
+                bytes_freed += item_size
+            except Exception as ex:
+                logger.error(f'Error removing directory {item_path}: {ex}')
+    
+    if cleaned_count > 0:
+        logger.info(f'Legacy cleanup: removed {cleaned_count} directories, freed {bytes_freed / (1024**2):.1f}MB')
+    
+    return cleaned_count, bytes_freed
 
 
 def trace_monitor():
@@ -164,12 +225,10 @@ def _add_repo_to_exclude(url):  # TODO: add check existing repo name
         elif isinstance(url, list):
             with open(constants.MAIN_FOLDER_PATH / "src" / "exclude_list.txt", "r+") as file:
                 url_from_exclude_list = [line.rstrip() for line in file]
-                is_need_to_upd = False
                 for new_url in url:
                     new_url = convert_to_regex_pattern(new_url)
-                    if not new_url in url_from_exclude_list:
+                    if new_url not in url_from_exclude_list:
                         file.write(new_url + "\n")
-                        is_need_to_upd = True
         else:
             logger.error("Error in adding excludes in exclude_list.txt (_add_repo_to_exclude): Unknown data type!")
     except Exception as ex:
@@ -315,6 +374,65 @@ def semantic_check_dork(string_check: str, dork: str):
         return 1
     else:
         return 0
+
+# =============================================================================
+# Safe Data Access Helpers
+# =============================================================================
+
+def safe_get_count(data: dict, key: str, default: int = 0) -> int:
+    """
+    Safely get totalCount from a nested structure.
+    
+    Works with:
+    - {"key": {"totalCount": N}} -> N
+    - {"key": [item1, item2]} -> len(list)
+    - {"key": N} -> N (if int)
+    
+    Args:
+        data: Dictionary to extract from
+        key: Key to look up
+        default: Default value if extraction fails
+    
+    Returns:
+        Integer count value
+    """
+    value = data.get(key)
+    if isinstance(value, dict):
+        return value.get('totalCount', default)
+    elif isinstance(value, list):
+        return len(value)
+    elif isinstance(value, int):
+        return value
+    return default
+
+
+def safe_get_nested(data: dict, *keys, default=None):
+    """
+    Safely get a value from a nested dictionary structure.
+    
+    Example:
+        safe_get_nested(data, 'level1', 'level2', 'value', default=0)
+        is equivalent to:
+        data.get('level1', {}).get('level2', {}).get('value', 0)
+    
+    Args:
+        data: Dictionary to traverse
+        *keys: Chain of keys to follow
+        default: Value to return if any key is missing
+    
+    Returns:
+        Value at the nested path or default
+    """
+    current = data
+    for key in keys:
+        if isinstance(current, dict):
+            current = current.get(key)
+        else:
+            return default
+        if current is None:
+            return default
+    return current if current is not None else default
+
 
 def safe_encode_decode(data, operation: str = 'encode') -> str:
     """

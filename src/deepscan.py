@@ -1,5 +1,10 @@
 import os
-from typing import Dict, List, Optional, Any, Tuple
+import gc
+import threading
+import weakref
+import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List, Optional, Any, Tuple, Union
 
 from src.logger import logger
 from src import Connector
@@ -13,6 +18,7 @@ DEEP_SCAN_CONFIG = {
     'max_retries': 3,
     'timeout_multiplier': 3.0,
     'batch_size': 5,
+    'max_workers': 3,  # Number of parallel workers for deep scan
     'enable_ai_analysis': True,
     'required_scanners': ['gitleaks', 'gitsecrets', 'grepscan', 'deepsecrets', 'ioc_finder']
 }
@@ -27,8 +33,46 @@ LIST_SCAN_CONFIG = {
 
 class DeepScanManager:
     
-    def __init__(self):
+    def __init__(self, max_workers: int = None):
+        """
+        Initialize DeepScanManager with parallel processing support.
+        
+        Args:
+            max_workers: Number of parallel workers (default: from DEEP_SCAN_CONFIG)
+        """
         self.urls_to_scan: constants.AutoVivification = constants.AutoVivification()
+        self.max_workers = max_workers or DEEP_SCAN_CONFIG['max_workers']
+        self._lock = threading.Lock()  # Thread-safe operations
+        self._processed_count = 0  # Счетчик обработанных URL для периодической очистки
+        self._gc_interval = 50  # Интервал сборки мусора
+        logger.info(f"DeepScanManager initialized with {self.max_workers} parallel workers")
+    
+    def _cleanup_memory(self, force: bool = False):
+        """
+        Периодическая очистка памяти.
+        
+        Args:
+            force: Принудительная очистка вне зависимости от счетчика
+        """
+        self._processed_count += 1
+        if force or self._processed_count >= self._gc_interval:
+            gc.collect()
+            self._processed_count = 0
+            logger.debug("🧹 Memory cleanup performed")
+    
+    def _clear_processed_urls(self, urls: List[str]):
+        """
+        Немедленно удаляет обработанные URL из памяти.
+        
+        Args:
+            urls: Список URL для удаления
+        """
+        with self._lock:
+            for url in urls:
+                if url in self.urls_to_scan:
+                    # Очищаем ссылку на объект перед удалением
+                    self.urls_to_scan[url][1] = None
+                    del self.urls_to_scan[url]
         
     def _get_urls_for_deep_scan(self) -> Dict[str, List[Any]]:
         urls_to_scan = constants.AutoVivification()
@@ -36,78 +80,84 @@ class DeepScanManager:
         
         for url_from_db in url_dump.keys():
             url_data = url_dump[url_from_db]
-            if (isinstance(url_data[0], str) and 
-                int(url_data[0]) == constants.RESULT_CODE_TO_DEEPSCAN) or (isinstance(url_data[0], int) and 
-                url_data[0] == constants.RESULT_CODE_TO_DEEPSCAN):
+            # Simplified type check - convert to int regardless of original type
+            try:
+                result_code = int(url_data[0])
+            except (ValueError, TypeError):
+                continue
+            if result_code == constants.RESULT_CODE_TO_DEEPSCAN:
                 urls_to_scan[url_from_db] = [url_data[1], None]
                 
         logger.info(f"Found {len(urls_to_scan)} URLs marked for deep scanning")
         return urls_to_scan
  
  
-    def _get_urls_for_deep_scan_with_no_results(self):
+    def _get_urls_for_deep_scan_with_no_results(self) -> Dict[str, List[Any]]:
         urls_to_scan = constants.AutoVivification()
         url_dump = Connector.dump_from_DB(mode=1)
         
         for url_from_db in url_dump.keys():
             url_data = url_dump[url_from_db]
-            if (isinstance(url_data[0], str) and 
-                int(url_data[0]) == constants.RESULT_CODE_TO_SEND) or (isinstance(url_data[0], int) and 
-                url_data[0] == constants.RESULT_CODE_TO_SEND):
+            # Simplified type check - convert to int regardless of original type
+            try:
+                result_code = int(url_data[0])
+            except (ValueError, TypeError):
+                continue
+            if result_code == constants.RESULT_CODE_TO_SEND:
                 urls_to_scan[url_from_db] = [url_data[1], None]
                 
         logger.info(f"Found {len(urls_to_scan)} URLs not analysed yet")
         return urls_to_scan
     
-    def _perform_gistobj_deep_scan(self, url: str, leak_id: int, company_id: int) -> Tuple[Optional[Dict], Optional[Dict]]:
+    def _perform_deep_scan(self, url: str, leak_id: int, company_id: int, 
+                           is_gist: bool = False) -> Optional[Union[RepoObj, GlistObj]]:
+        """
+        Perform deep scan on a repository or gist.
+        
+        Args:
+            url: URL to scan
+            leak_id: Database leak ID
+            company_id: Company ID for context
+            is_gist: True for gist URLs, False for repository URLs
+            
+        Returns:
+            LeakObj (RepoObj or GlistObj) on success, None on failure
+        """
         try:
-            # Create a mock GlistObj for the checker
-            mock_repo_data = {
-                'full_name': '/'.join(url.split('/')[-2:]),
-                'owner': {'login': url.split('/')[-2]},
-                'size': 0  # Will be updated during scanning
-            }
-            
-            
             company_name = Connector.get_company_name(company_id=company_id)
-            glist_obj = GlistObj(url, company_name, company_id)
-            glist_obj.stats.fetch_repository_stats()
-            checker = filters.Checker(url=url, dork=company_name, obj=glist_obj, mode=2)
-            checker.clone()
-            checker.run()
-                       
-            return glist_obj
             
-        except Exception as e:
-            import traceback
-            logger.error(f"Error during deep scan of {url}: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return None
-    def _perform_leakobj_deep_scan(self, url: str, leak_id: int, company_id: int) -> Tuple[Optional[Dict], Optional[Dict]]:
-        try:
-            # Create a mock RepoObj for the checker
-            mock_repo_data = {
-                'full_name': '/'.join(url.split('/')[-2:]),
-                'owner': {'login': url.split('/')[-2]},
-                'size': 0  # Will be updated during scanning
-            }
-            company_name = Connector.get_company_name(company_id=company_id)
-            repo_obj = RepoObj(url, mock_repo_data, company_name, company_id)
-            repo_obj.stats.fetch_repository_stats()
-            # Initialize checker with deep scan mode (mode=3)
-            checker = filters.Checker(url=url, dork=company_name, obj=repo_obj, mode=3)
+            if is_gist:
+                leak_obj = GlistObj(url, company_name, company_id)
+                checker_mode = 2
+            else:
+                # Create mock repo data for RepoObj initialization
+                mock_repo_data = {
+                    'full_name': '/'.join(url.split('/')[-2:]),
+                    'owner': {'login': url.split('/')[-2]},
+                    'size': 0  # Will be updated during scanning
+                }
+                leak_obj = RepoObj(url, mock_repo_data, company_name, company_id)
+                checker_mode = 3  # Deep scan mode
             
-            # Perform the scanning process
+            leak_obj.stats.fetch_repository_stats()
+            checker = filters.Checker(url=url, dork=company_name, obj=leak_obj, mode=checker_mode)
             checker.clone()
             checker.run()
             
-            return repo_obj
+            return leak_obj
             
         except Exception as e:
-            import traceback
             logger.error(f"Error during deep scan of {url}: {e}")
             logger.error(f"Traceback: {traceback.format_exc()}")
             return None
+    
+    def _perform_gistobj_deep_scan(self, url: str, leak_id: int, company_id: int) -> Optional[GlistObj]:
+        """Perform deep scan on a gist URL. Wrapper for backward compatibility."""
+        return self._perform_deep_scan(url, leak_id, company_id, is_gist=True)
+    
+    def _perform_leakobj_deep_scan(self, url: str, leak_id: int, company_id: int) -> Optional[RepoObj]:
+        """Perform deep scan on a repository URL. Wrapper for backward compatibility."""
+        return self._perform_deep_scan(url, leak_id, company_id, is_gist=False)
     
  
     def run(self, mode=0) -> None:
@@ -138,48 +188,144 @@ class DeepScanManager:
         self.send_objs()
     
     def send_objs(self):
+        """
+        Отправляет обработанные объекты в базу данных и очищает память.
+        
+        Оптимизация: немедленное освобождение ссылок после обработки.
+        """
         urls_to_remove = []
-        for url, data in list(self.urls_to_scan.items()):
-            leak_obj = data[1]
-            if leak_obj and leak_obj.repo_name not in constants.RESULT_MASS["deep_scan"]:
-                constants.RESULT_MASS["deep_scan"][leak_obj.repo_name] = leak_obj
-                urls_to_remove.append(url)
-        for url in urls_to_remove:
-            del self.urls_to_scan[url]
+        with self._lock:
+            for url, data in list(self.urls_to_scan.items()):
+                leak_obj = data[1]
+                if leak_obj and leak_obj.repo_name not in constants.RESULT_MASS.get("deep_scan", {}):
+                    if "deep_scan" not in constants.RESULT_MASS:
+                        constants.RESULT_MASS["deep_scan"] = {}
+                    constants.RESULT_MASS["deep_scan"][leak_obj.repo_name] = leak_obj
+                    urls_to_remove.append(url)
+            
+            # Немедленная очистка обработанных URL
+            for url in urls_to_remove:
+                self.urls_to_scan[url][1] = None  # Очищаем ссылку на объект
+                del self.urls_to_scan[url]
 
         if constants.RESULT_MASS.get("deep_scan"):
             Connector.dump_to_DB()
+            # Очищаем отправленные данные
             constants.RESULT_MASS.pop("deep_scan", None)
+            # Принудительная сборка мусора после отправки
+            self._cleanup_memory(force=True)
+            logger.info(f"✅ Sent {len(urls_to_remove)} objects to database")
         else:
             logger.info("No repositories require database updates")
-        logger.info("Deep scan process completed")
+        logger.info("Deep scan batch completed")
     
-    def _process_batch(self, batch_urls: List[str]) -> None:
-        counter = 0
-        for url in batch_urls:
-            if isinstance(self.urls_to_scan[url][0], (int, str)):
-                leak_id = int(self.urls_to_scan[url][0])
-            else:
-                continue
-            logger.info(f"Deep scanning: {url}")
-
+    def _process_single_url(self, url: str) -> bool:
+        """
+        Process single URL with retries (called in parallel).
+        
+        Args:
+            url: URL to scan
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if url not in self.urls_to_scan:
+                return False
+            
+            # Get leak_id safely
+            with self._lock:
+                if isinstance(self.urls_to_scan[url][0], (int, str)):
+                    leak_id = int(self.urls_to_scan[url][0])
+                else:
+                    return False
+            
+            logger.info(f"🔍 Deep scanning: {url}")
+            
+            # Retry loop
             for attempt in range(DEEP_SCAN_CONFIG["max_retries"]):
                 try:
-                    company_id = Connector.get_company_id(int(leak_id))
+                    company_id = Connector.get_company_id(leak_id)
+                    
+                    # Perform scan based on URL type
                     if 'gist.github.com' in url:
                         leak_obj = self._perform_gistobj_deep_scan(url, leak_id, company_id)
                     else:
                         leak_obj = self._perform_leakobj_deep_scan(url, leak_id, company_id)
+                    
                     if leak_obj:
-                        self.urls_to_scan[url][1] = leak_obj
-                        break
-                    logger.warning(f"Scan attempt {attempt + 1} failed for {url}")
+                        # Thread-safe update
+                        with self._lock:
+                            self.urls_to_scan[url][1] = leak_obj
+                        logger.info(f"✅ Successfully scanned: {url}")
+                        return True
+                    
+                    logger.warning(f"⚠️ Scan attempt {attempt + 1}/{DEEP_SCAN_CONFIG['max_retries']} failed for {url}")
+                    
                 except Exception as e:
-                    logger.error(f"Error in scan attempt {attempt + 1} for {url}: {e}")
-            else:
-                logger.error(f"All scan attempts failed for {url}, removing from update list")
-                del self.urls_to_scan[url]
-            counter += 1
+                    logger.error(f"❌ Error in scan attempt {attempt + 1}/{DEEP_SCAN_CONFIG['max_retries']} for {url}: {e}")
+            
+            # All attempts failed
+            logger.error(f"❌ All scan attempts failed for {url}, removing from update list")
+            with self._lock:
+                if url in self.urls_to_scan:
+                    self.urls_to_scan[url][1] = None  # Очищаем ссылку
+                    del self.urls_to_scan[url]
+            # Периодическая очистка памяти
+            self._cleanup_memory()
+            return False
+            
+        except Exception as e:
+            logger.error(f"💥 Fatal error processing {url}: {e}")
+            self._cleanup_memory()
+            return False
+    
+    def _process_batch(self, batch_urls: List[str]) -> int:
+        """
+        Process batch URLs in parallel using ThreadPoolExecutor.
+        
+        Args:
+            batch_urls: List of URLs to process
+            
+        Returns:
+            Number of successfully processed URLs
+        """
+        counter = 0
+        
+        # Filter valid URLs
+        valid_urls = []
+        with self._lock:
+            for url in batch_urls:
+                if url in self.urls_to_scan and isinstance(self.urls_to_scan[url][0], (int, str)):
+                    valid_urls.append(url)
+        
+        if not valid_urls:
+            logger.warning("No valid URLs in batch")
+            return 0
+        
+        logger.info(f"⚡ Processing {len(valid_urls)} URLs with {self.max_workers} parallel workers")
+        
+        # Use ThreadPoolExecutor for parallel processing
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Submit all tasks
+            future_to_url = {
+                executor.submit(self._process_single_url, url): url
+                for url in valid_urls
+            }
+            
+            # Process completed tasks as they finish
+            for future in as_completed(future_to_url):
+                url = future_to_url[future]
+                try:
+                    success = future.result(timeout=600)  # 10 min timeout per URL
+                    if success:
+                        counter += 1
+                except TimeoutError:
+                    logger.error(f"⏱️ Timeout processing {url} (10 minutes)")
+                except Exception as e:
+                    logger.error(f"💥 Exception processing {url}: {e}")
+        
+        logger.info(f"📊 Batch completed: {counter}/{len(valid_urls)} URLs processed successfully")
         return counter
     
 
@@ -274,17 +420,17 @@ class ListScanManager:
         
         try:
             temp_key = 'list_scan_temp'
-            if temp_key not in constants.dork_dict:
-                constants.dork_dict[temp_key] = []
+            if temp_key not in constants.dork_dict_from_DB:
+                constants.dork_dict_from_DB[temp_key] = []
             
             repo_urls = [obj.repo_url for obj in repo_objs]
-            constants.dork_dict[temp_key].extend(repo_urls)
+            constants.dork_dict_from_DB[temp_key].extend(repo_urls)
             
             scanner = Scanner(temp_key)
             scanner.gitscan()
             
-            if temp_key in constants.dork_dict:
-                del constants.dork_dict[temp_key]
+            if temp_key in constants.dork_dict_from_DB:
+                del constants.dork_dict_from_DB[temp_key]
                 
             logger.info(f"Successfully processed {len(repo_objs)} repositories")
             

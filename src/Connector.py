@@ -137,7 +137,7 @@ def is_this_need_to_analysis(leak_obj):
     if false_pos == 1.0:
         is_this_need_to_analysis_flag = False
     
-    if leak_obj.ai_configence >= 0.7:
+    if leak_obj.ai_confidence >= 0.7:
         is_this_need_to_analysis_flag = True
     return is_this_need_to_analysis_flag
 
@@ -195,7 +195,7 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
                 counter += 1
     elif mode == 1:
         for url in result_deepscan.keys():
-            time.sleep(1)
+            # Removed unnecessary sleep - database can handle concurrent requests
             data_to_request = {
                 'tname': 'leak',
                 'dname': 'GitSearch',
@@ -250,14 +250,34 @@ def dump_from_DB(mode=0):
     # mode=1 - return [..{'url':['result', 'id', 'leak_id']}..]
     checked_repos = {}
     logger.info(f'Dumping data from DB...')
-    dumped_data = APIClient.get_data('leak', {}, limit=500, offset=0)
-    if mode == 1:
-        for i in dumped_data:
-            checked_repos[i['url']] = [i['result'], i['id']]
-    else:
-        for i in dumped_data:
-            checked_repos[i['url']] = i['result']
-
+    
+    # Optimization: Use pagination to handle large datasets efficiently
+    limit = 500
+    offset = 0
+    total_fetched = 0
+    
+    while True:
+        dumped_data = APIClient.get_data('leak', {}, limit=limit, offset=offset)
+        
+        if not dumped_data or len(dumped_data) == 0:
+            break
+        
+        if mode == 1:
+            for i in dumped_data:
+                checked_repos[i['url']] = [i['result'], i['id']]
+        else:
+            for i in dumped_data:
+                checked_repos[i['url']] = i['result']
+        
+        total_fetched += len(dumped_data)
+        
+        # If we got fewer results than the limit, we've reached the end
+        if len(dumped_data) < limit:
+            break
+        
+        offset += limit
+    
+    logger.info(f'Dumped {total_fetched} records from DB')
     return checked_repos
 
 
@@ -397,17 +417,35 @@ def dump_raw_data_from_DB(leak_id):
 
 
 def update_result_filed_in_DB():
+    """Update result status for leaks in database based on repository availability."""
     data_from_DB = dump_from_DB(mode=1)
+    
+    # Get token for API requests
+    token = constants.token_tuple[0] if constants.token_tuple else ''
+    if not token or token == '-':
+        logger.warning('No valid token available for update_result_filed_in_DB')
+        return
 
-    for i in data_from_DB.keys():
-        if int(data_from_DB[i][0]) == constants.RESULT_CODE_STILL_ACCESS:
-            if not requests.get(data_from_DB[i], headers={'Authorization': f'Token {constants.token_list[0]}'}).ok:
-                leak_id = APIClient.upd_data('leak', {'id': data_from_DB[i][1], 'result': '3'})
+    for url, leak_data in data_from_DB.items():
+        try:
+            result_code = int(leak_data[0])
+            leak_id = leak_data[1]
+            
+            if result_code == constants.RESULT_CODE_STILL_ACCESS:
+                response = requests.get(url, headers={'Authorization': f'Token {token}'}, timeout=30)
+                if not response.ok:
+                    APIClient.upd_data('leak', {'id': leak_id, 'result': '3'})
+                    logger.info(f'Updated leak {leak_id} status to 3 (no longer accessible)')
 
-        if int(data_from_DB[i][0]) == constants.RESULT_CODE_TO_DEEPSCAN:
-            if not requests.get(data_from_DB[i], headers={'Authorization': f'Token {constants.token_list[0]}'}).ok:
-                leak_id = APIClient.upd_data('leak', {'id': data_from_DB[i][1], 'result': '2'})
-                logger.info('Was change result')
+            elif result_code == constants.RESULT_CODE_TO_DEEPSCAN:
+                response = requests.get(url, headers={'Authorization': f'Token {token}'}, timeout=30)
+                if not response.ok:
+                    APIClient.upd_data('leak', {'id': leak_id, 'result': '2'})
+                    logger.info(f'Updated leak {leak_id} status to 2 (no longer accessible)')
+        except requests.RequestException as e:
+            logger.warning(f'Request error checking URL {url}: {e}')
+        except (ValueError, TypeError, KeyError) as e:
+            logger.warning(f'Error processing leak data for URL {url}: {e}')
 
 def update_existing_leak(leak_id: int, leak_obj):
     """
@@ -508,7 +546,7 @@ def update_existing_leak(leak_id: int, leak_obj):
                         # Maybe it's plain JSON string
                         try:
                             old_ai = json.loads(ai_report_data)
-                        except:
+                        except (json.JSONDecodeError, TypeError, ValueError):
                             old_ai = {}
                     else:
                         # Check if decoded bytes are empty
@@ -543,7 +581,6 @@ def update_existing_leak(leak_id: int, leak_obj):
                 return
             
             leak_data = leak_obj.write_obj()
-            accounts_table = leak_obj.stats.contributors_stats_accounts_table
         except Exception as ex:
             logger.error(f'Error in update_existing_leak in s report compare: {ex}')
             

@@ -26,3 +26,4 @@
 .*msm\-4.*
 .*raccoons-bot.*
 .*pocketbase.*
+.*golang_.*

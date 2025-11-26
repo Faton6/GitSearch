@@ -1,5 +1,6 @@
 # Standard libs import
 import sys
+import functools
 from random import choice
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,7 +14,7 @@ import hashlib
 import git
 import ast
 import threading
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, FrozenSet, List
 
 # Third-party imports
 from github import Github, GithubException, RateLimitExceededException
@@ -22,26 +23,43 @@ from github import Github, GithubException, RateLimitExceededException
 from src import Connector, constants
 from src.logger import logger, CLR
 from src import utils
+from src.exceptions import (
+    ScanError, TimeoutScanError, RepositoryNotFoundError, 
+    RepositoryAccessDeniedError, RepositoryOversizeError, CloneError,
+    ScannerNotInstalledError
+)
 
 exclusions: tuple[str]
 with open(constants.MAIN_FOLDER_PATH / "src" / "exclude_list.txt", 'r') as fd:
     exclusions = tuple(line.rstrip() for line in fd)
 
 def _exc_catcher(func):
-    """Decorator for catching exceptions in scan methods"""
+    """Decorator for catching exceptions in scan methods with typed exceptions."""
     def wrapper(*args, **kwargs):
         try:
             result = func(*args, **kwargs)
             return result
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
+            scanner_name = func.__name__.replace('_scan', '').replace('_', '-')
+            url = args[0].url if args and hasattr(args[0], 'url') else ''
             logger.error("TimeoutExpired exception in %s", func.__name__)
+            raise TimeoutScanError(scanner_name, url, timeout_seconds=getattr(e, 'timeout', 0))
+        except RepositoryNotFoundError:
+            raise  # Re-raise typed exceptions
+        except RepositoryAccessDeniedError:
+            raise
+        except CloneError:
+            raise
+        except ScanError:
+            raise
         except Exception as exc:
             logger.error("Exception in %s: %s", func.__name__, exc)
             return 2
     return wrapper
 
 
-class CheckerException(Exception):
+class CheckerException(ScanError):
+    """Legacy exception for backward compatibility."""
     pass
 
 
@@ -52,7 +70,55 @@ NOT_CLONED = 0x0008
 
 
 class Checker:
-    file_ignore = ('.ipynb', '.png', '.svg')
+    # Используем константы из constants.py для единообразия
+    file_ignore = tuple(constants.BINARY_FILE_EXTENSIONS)
+    
+    # Кеш скомпилированных regex паттернов на уровне класса
+    _search_pattern_cache: Dict[FrozenSet[str], re.Pattern] = {}
+    _compiled_regex_cache: Dict[str, re.Pattern] = {}
+    
+    @classmethod
+    def _get_search_pattern(cls, terms: List[str]) -> re.Pattern:
+        """
+        Возвращает скомпилированный паттерн поиска из кеша.
+        
+        Args:
+            terms: Список терминов для поиска
+            
+        Returns:
+            Скомпилированный re.Pattern
+        """
+        key = frozenset(terms)
+        if key not in cls._search_pattern_cache:
+            escaped = [re.escape(t) for t in terms]
+            cls._search_pattern_cache[key] = re.compile(
+                r'\b(?:' + '|'.join(escaped) + r')\b',
+                re.IGNORECASE
+            )
+        return cls._search_pattern_cache[key]
+    
+    @classmethod
+    def _get_compiled_regex(cls, pattern: str, flags: int = 0) -> re.Pattern:
+        """
+        Возвращает скомпилированное regex из кеша.
+        
+        Args:
+            pattern: Строка регулярного выражения
+            flags: Флаги компиляции
+            
+        Returns:
+            Скомпилированный re.Pattern
+        """
+        cache_key = f"{pattern}:{flags}"
+        if cache_key not in cls._compiled_regex_cache:
+            cls._compiled_regex_cache[cache_key] = re.compile(pattern, flags)
+        return cls._compiled_regex_cache[cache_key]
+    
+    @classmethod
+    def clear_pattern_cache(cls):
+        """Очистка кеша паттернов."""
+        cls._search_pattern_cache.clear()
+        cls._compiled_regex_cache.clear()
 
     def __init__(self, url: str, dork: str, obj: any, mode: int = 1, token: str = '') -> None:
         self.url = url
@@ -199,8 +265,39 @@ class Checker:
             owner, repo_name = parts[-2], parts[-1]
             logger.info(f'Cloning {owner}/{repo_name} using PyGithub API')
             
-            # Initialize GitHub client with token
-            g = Github(constants.GITHUB_CLONE_TOKEN)
+            # Use rate limiter to get best available token for core API
+            from src.github_rate_limiter import get_rate_limiter, is_initialized
+            
+            if is_initialized():
+                rate_limiter = get_rate_limiter()
+                # Get token for core API (not search!)
+                token = rate_limiter.get_best_token(resource='core')
+                if not token:
+                    logger.error(f'No GitHub tokens available for PyGithub clone')
+                    return False
+                
+                # Check if token has enough core quota (need at least 50 for typical repo)
+                token_quota = rate_limiter.tokens.get(token)
+                if token_quota:
+                    core_quota = token_quota.get_resource_quota('core')
+                    if core_quota.remaining < 50:
+                        wait_time = core_quota.seconds_until_reset
+                        if wait_time > 0 and wait_time < 120:  # Wait max 2 minutes
+                            logger.info(f'Core API quota low ({core_quota.remaining}), waiting {wait_time:.0f}s for reset...')
+                            time.sleep(wait_time + 1)
+                        elif wait_time >= 120:
+                            logger.warning(f'Core API quota low ({core_quota.remaining}), reset in {wait_time:.0f}s - falling back to git clone')
+                            return False
+            else:
+                token = constants.GITHUB_CLONE_TOKEN
+                if not token:
+                    logger.error(f'No GitHub token configured for PyGithub clone')
+                    return False
+            
+            # Initialize GitHub client with best available token
+            # Disable retry (retry=None with Retry object) to handle rate limits ourselves
+            # Set timeout to prevent long waits
+            g = Github(token, retry=None, timeout=30)
             
             try:
                 # Get repository
@@ -209,10 +306,20 @@ class Checker:
                 # Create repos directory
                 os.makedirs(self.repos_dir, exist_ok=True)
                 
+                # Track API calls for rate limiting
+                api_calls = [0]  # Use list to allow modification in nested function
+                max_api_calls = 500  # Safety limit
+                
                 # Download all contents recursively
                 def download_contents(contents, path=""):
                     """Recursively download repository contents"""
                     for content_file in contents:
+                        # Check API call limit
+                        api_calls[0] += 1
+                        if api_calls[0] > max_api_calls:
+                            logger.warning(f'API call limit reached ({max_api_calls}), stopping download')
+                            return
+                        
                         file_path = os.path.join(self.repos_dir, path, content_file.name)
                         
                         if content_file.type == "dir":
@@ -223,7 +330,13 @@ class Checker:
                                     repo.get_contents(content_file.path),
                                     os.path.join(path, content_file.name)
                                 )
+                            except RateLimitExceededException as e:
+                                logger.warning(f'Rate limit hit while accessing directory {content_file.path}')
+                                raise  # Re-raise to stop clone
                             except GithubException as e:
+                                if e.status == 403:
+                                    logger.warning(f'Access forbidden for directory {content_file.path}: rate limit likely')
+                                    raise  # Re-raise to stop clone and trigger fallback
                                 logger.warning(f'Cannot access directory {content_file.path}: {e}')
                         else:
                             # Download file
@@ -236,7 +349,47 @@ class Checker:
                                         break
                                 
                                 if not skip_file:
-                                    file_content = content_file.decoded_content
+                                    # Skip symlinks and special files
+                                    if content_file.type not in ["file", "blob"]:
+                                        logger.debug(f'Skipping non-file content: {content_file.path} (type: {content_file.type})')
+                                        continue
+                                    
+                                    # Try decoded_content first, fall back to raw content for binary/unknown encoding files
+                                    file_content = None
+                                    try:
+                                        file_content = content_file.decoded_content
+                                    except RateLimitExceededException:
+                                        raise  # Re-raise to stop clone
+                                    except GithubException as e:
+                                        if e.status == 403:
+                                            raise  # Re-raise 403 to stop clone
+                                        # For files with unsupported encoding (binary files, etc.)
+                                        try:
+                                            file_content = content_file.content
+                                        except Exception:
+                                            logger.debug(f'Cannot get content for {content_file.path}, skipping')
+                                            continue
+                                    except Exception:
+                                        # For files with unsupported encoding (binary files, etc.)
+                                        try:
+                                            file_content = content_file.content
+                                        except Exception:
+                                            logger.debug(f'Cannot get content for {content_file.path}, skipping')
+                                            continue
+                                    
+                                    # Verify we have valid bytes content
+                                    if file_content is None:
+                                        logger.debug(f'File content is None for {content_file.path}, skipping')
+                                        continue
+                                    
+                                    # Convert to bytes if needed
+                                    if isinstance(file_content, str):
+                                        file_content = file_content.encode('utf-8')
+                                    
+                                    if not isinstance(file_content, bytes):
+                                        logger.warning(f'Invalid content type for {content_file.path}: {type(file_content)}, skipping')
+                                        continue
+                                    
                                     with open(file_path, 'wb') as f:
                                         f.write(file_content)
                             except Exception as e:
@@ -257,13 +410,28 @@ class Checker:
                 
                 return True
                 
+            except RateLimitExceededException as e:
+                logger.warning(f'Rate limit exceeded during PyGithub clone for {self.url}')
+                # Update rate limiter about this error (core API)
+                if is_initialized():
+                    rate_limiter = get_rate_limiter()
+                    retry_after = getattr(e, 'headers', {}).get('Retry-After')
+                    rate_limiter.handle_rate_limit_error(token, int(retry_after) if retry_after else None, resource='core')
+                self.secrets = {'Scan_error': f'Rate limit exceeded: {self.url}'}
+                return False
+                
             except GithubException as e:
                 if e.status == 404:
                     logger.warning(f'Repository not found: {self.url}')
                     self.secrets = {'Scan_error': f'Repository not found: {self.url}'}
                 elif e.status == 403:
-                    logger.error(f'Access forbidden or rate limit exceeded: {self.url}')
-                    self.secrets = {'Scan_error': f'Access forbidden: {self.url}'}
+                    logger.warning(f'Access forbidden (likely rate limit) for {self.url}: {e.data.get("message", str(e)) if hasattr(e, "data") else str(e)}')
+                    # Update rate limiter about this error (core API)
+                    if is_initialized():
+                        rate_limiter = get_rate_limiter()
+                        retry_after = getattr(e, 'headers', {}).get('Retry-After')
+                        rate_limiter.handle_rate_limit_error(token, int(retry_after) if retry_after else 60, resource='core')
+                    self.secrets = {'Scan_error': f'Access forbidden (rate limit): {self.url}'}
                 else:
                     logger.error(f'GitHub API error for {self.url}: {e}')
                     self.secrets = {'Scan_error': f'GitHub API error: {str(e)}'}
@@ -645,29 +813,37 @@ class Checker:
 
 
     def _search_small_file_with_python(self, file_path, search_terms):
-        """Поиск в небольших файлах с помощью Python"""
+        """Поиск в небольших файлах с помощью Python с кешированием паттернов."""
         matches = []
+        
+        if not search_terms:
+            return matches
+        
+        # Оптимизация: используем кешированный паттерн
+        pattern = self._get_search_pattern(search_terms)
         
         try:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 for line_num, line in enumerate(f, 1):
-                    line = line.strip()
-                    if not line or len(line) > 1000:  # Пропускаем слишком длинные строки
+                    line_stripped = line.strip()
+                    if not line_stripped or len(line_stripped) > 1000:  # Пропускаем слишком длинные строки
                         continue
                     
-                    for term in search_terms:
-                        if self._find_term_in_line(line, term):
-                            context = self._get_context(line, term, 100)
-                            matches.append({
-                                'text': context,
-                                'file': file_path,
-                                'term': term,
-                                'line_num': line_num
-                            })
-                            
-                            # Ограничиваем количество находок на файл
-                            if len(matches) >= 50:
-                                return matches
+                    # Single regex search instead of nested loop
+                    match = pattern.search(line_stripped)
+                    if match:
+                        found_term = match.group(0)
+                        context = self._get_context(line_stripped, found_term, 100)
+                        matches.append({
+                            'text': context,
+                            'file': file_path,
+                            'term': found_term,
+                            'line_num': line_num
+                        })
+                        
+                        # Ограничиваем количество находок на файл
+                        if len(matches) >= 50:
+                            return matches
         except FileNotFoundError:
             # Файл был удален между проверкой и открытием
             logger.debug(f'File not found during search: {file_path}')
@@ -737,20 +913,22 @@ class Checker:
         return matches
 
     def _find_term_in_line(self, line, term):
-        """Проверяет наличие термина в строке с учетом границ слов"""
-        # Точное совпадение слова (приоритет)
-        if re.search(rf'\b{re.escape(term)}\b', line, re.IGNORECASE):
+        """Проверяет наличие термина в строке с учетом границ слов (оптимизировано)."""
+        # Используем кешированный паттерн для точного совпадения
+        word_boundary_pattern = rf'\b{re.escape(term)}\b'
+        if self._get_compiled_regex(word_boundary_pattern, re.IGNORECASE).search(line):
             return True
         
         # Термин как часть слова (для названий компаний)
-        if len(term) > 2 and re.search(rf'{re.escape(term)}', line, re.IGNORECASE):
+        if len(term) > 2 and self._get_compiled_regex(re.escape(term), re.IGNORECASE).search(line):
             # Проверяем, что это не длинная случайная строка
             # Исключаем только очевидные хеши/случайные строки
-            if re.search(r'[a-f0-9]{30,}|[A-Za-z0-9+/]{25,}={0,2}', line):
+            hash_pattern = r'[a-f0-9]{30,}|[A-Za-z0-9+/]{25,}={0,2}'
+            if self._get_compiled_regex(hash_pattern).search(line):
                 return False
             
             # Проверяем, что строка содержит осмысленные символы
-            if re.search(r'[a-zA-Z]{2,}', line):
+            if self._get_compiled_regex(r'[a-zA-Z]{2,}').search(line):
                 return True
                 
         return False
@@ -1710,25 +1888,9 @@ class Checker:
         return 1
 
     def _calculate_entropy(self, data):
-        """Вычисляет энтропию строки"""
-        if not data:
-            return 0
-        
-        import math
-        from collections import Counter
-        
-        # Подсчитываем частоты символов
-        counter = Counter(data)
-        length = len(data)
-        
-        # Вычисляем энтропию
-        entropy = 0
-        for count in counter.values():
-            p = count / length
-            if p > 0:
-                entropy -= p * math.log2(p)
-        
-        return entropy
+        """Вычисляет энтропию строки. Делегирует в LeakAnalyzer."""
+        from src.LeakAnalyzer import LeakAnalyzer
+        return LeakAnalyzer.calculate_entropy(data)
 
     def _is_result_relevant(self, result, company_name=None):
         """Проверяет релевантность результата"""
