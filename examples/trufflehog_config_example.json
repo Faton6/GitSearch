@@ -4,7 +4,7 @@
       "name": "universal-secrets",
       "keywords": [
         "password",
-        "pwd", 
+        "pwd",
         "pass",
         "secret",
         "key",
@@ -27,7 +27,7 @@
       "exclude_words": [
         "example",
         "test",
-        "demo", 
+        "demo",
         "sample",
         "placeholder",
         "dummy",

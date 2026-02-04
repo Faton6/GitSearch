@@ -50,4 +50,6 @@ stacks/
 htmlcov/
 .tox/
 .nox/
-
+experiments/*
+generate_code_listing.py
+GitSearch_Code_Listing.pdf

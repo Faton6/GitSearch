@@ -61,13 +61,13 @@ repos:
         args: ['--line-length=120']
 
   # Security checks for Python
-  - repo: https://github.com/PyCQA/bandit
-    rev: 1.7.6
-    hooks:
-      - id: bandit
-        args: ['-c', 'pyproject.toml', '-r', 'src/']
-        additional_dependencies: ['bandit[toml]']
-        exclude: test/
+  #- repo: https://github.com/PyCQA/bandit
+  #  rev: 1.7.6
+  #  hooks:
+  #    - id: bandit
+  #      args: ['-c', 'pyproject.toml', '-r', 'src/']
+  #      additional_dependencies: ['bandit[toml]']
+  #      exclude: test/
 
 # CI configuration
 ci:

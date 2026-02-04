@@ -12,7 +12,7 @@ WORKDIR /app
 # needed things form apt
 RUN apt update -y && apt install -y wget git
 
-# install pip dependencies 
+# install pip dependencies
 COPY requirements.txt requirements.txt
 RUN pip3 install --upgrade pip && pip install -r requirements.txt
 
@@ -27,7 +27,7 @@ RUN rm -rf /usr/local/go && \
     wget https://go.dev/dl/go1.21.3.linux-amd64.tar.gz && \
     tar -C /usr/local/ -xzf go1.21.3.linux-amd64.tar.gz && \
     rm ./go1.21.3.linux-amd64.tar.gz
-    
+
 # get trufflehog
 RUN wget https://github.com/trufflesecurity/trufflehog/releases/download/v3.89.2/trufflehog_3.89.2_linux_amd64.tar.gz && \
     tar -xzf trufflehog_3.89.2_linux_amd64.tar.gz && \
@@ -39,14 +39,14 @@ RUN wget https://github.com/gitleaks/gitleaks/releases/download/v8.27.2/gitleaks
     rm ./gitleaks_8.27.2_linux_x64.tar.gz
 
 # get git-secrets
-RUN wget https://github.com/awslabs/git-secrets/blob/master/git-secrets 
+RUN wget https://github.com/awslabs/git-secrets/blob/master/git-secrets
 
 # get kingfisher
 RUN wget https://github.com/mongodb/kingfisher/releases/download/v1.20.0/kingfisher-linux-x64.tgz && \
     tar -xzf kingfisher-linux-x64.tgz && \
     rm ./kingfisher-linux-x64.tgz
 
-# move everyting to binaries 
+# move everyting to binaries
 RUN chmod +x trufflehog git-secrets gitleaks kingfisher && \
     mv trufflehog /usr/local/go/bin && \
     mv git-secrets /usr/local/bin && \

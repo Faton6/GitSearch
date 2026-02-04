@@ -27,3 +27,5 @@
 .*raccoons-bot.*
 .*pocketbase.*
 .*golang_.*
+.*Singular.*
+.*github\.com/Singular/Singular.*

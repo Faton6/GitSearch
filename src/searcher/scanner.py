@@ -2,7 +2,7 @@
 import atexit
 import time
 from random import choice
-from concurrent.futures import ThreadPoolExecutor, Future, wait, FIRST_COMPLETED, ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, Future, wait, FIRST_COMPLETED
 
 import src.constants as const
 
@@ -11,7 +11,7 @@ from src.filters import Checker, CLONED, SCANNED
 from src import utils
 from src import Connector
 from src.logger import logger, CLR
-from src.searcher.parsers import (GitParserSearch, GitRepoParser, GitCodeParser, GitCommitParser)
+from src.searcher.parsers import GitParserSearch, GitRepoParser, GitCodeParser, GitCommitParser
 
 # Track active scanners for cleanup
 _active_scanners = []
@@ -31,14 +31,18 @@ atexit.register(_cleanup_all_scanners)
 
 
 def check_obj_pool_size():
-    if (const.quantity_obj_before_send >= const.MAX_OBJ_BEFORE_SEND
-        or const.dork_search_counter > const.MAX_SEARCH_BEFORE_DUMP) and len(const.RESULT_MASS):
+    if (
+        const.quantity_obj_before_send >= const.MAX_OBJ_BEFORE_SEND
+        or const.dork_search_counter > const.MAX_SEARCH_BEFORE_DUMP
+    ) and const.RESULT_MASS:
         utils.dumping_data()
         utils.check_temp_folder_size()
 
 
-class Scanner():
-    parsers: tuple[GitParserSearch] = (GitCodeParser, GitRepoParser, GitCommitParser)
+class Scanner:
+    # Changed order: Repositories -> Commits -> Code (most efficient and accurate)
+    # Repositories first (most relevant), then Commits, Code last (most prone to false positives)
+    parsers: tuple[GitParserSearch] = (GitRepoParser, GitCommitParser, GitCodeParser)
     scan_workers = 5
     clone_workers = 1
 
@@ -47,19 +51,19 @@ class Scanner():
         self.org = organization
         self._cleanup_registered = False
         self._register_cleanup()
-    
+
     def _register_cleanup(self):
         """Register cleanup handler using atexit instead of unreliable __del__."""
         if not self._cleanup_registered:
             _active_scanners.append(self)
             self._cleanup_registered = True
-    
+
     def cleanup(self):
         """Explicit cleanup method - dumps data to DB."""
         if self in _active_scanners:
             _active_scanners.remove(self)
         Connector.dump_to_DB()
-    
+
     def __del__(self):
         # Minimal __del__ - just remove from tracking list
         # Actual cleanup is done via atexit or explicit cleanup() call
@@ -79,7 +83,7 @@ class Scanner():
             const.dork_search_counter += 1
 
             log_color = choice(tuple(CLR.values()))
-            logger.info('Dork: %s %s %s ', log_color, dork, CLR["RESET"])
+            logger.info("Dork: %s %s %s ", log_color, dork, CLR["RESET"])
 
             for parser_cls in self.parsers:
                 parser = parser_cls(dork, self.org)
@@ -88,14 +92,14 @@ class Scanner():
                     yield obj_list, str(parser)
 
     def gitscan(self):
-        logger.info('Scan started at %s', time.strftime('%Y-%m-%d-%H-%M'))
+        logger.info("Scan started at %s", time.strftime("%Y-%m-%d-%H-%M"))
 
-        with ThreadPoolExecutor(max_workers=self.scan_workers) as scan_exec, \
-                ThreadPoolExecutor(max_workers=self.clone_workers) as clone_exec:
-
+        with ThreadPoolExecutor(max_workers=self.scan_workers) as scan_exec, ThreadPoolExecutor(
+            max_workers=self.clone_workers
+        ) as clone_exec:
             for obj_list, scan_name in self.search():
-                if len(obj_list) < 1:
-                    logger.info('Got empty page from, iterating further...')
+                if not obj_list:
+                    logger.info("Got empty page from, iterating further...")
                     time.sleep(5)
                     continue
 
@@ -103,7 +107,8 @@ class Scanner():
                     check_obj_pool_size()
                     if splitter * const.MAX_OBJ_BEFORE_SEND < len(obj_list):
                         temp_obj_list = obj_list[
-                                        splitter * const.MAX_OBJ_BEFORE_SEND:(splitter + 1) * const.MAX_OBJ_BEFORE_SEND]
+                            splitter * const.MAX_OBJ_BEFORE_SEND : (splitter + 1) * const.MAX_OBJ_BEFORE_SEND
+                        ]
                     else:
                         continue
                         # logger.info('End %s search', scan_name)
@@ -119,15 +124,18 @@ class Scanner():
 
                         obj.stats.fetch_repository_stats()
 
+                        # Skip inaccessible repos (empty, deleted, private)
+                        if hasattr(obj.stats, "is_inaccessible") and obj.stats.is_inaccessible:
+                            logger.debug(f"Skipping inaccessible repository: {obj.repo_name}")
+                            continue
+
                         checker = Checker(obj.repo_url, obj.dork, obj, 1)
                         targets[clone_exec.submit(checker.clone)] = checker
 
-
                     while True:
-
                         done_fs = wait(targets, return_when=FIRST_COMPLETED).done
                         if isinstance(done_fs, set):
-                            if len(done_fs) == 0:
+                            if not done_fs:
                                 break
                         else:
                             done_fs = (done_fs,)
@@ -139,8 +147,7 @@ class Scanner():
                             try:
                                 result = fs.result()
                             except Exception as exc:
-                                logger.error("Failed to scan %s: %s", checker.url,
-                                             exc)
+                                logger.error("Failed to scan %s: %s", checker.url, exc)
                                 continue
                             finally:
                                 del targets[fs]
@@ -157,10 +164,10 @@ class Scanner():
 
                                 if isinstance(result, const.AutoVivification):
                                     checker.obj.secrets = result
-                                    #self.checked[checker.obj.repo_name] = result
+                                    # self.checked[checker.obj.repo_name] = result
                             elif checker.status & CLONED > 0:
                                 targets[scan_exec.submit(checker.run)] = checker
                     check_obj_pool_size()
                     if result == 1:
-                        logger.info('Scan terminated early due to result=1 condition')
+                        logger.info("Scan terminated early due to result=1 condition")
                         return

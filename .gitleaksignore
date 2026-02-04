@@ -1,0 +1,12 @@
+# Gitleaks ignore file - known false positives (example secrets in security tool)
+
+# Example secrets in constants.py (documentation examples)
+src/constants.py:936
+src/constants.py:945
+
+# Test example secrets
+test/test_leak_analyzer.py:510
+test/test_leak_analyzer.py:522
+
+# Report generator category labels (not actual secrets)
+src/report_generator.py:569

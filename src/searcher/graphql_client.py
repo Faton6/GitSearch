@@ -18,13 +18,13 @@ from src import constants
 
 class GitHubGraphQLClient:
     """Client for GitHub GraphQL API with optimized queries."""
-    
+
     GRAPHQL_ENDPOINT = "https://api.github.com/graphql"
-    
+
     _graphql_disabled = False
     _tokens_without_graphql = set()
     _tokens_with_graphql = set()
-    
+
     # Optimized search query with REQUIRED fields
     # Uses smaller batch size (10-15) to stay within complexity limits
     SEARCH_REPOS_WITH_STATS = """
@@ -100,7 +100,7 @@ class GitHubGraphQLClient:
       }
     }
     """
-    
+
     # Limited version without collaborators (doesn't require push access)
     SEARCH_REPOS_WITH_STATS_LIMITED = """
     query SearchReposWithStats($query: String!, $first: Int!, $after: String) {
@@ -172,7 +172,7 @@ class GitHubGraphQLClient:
       }
     }
     """
-    
+
     # Search code with context
     SEARCH_CODE_WITH_CONTEXT = """
     query SearchCodeWithContext($query: String!, $first: Int!, $after: String) {
@@ -211,12 +211,12 @@ class GitHubGraphQLClient:
       }
     }
     """
-    
+
     def __init__(self):
         """Initialize GraphQL client with HTTP session pooling."""
         self.use_limited_queries = False  # Flag to use queries without special permissions
         self._session = None
-    
+
     def _get_session(self) -> requests.Session:
         """Get or create HTTP session with connection pooling."""
         if self._session is None:
@@ -225,332 +225,366 @@ class GitHubGraphQLClient:
             adapter = requests.adapters.HTTPAdapter(
                 pool_connections=5,
                 pool_maxsize=10,
-                max_retries=requests.adapters.Retry(
-                    total=3,
-                    backoff_factor=1,
-                    status_forcelist=[500, 502, 503, 504]
-                )
+                max_retries=requests.adapters.Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504]),
             )
-            self._session.mount('https://', adapter)
+            self._session.mount("https://", adapter)
         return self._session
-    
+
     def _get_token(self) -> Optional[str]:
         try:
             from src.github_rate_limiter import get_rate_limiter
+
             rate_limiter = get_rate_limiter()
-            
+
             # Get best available token from rate limiter
             token = rate_limiter.get_best_token()
-            
+
             # Skip tokens known to lack GraphQL access
             if token and token in self._tokens_without_graphql:
-                all_tokens = constants.GITHUB_TOKENS if hasattr(constants, 'GITHUB_TOKENS') else []
+                all_tokens = constants.GITHUB_TOKENS if hasattr(constants, "GITHUB_TOKENS") else []
                 for alt_token in all_tokens:
                     if alt_token not in self._tokens_without_graphql and alt_token != token:
-                        logger.debug(f"Skipping token without GraphQL access, trying alternative")
+                        logger.debug("Skipping token without GraphQL access, trying alternative")
                         return alt_token
-            
+
             return token
         except (RuntimeError, ImportError):
             return next(constants.token_generator())
-    
+
     def _update_rate_limit(self, token: str, rate_limit_data: Dict):
         """Update rate limit from GraphQL response."""
         try:
             from src.github_rate_limiter import get_rate_limiter
+
             rate_limiter = get_rate_limiter()
-            
+
             # Convert GraphQL rate limit to REST format for compatibility
             headers = {
-                'X-RateLimit-Limit': str(rate_limit_data.get('limit', 5000)),
-                'X-RateLimit-Remaining': str(rate_limit_data.get('remaining', 5000)),
+                "X-RateLimit-Limit": str(rate_limit_data.get("limit", 5000)),
+                "X-RateLimit-Remaining": str(rate_limit_data.get("remaining", 5000)),
             }
-            
+
             # Convert resetAt timestamp to Unix epoch
-            reset_at = rate_limit_data.get('resetAt')
+            reset_at = rate_limit_data.get("resetAt")
             if reset_at:
                 from datetime import datetime
-                reset_time = datetime.fromisoformat(reset_at.replace('Z', '+00:00'))
-                headers['X-RateLimit-Reset'] = str(int(reset_time.timestamp()))
-            
+
+                reset_time = datetime.fromisoformat(reset_at.replace("Z", "+00:00"))
+                headers["X-RateLimit-Reset"] = str(int(reset_time.timestamp()))
+
             # Update graphql resource quota specifically
-            rate_limiter.update_quota_from_headers(token, headers, resource='graphql')
-            
+            rate_limiter.update_quota_from_headers(token, headers, resource="graphql")
+
             # Log GraphQL query cost for debugging
-            cost = rate_limit_data.get('cost', 1)
-            remaining = rate_limit_data.get('remaining', 0)
+            cost = rate_limit_data.get("cost", 1)
+            remaining = rate_limit_data.get("remaining", 0)
             logger.debug(f"GraphQL query cost: {cost}, remaining: {remaining}")
-            
+
         except (RuntimeError, ImportError):
             pass
-    
+
     def execute_query(self, query: str, variables: Dict[str, Any]) -> Optional[Dict]:
         if self._graphql_disabled:
             return None
-        
+
         try:
             from src.github_rate_limiter import get_rate_limiter
+
             rate_limiter = get_rate_limiter()
-            # GraphQL doesn't have per-minute limit like search, use core limit tracking
-            # but we can still check if we need to wait
+            # Wait if all tokens are rate limited
+            if not rate_limiter.wait_if_rate_limited(resource="graphql", max_wait=3600):
+                logger.error("Cannot proceed: rate limit wait time too long")
+                return None
         except (RuntimeError, ImportError):
             time.sleep(constants.GITHUB_REQUEST_RATE_LIMIT)
-        
+
         token = self._get_token()
         if not token:
             logger.error("No tokens available for GraphQL query")
             return None
-        
-        headers = {
-            'Authorization': f'Bearer {token}',
-            'Content-Type': 'application/json'
-        }
-        
-        payload = {
-            'query': query,
-            'variables': variables
-        }
-        
+
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        payload = {"query": query, "variables": variables}
+
         try:
             session = self._get_session()
             response = session.post(
                 self.GRAPHQL_ENDPOINT,
                 json=payload,
                 headers=headers,
-                timeout=constants.MAX_TIME_TO_SEARCH_GITHUB_REQUEST
+                timeout=constants.MAX_TIME_TO_SEARCH_GITHUB_REQUEST,
             )
-            
+
             if response.status_code == 200:
                 data = response.json()
-                
-                if 'errors' in data:
-                    for error in data['errors']:
-                        error_msg = error.get('message', 'Unknown error')
-                        error_type = error.get('type', '')
-                        
+
+                if "errors" in data:
+                    for error in data["errors"]:
+                        error_msg = error.get("message", "Unknown error")
+                        error_type = error.get("type", "")
+
                         # Handle permission errors (token lacks GraphQL scope)
-                        if ('not accessible' in error_msg.lower() or 
-                            'forbidden' in error_msg.lower() or
-                            'scope' in error_msg.lower() or
-                            error_type == 'FORBIDDEN'):
-                            
+                        if (
+                            "not accessible" in error_msg.lower()
+                            or "forbidden" in error_msg.lower()
+                            or "scope" in error_msg.lower()
+                            or error_type == "FORBIDDEN"
+                        ):
                             self._tokens_without_graphql.add(token)
-                            
+
                             # Get total number of tokens from rate limiter
                             try:
                                 from src.github_rate_limiter import get_rate_limiter
+
                                 rate_limiter = get_rate_limiter()
                                 tokens_to_check = len(rate_limiter.tokens)
                             except (ImportError, RuntimeError, AttributeError) as e:
-                                logger.debug(f'Could not get rate limiter token count: {e}')
-                                tokens_to_check = len(constants.GITHUB_TOKENS) if hasattr(constants, 'GITHUB_TOKENS') else 2
-                            
+                                logger.debug(f"Could not get rate limiter token count: {e}")
+                                tokens_to_check = (
+                                    len(constants.GITHUB_TOKENS) if hasattr(constants, "GITHUB_TOKENS") else 2
+                                )
+
                             tokens_checked = len(self._tokens_without_graphql) + len(self._tokens_with_graphql)
-                            
+
                             if tokens_checked >= tokens_to_check and tokens_to_check > 0:
                                 if not self._graphql_disabled:
-                                    logger.warning(f"All {tokens_to_check} tokens lack GraphQL API access (need 'repo' or 'public_repo' scope). Using REST API only.")
+                                    logger.warning(
+                                        f"All {tokens_to_check} tokens lack GraphQL API access (need 'repo' or 'public_repo' scope). Using REST API only."
+                                    )
                                     self._graphql_disabled = True
                             else:
-                                logger.debug(f"Current token lacks GraphQL access ({len(self._tokens_without_graphql)}/{tokens_to_check} tokens checked). Error: {error_msg}")
-                        
+                                logger.debug(
+                                    f"Current token lacks GraphQL access ({len(self._tokens_without_graphql)}/{tokens_to_check} tokens checked). Error: {error_msg}"
+                                )
+
                         # Handle query complexity errors - disable GraphQL for this session
-                        elif 'resource limits' in error_msg.lower() or 'exceeds maximum' in error_msg.lower():
-                            logger.warning(f"GraphQL query too complex: {error_msg}. This should not happen with optimized queries. Disabling GraphQL for this session.")
+                        elif "resource limits" in error_msg.lower() or "exceeds maximum" in error_msg.lower():
+                            logger.warning(
+                                f"GraphQL query too complex: {error_msg}. This should not happen with optimized queries. Disabling GraphQL for this session."
+                            )
                             self._graphql_disabled = True
-                        
+
                         else:
                             logger.error(f"GraphQL error: {error_msg}")
                     return None
-                
+
                 if token and token not in self._tokens_with_graphql:
                     self._tokens_with_graphql.add(token)
-                    logger.debug(f"Token has GraphQL API access - will be preferred for future GraphQL requests")
-                
-                if 'data' in data and data['data'] and 'rateLimit' in data['data']:
-                    self._update_rate_limit(token, data['data']['rateLimit'])
-                
+                    logger.debug("Token has GraphQL API access - will be preferred for future GraphQL requests")
+
+                if "data" in data and data["data"] and "rateLimit" in data["data"]:
+                    self._update_rate_limit(token, data["data"]["rateLimit"])
+
                 return data
-            
+
             elif response.status_code in (403, 429):
                 logger.warning(f"GraphQL rate limit hit: {response.status_code}")
                 try:
                     from src.github_rate_limiter import get_rate_limiter
+
                     rate_limiter = get_rate_limiter()
-                    retry_after = response.headers.get('Retry-After')
+                    retry_after = response.headers.get("Retry-After")
                     if retry_after:
                         retry_after = int(retry_after)
-                    rate_limiter.handle_rate_limit_error(token, retry_after, resource='graphql')
+                    rate_limiter.handle_rate_limit_error(token, retry_after, resource="graphql")
                 except (RuntimeError, ImportError):
                     pass
                 return None
-            
+
+            elif response.status_code == 401:
+                # Authentication error - token is invalid or lacks required scopes
+                if token and token not in self._tokens_without_graphql:
+                    self._tokens_without_graphql.add(token)
+                    logger.warning("Token authentication failed (401). Token marked as invalid for GraphQL.")
+
+                # Check if all tokens are now invalid
+                try:
+                    from src.github_rate_limiter import get_rate_limiter
+
+                    rate_limiter = get_rate_limiter()
+                    tokens_to_check = len(rate_limiter.tokens)
+                except (ImportError, RuntimeError, AttributeError):
+                    tokens_to_check = len(constants.GITHUB_TOKENS) if hasattr(constants, "GITHUB_TOKENS") else 1
+
+                tokens_checked = len(self._tokens_without_graphql) + len(self._tokens_with_graphql)
+
+                if tokens_checked >= tokens_to_check and tokens_to_check > 0:
+                    if not self._graphql_disabled:
+                        logger.error(
+                            f"All {tokens_to_check} GitHub tokens are invalid or lack required scopes for GraphQL API. Check token configuration."
+                        )
+                        self._graphql_disabled = True
+
+                return None
+
             else:
                 logger.error(f"GraphQL request failed: {response.status_code} - {response.text}")
                 return None
-                
+
         except Exception as e:
             logger.error(f"GraphQL request error: {e}")
             return None
-    
+
     def search_repositories_with_stats(self, query: str, max_results: int = 100) -> List[Dict]:
         """
         Search repositories and get stats in one query.
-        
+
         This is more efficient than REST API as it gets all repo data
         including statistics in a single request.
-        
+
         Args:
             query: Search query (same format as REST API)
             max_results: Maximum number of results to retrieve
-            
+
         Returns:
             List of repositories with embedded statistics
         """
         results = []
         has_next_page = True
         cursor = None
-        
+
         # Use small batch size (10) to stay within complexity limits
         # Query includes expensive nested fields: languages, topics, defaultBranchRef, collaborators
         # GitHub GraphQL cost = base_cost + (result_count × field_complexity)
         BATCH_SIZE = 10
-        
+
         while has_next_page and len(results) < max_results:
-            variables = {
-                'query': query,
-                'first': min(BATCH_SIZE, max_results - len(results)),
-                'after': cursor
-            }
-            
+            variables = {"query": query, "first": min(BATCH_SIZE, max_results - len(results)), "after": cursor}
+
             # Choose query based on permission level
-            query_to_use = self.SEARCH_REPOS_WITH_STATS_LIMITED if self.use_limited_queries else self.SEARCH_REPOS_WITH_STATS
+            query_to_use = (
+                self.SEARCH_REPOS_WITH_STATS_LIMITED if self.use_limited_queries else self.SEARCH_REPOS_WITH_STATS
+            )
             data = self.execute_query(query_to_use, variables)
-            
+
             # If we got a permission error and not using limited queries yet, switch and retry
-            if data and 'errors' in data and not self.use_limited_queries:
-                for error in data.get('errors', []):
-                    error_msg = error.get('message', '').lower()
-                    if 'not accessible' in error_msg or 'forbidden' in error_msg:
+            if data and "errors" in data and not self.use_limited_queries:
+                for error in data.get("errors", []):
+                    error_msg = error.get("message", "").lower()
+                    if "not accessible" in error_msg or "forbidden" in error_msg:
                         logger.info("Switching to limited GraphQL queries (without collaborators field)")
                         self.use_limited_queries = True
                         data = self.execute_query(self.SEARCH_REPOS_WITH_STATS_LIMITED, variables)
                         break
-            if not data or 'data' not in data or not data['data']:
+            if not data or "data" not in data or not data["data"]:
                 break
-            
-            search_data = data['data']['search']
-            
+
+            search_data = data["data"]["search"]
+
             # Convert GraphQL format to REST-like format for compatibility
-            for node in search_data.get('nodes', []):
+            for node in search_data.get("nodes", []):
                 if node:  # Skip null nodes
                     # Transform to REST API format
                     repo_data = {
-                        'name': node.get('name'),
-                        'full_name': f"{node['owner']['login']}/{node['name']}",
-                        'owner': {
-                            'login': node['owner']['login']
-                        },
-                        'html_url': node.get('url'),
-                        'private': node.get('isPrivate', False),
-                        'created_at': node.get('createdAt'),
-                        'updated_at': node.get('updatedAt'),
-                        'pushed_at': node.get('pushedAt'),
-                        'description': node.get('description'),
-                        'stargazers_count': node.get('stargazerCount', 0),
-                        'forks_count': node.get('forkCount', 0),
-                        'watchers_count': node.get('watchers', {}).get('totalCount', 0),
-                        'open_issues_count': node.get('issues', {}).get('totalCount', 0),
-                        'has_issues': node.get('hasIssuesEnabled', False),
-                        'has_projects': node.get('hasProjectsEnabled', False),
-                        'has_wiki': node.get('hasWikiEnabled', False),
-                        'has_downloads': False,  # Deprecated field
-                        'size': node.get('diskUsage', 0),
-                        'language': node.get('primaryLanguage', {}).get('name') if node.get('primaryLanguage') else None,
+                        "name": node.get("name"),
+                        "full_name": f"{node['owner']['login']}/{node['name']}",
+                        "owner": {"login": node["owner"]["login"]},
+                        "html_url": node.get("url"),
+                        "private": node.get("isPrivate", False),
+                        "created_at": node.get("createdAt"),
+                        "updated_at": node.get("updatedAt"),
+                        "pushed_at": node.get("pushedAt"),
+                        "description": node.get("description"),
+                        "stargazers_count": node.get("stargazerCount", 0),
+                        "forks_count": node.get("forkCount", 0),
+                        "watchers_count": node.get("watchers", {}).get("totalCount", 0),
+                        "open_issues_count": node.get("issues", {}).get("totalCount", 0),
+                        "has_issues": node.get("hasIssuesEnabled", False),
+                        "has_projects": node.get("hasProjectsEnabled", False),
+                        "has_wiki": node.get("hasWikiEnabled", False),
+                        "has_downloads": False,  # Deprecated field
+                        "size": node.get("diskUsage", 0),
+                        "language": node.get("primaryLanguage", {}).get("name")
+                        if node.get("primaryLanguage")
+                        else None,
                         # Extended stats from GraphQL
-                        'topics': [t['topic']['name'] for t in node.get('repositoryTopics', {}).get('nodes', []) if t and t.get('topic')],
-                        'languages': {
-                            edge['node']['name']: edge['size'] 
-                            for edge in node.get('languages', {}).get('edges', [])
-                            if edge and edge.get('node')
+                        "topics": [
+                            t["topic"]["name"]
+                            for t in node.get("repositoryTopics", {}).get("nodes", [])
+                            if t and t.get("topic")
+                        ],
+                        "languages": {
+                            edge["node"]["name"]: edge["size"]
+                            for edge in node.get("languages", {}).get("edges", [])
+                            if edge and edge.get("node")
                         },
-                        'collaborators_count': node.get('collaborators', {}).get('totalCount', 0),
-                        'commit_count': node.get('defaultBranchRef', {}).get('target', {}).get('history', {}).get('totalCount', 0) if node.get('defaultBranchRef') else 0,
+                        "collaborators_count": node.get("collaborators", {}).get("totalCount", 0),
+                        "commit_count": node.get("defaultBranchRef", {})
+                        .get("target", {})
+                        .get("history", {})
+                        .get("totalCount", 0)
+                        if node.get("defaultBranchRef")
+                        else 0,
                     }
                     results.append(repo_data)
-            
-            page_info = search_data.get('pageInfo', {})
-            has_next_page = page_info.get('hasNextPage', False)
-            cursor = page_info.get('endCursor')
-            
-            total_count = search_data.get('repositoryCount', 0)
+
+            page_info = search_data.get("pageInfo", {})
+            has_next_page = page_info.get("hasNextPage", False)
+            cursor = page_info.get("endCursor")
+
+            total_count = search_data.get("repositoryCount", 0)
             logger.info(f"Retrieved {len(results)}/{min(total_count, max_results)} repositories via GraphQL")
-        
+
         return results
-    
+
     def search_code_with_context(self, query: str, max_results: int = 100) -> List[Dict]:
         """
         Search code with repository context.
-        
+
         Args:
             query: Search query
             max_results: Maximum results
-            
+
         Returns:
             List of code results with repository data
         """
         results = []
         has_next_page = True
         cursor = None
-        
+
         # Use small batch size for code search (text content is expensive)
         BATCH_SIZE = 10
-        
+
         while has_next_page and len(results) < max_results:
-            variables = {
-                'query': query,
-                'first': min(BATCH_SIZE, max_results - len(results)),
-                'after': cursor
-            }
-            
+            variables = {"query": query, "first": min(BATCH_SIZE, max_results - len(results)), "after": cursor}
+
             data = self.execute_query(self.SEARCH_CODE_WITH_CONTEXT, variables)
-            if not data or 'data' not in data or not data['data']:
+            if not data or "data" not in data or not data["data"]:
                 break
-            
-            search_data = data['data']['search']
-            
-            for node in search_data.get('nodes', []):
-                if node and node.get('repository'):
-                    repo = node['repository']
+
+            search_data = data["data"]["search"]
+
+            for node in search_data.get("nodes", []):
+                if node and node.get("repository"):
+                    repo = node["repository"]
                     code_result = {
-                        'name': node.get('path', '').split('/')[-1],
-                        'path': node.get('path'),
-                        'html_url': f"{repo.get('url')}/blob/master/{node.get('path')}",
-                        'repository': {
-                            'name': repo.get('name'),
-                            'full_name': f"{repo['owner']['login']}/{repo['name']}",
-                            'owner': {
-                                'login': repo['owner']['login']
-                            },
-                            'html_url': repo.get('url'),
-                            'private': repo.get('isPrivate', False),
-                            'created_at': repo.get('createdAt'),
-                            'updated_at': repo.get('updatedAt'),
-                            'description': repo.get('description'),
-                            'stargazers_count': repo.get('stargazerCount', 0),
-                            'forks_count': repo.get('forkCount', 0),
-                            'size': repo.get('diskUsage', 0),
+                        "name": node.get("path", "").split("/")[-1],
+                        "path": node.get("path"),
+                        "html_url": f"{repo.get('url')}/blob/master/{node.get('path')}",
+                        "repository": {
+                            "name": repo.get("name"),
+                            "full_name": f"{repo['owner']['login']}/{repo['name']}",
+                            "owner": {"login": repo["owner"]["login"]},
+                            "html_url": repo.get("url"),
+                            "private": repo.get("isPrivate", False),
+                            "created_at": repo.get("createdAt"),
+                            "updated_at": repo.get("updatedAt"),
+                            "description": repo.get("description"),
+                            "stargazers_count": repo.get("stargazerCount", 0),
+                            "forks_count": repo.get("forkCount", 0),
+                            "size": repo.get("diskUsage", 0),
                         },
-                        'text_matches': [{'fragment': node.get('text', '')}] if node.get('text') else []
+                        "text_matches": [{"fragment": node.get("text", "")}] if node.get("text") else [],
                     }
                     results.append(code_result)
-            
-            page_info = search_data.get('pageInfo', {})
-            has_next_page = page_info.get('hasNextPage', False)
-            cursor = page_info.get('endCursor')
-            
+
+            page_info = search_data.get("pageInfo", {})
+            has_next_page = page_info.get("hasNextPage", False)
+            cursor = page_info.get("endCursor")
+
             logger.info(f"Retrieved {len(results)} code results via GraphQL")
-        
+
         return results
 
 
