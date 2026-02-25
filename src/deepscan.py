@@ -19,7 +19,7 @@ DEEP_SCAN_CONFIG = {
     "batch_size": 5,
     "max_workers": 3,  # Number of parallel workers for deep scan
     "enable_ai_analysis": True,
-    "required_scanners": ["gitleaks", "gitsecrets", "grepscan", "deepsecrets", "ioc_finder"],
+    "required_scanners": ["gitleaks", "gitsecrets", "grepscan", "deepsecrets", "detect_secrets"],
 }
 
 LIST_SCAN_CONFIG = {
@@ -219,14 +219,19 @@ class DeepScanManager:
         return self._perform_deep_scan(url, leak_id, company_id, is_gist=False)
 
     def run(self, mode=0) -> None:
-        logger.info("Starting deep scan process")
+        """Run deep scan.
+
+        Args:
+            mode: 0 = scan result=5 (TO_DEEPSCAN), 1 = rescan result=4 (TO_SEND / unchecked)
+        """
+        logger.info("Starting deep scan process (mode=%d)", mode)
 
         if mode == 0:
             self.urls_to_scan = self._get_urls_for_deep_scan()
         elif mode == 1:
             self.urls_to_scan = self._get_urls_for_deep_scan_with_no_results()
         else:
-            logger.error("Incorrect mode of deepscan, use standart mode = 0")
+            logger.error("Incorrect mode of deepscan, use mode 0 or 1")
             self.urls_to_scan = self._get_urls_for_deep_scan()
 
         if not self.urls_to_scan:

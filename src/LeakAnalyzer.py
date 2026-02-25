@@ -138,11 +138,6 @@ class LeakAnalyzer:
         return self._corporate_domain_patterns
 
     @classmethod
-    def _get_compiled_pattern(cls, pattern: str, flags: int = 0) -> re.Pattern:
-        # Delegate to shared util to reuse cached regex compilation
-        return utils.get_compiled_regex(pattern, flags)
-
-    @classmethod
     def clear_pattern_cache(cls):
         """Clear cached compiled patterns."""
         cls._compiled_patterns_cache.clear()
@@ -155,11 +150,9 @@ class LeakAnalyzer:
         # Get company tokens
         company_tokens = self.company_tokens
 
-        # Add dork as additional token if it exists
-        dork_tokens = []
-        if self.leak_obj.dork:
-            dork_tokens = re.split(r"[\s,._-]+", self.leak_obj.dork.lower())
-            dork_tokens = [t for t in dork_tokens if t and len(t) > 2]  # Filter short tokens
+        # Add dork as additional token
+        dork_tokens = re.split(r"[\s,._-]+", self.leak_obj.dork.lower())
+        dork_tokens = [t for t in dork_tokens if len(t) > 2]  # Filter short tokens
 
         # Combine all relevant tokens
         all_tokens = list(set(company_tokens + dork_tokens))
@@ -351,10 +344,6 @@ class LeakAnalyzer:
         """Cached repository statistics dictionary."""
         return self.leak_obj.stats.repo_stats_leak_stats_table or {}
 
-    def _get_repo_stats(self) -> dict:
-        """Get repository statistics dictionary (uses cached property)."""
-        return self._repo_stats
-
     def _is_tiny_repository(self) -> bool:
         return self._repo_stats.get("size", 0) < REPO_SIZE_TINY_KB
 
@@ -431,7 +420,8 @@ class LeakAnalyzer:
                 return False
         return True
 
-    def get_committers_analysis(self) -> dict:
+    @functools.cached_property
+    def _committers_analysis(self) -> dict:
         """
         Analyze all committers in single pass for efficiency.
 
@@ -477,21 +467,25 @@ class LeakAnalyzer:
             "has_company_match": has_company_match,
         }
 
+    def get_committers_analysis(self) -> dict:
+        """Public accessor (delegates to cached property)."""
+        return self._committers_analysis
+
     def _all_committers_use_public_email(self) -> bool:
         """Check if all committers use public email domains."""
-        return self.get_committers_analysis()["all_use_public"]
+        return self._committers_analysis["all_use_public"]
 
     def _has_corporate_committer(self) -> bool:
         """Check if any committer uses a corporate email domain."""
-        return self.get_committers_analysis()["has_corporate"]
+        return self._committers_analysis["has_corporate"]
 
     def get_corporate_committers(self) -> List[dict]:
         """Get list of committers with corporate (non-public) email domains."""
-        return self.get_committers_analysis()["corporate_list"]
+        return self._committers_analysis["corporate_list"]
 
     def has_target_company_committer(self) -> bool:
         """Check if any committer has email from target company domain."""
-        return self.get_committers_analysis()["has_company_match"]
+        return self._committers_analysis["has_company_match"]
 
     def _calculate_repo_credibility_score(self) -> float:
         """Calculate repository credibility score (0.0 to 1.0)."""
@@ -546,16 +540,16 @@ class LeakAnalyzer:
             return value
 
         score = 0.0
-        dork = (self.leak_obj.dork or "").lower()
-        repo_name_l = (self.leak_obj.repo_name or "").lower()
+        dork = self.leak_obj.dork.lower()
+        repo_name_l = self.leak_obj.repo_name.lower()
         stats_table = getattr(self.leak_obj.stats, "repo_stats_leak_stats_table", {}) or {}
         description = str(stats_table.get("description") or "")
         topics = str(stats_table.get("topics") or "")
         company_tokens = self.company_tokens
 
-        if dork and repo_name_l and dork in repo_name_l:
+        if dork in repo_name_l:
             score += add_signal("dork_in_repo", 0.25)
-        if dork and description and dork in description.lower():
+        if dork in description.lower():
             score += add_signal("dork_in_description", 0.15)
 
         if company_tokens and description:
@@ -567,6 +561,11 @@ class LeakAnalyzer:
         if self.leak_obj.author_name and dork and dork in self.leak_obj.author_name.lower():
             score += add_signal("dork_in_author", 0.25)
 
+        # Synergy bonus: dork is present in both repository name and author identity
+        # (kept small to avoid inflation while stabilizing obvious matches)
+        if dork in repo_name_l and dork in self.leak_obj.author_name.lower():
+            score += add_signal("dork_multi_signal_bonus", 0.1)
+
         committer_signals = 0.0
         committer_list = getattr(self.leak_obj.stats, "commits_stats_commiters_table", []) or []
         for committer in committer_list:
@@ -574,7 +573,7 @@ class LeakAnalyzer:
             committer_email = committer.get("commiter_email", "") or ""
             committer_info = f"{committer_name} {committer_email}".lower()
 
-            if dork and dork in committer_info:
+            if dork in committer_info:
                 committer_signals += 0.05
             if company_tokens and any(tok in committer_info for tok in company_tokens):
                 committer_signals += 0.1
@@ -1116,8 +1115,8 @@ class LeakAnalyzer:
             "gitleaks": 0.8,  # High confidence
             "deepsecrets": 0.75,  # High confidence
             "kingfisher": 0.7,  # High confidence
+            "detect_secrets": 0.65,  # Medium-high confidence
             "gitsecrets": 0.6,  # Medium confidence
-            "ioc_finder": 0.5,  # Medium confidence for IOCs
             "grepscan": 0.3,  # Lower confidence, depends on dork
         }
 
@@ -1331,11 +1330,7 @@ class LeakAnalyzer:
             "is_fork": self._is_repository_fork(),
             "secret_stats": secret_stats,
             "analysis_factors": {
-                "dork_relevance": bool(
-                    self.leak_obj.dork
-                    and self.leak_obj.repo_name
-                    and self.leak_obj.dork.lower() in self.leak_obj.repo_name.lower()
-                ),
+                "dork_relevance": self.leak_obj.dork.lower() in self.leak_obj.repo_name.lower(),
                 "corporate_email_found": bool(corporate_committers),
                 "target_company_email_found": bool(target_company_committers),
                 "high_popularity": self.leak_obj.stats.repo_stats_leak_stats_table.get("stargazers_count", 0) > 100,
@@ -1443,35 +1438,195 @@ class LeakAnalyzer:
             company_rel = ai_analysis.get("company_relevance", {})
             if isinstance(company_rel, dict) and not company_rel.get("is_related", True):
                 confidence = company_rel.get("confidence", 0.0)
-                if confidence >= constants.AI_NEGATIVE_CONFIDENCE_THRESHOLD:
+                ai_negative_threshold = getattr(
+                    constants,
+                    "AI_NEGATIVE_CONFIDENCE_THRESHOLD",
+                    constants.AUTO_FALSE_POSITIVE_AI_NEGATIVE_CONFIDENCE,
+                )
+                if confidence >= ai_negative_threshold:
                     score *= max(0.3, 1.0 - confidence * 0.5)
 
         # Low-credibility non-corporate repos get slight penalty
         if not self.has_target_company_committer() and not self._has_corporate_committer():
-            if self._calculate_repo_credibility_score() < 0.35:
-                score *= 0.85
+            if self._calculate_repo_credibility_score() < constants.LOW_CREDIBILITY_SCORE_THRESHOLD:
+                score *= constants.LOW_CREDIBILITY_SCORE_PENALTY_FACTOR
 
         return round(max(0.0, min(1.0, score)), 2)
 
-    def should_auto_close(self, unified_score: float = None) -> tuple:
-        """
-        Decisive auto-close check using single unified threshold.
-        Returns (should_close: bool, reason: str).
-        """
+    def has_false_positive_indicators(self, profitability: dict = None) -> bool:
+        """Return True when multiple signals strongly indicate false positive."""
+        if profitability is None:
+            profitability = self.calculate_profitability()
+
+        if self.has_target_company_committer() or self._has_corporate_committer():
+            return False
+
+        false_positive_chance = profitability.get("false_positive_chance", 0.0)
+        true_positive_chance = profitability.get("true_positive_chance", 1.0)
+        sensitive_data = profitability.get("sensitive_data", 1.0)
+        org_relevance = profitability.get("org_relevance", 1.0)
+        credibility = self._calculate_repo_credibility_score()
+
+        strong_fp_by_scores = (
+            false_positive_chance >= constants.AUTO_FALSE_POSITIVE_FALSE_POS_THRESHOLD
+            and true_positive_chance <= constants.AUTO_FALSE_POSITIVE_TRUE_POS_THRESHOLD
+            and sensitive_data <= constants.AUTO_FALSE_POSITIVE_SENSITIVE_THRESHOLD
+        )
+        weak_repo_and_context = (
+            credibility < constants.VERY_LOW_CREDIBILITY_SCORE_THRESHOLD
+            and org_relevance < constants.AUTO_FALSE_POSITIVE_ORG_THRESHOLD
+        )
+
+        return strong_fp_by_scores or weak_repo_and_context
+
+    def has_insufficient_context(self, profitability: dict = None) -> bool:
+        """Return True when target company or dork context is too weak for confident triage."""
+        if profitability is None:
+            profitability = self.calculate_profitability()
+
+        if self.has_target_company_committer():
+            return False
+
+        org_relevance = profitability.get("org_relevance", 0.0)
+        if org_relevance >= constants.AUTO_FALSE_POSITIVE_ORG_THRESHOLD:
+            return False
+
+        dork = self.leak_obj.dork.lower().strip()
+        repo_name = self.leak_obj.repo_name.lower()
+        description = str(self._repo_stats.get("description") or "").lower()
+
+        context_tokens = set(self.company_tokens)
+        context_tokens.update(t for t in re.split(r"[\s,._-]+", dork) if len(t) > 2)
+
+        def has_token(text: str) -> bool:
+            return any(token in text for token in context_tokens)
+
+        repo_name_signal = has_token(repo_name)
+        description_signal = has_token(description)
+
+        committer_domain_signal = False
+        for committer in self.leak_obj.stats.commits_stats_commiters_table or []:
+            email = committer.get("commiter_email", "")
+            domain = utils.extract_domain_from_email(email)
+            if not domain:
+                continue
+            if has_token(domain):
+                committer_domain_signal = True
+                break
+
+            domain_score = self._check_corporate_email_domains(email, self.company_tokens)
+            if domain_score >= constants.COMMITTER_DOMAIN_MATCH_THRESHOLD:
+                committer_domain_signal = True
+                break
+
+        secret_text_signal = False
+        readme_signal = False
+        for scanner_type in constants.SCANNER_TYPES:
+            scanner_results = self.leak_obj.secrets.get(scanner_type)
+            if not isinstance(scanner_results, constants.AutoVivification):
+                continue
+
+            for leak_data in scanner_results.values():
+                if not isinstance(leak_data, dict):
+                    continue
+
+                file_path = str(leak_data.get("File") or leak_data.get("file") or leak_data.get("path") or "").lower()
+                match_text = str(
+                    leak_data.get("Match")
+                    or leak_data.get("match")
+                    or leak_data.get("Secret")
+                    or leak_data.get("Raw")
+                    or leak_data.get("Description")
+                    or ""
+                ).lower()
+
+                if has_token(f"{file_path} {match_text}"):
+                    secret_text_signal = True
+                if "readme" in file_path and has_token(match_text):
+                    readme_signal = True
+
+                if secret_text_signal and readme_signal:
+                    break
+
+            if secret_text_signal and readme_signal:
+                break
+
+        context_signal_count = sum(
+            [repo_name_signal, description_signal, committer_domain_signal, secret_text_signal, readme_signal]
+        )
+        return context_signal_count < constants.INSUFFICIENT_CONTEXT_MIN_SIGNALS
+
+    def is_low_probability(self, unified_score: float = None) -> bool:
+        """Return True when unified true-positive probability is very low."""
         if unified_score is None:
             unified_score = self.calculate_unified_probability()
+        return unified_score <= constants.AUTO_FALSE_POSITIVE_TRUE_POS_THRESHOLD
 
-        # Never auto-close if corporate committer found
-        if self.has_target_company_committer() or self._has_corporate_committer():
-            return False, ""
+    def evaluate_incident_verdict(self, unified_score: float = None, profitability: dict = None) -> dict:
+        """Centralized incident verdict for close/recheck/open decisions."""
+        if profitability is None:
+            profitability = self.calculate_profitability()
+        if unified_score is None:
+            unified_score = self.calculate_unified_probability(profitability)
 
-        if unified_score < constants.AUTO_CLOSE_THRESHOLD:
-            return True, (
-                f"Automatically closed: unified probability "
-                f"{unified_score:.2f} < {constants.AUTO_CLOSE_THRESHOLD}"
+        if self.has_target_company_committer():
+            return {
+                "target_result_code": constants.RESULT_CODE_TO_SEND,
+                "should_close": False,
+                "should_recheck": False,
+                "is_high_priority": True,
+                "reason": "Target-company committer found",
+            }
+
+        fp_indicators = self.has_false_positive_indicators(profitability)
+        insufficient_context = self.has_insufficient_context(profitability)
+        low_probability = self.is_low_probability(unified_score)
+
+        # Hard auto-close: scores so low there is nothing to recheck
+        org_relevance = profitability.get("org_relevance", 0.0)
+        hard_close = (
+            unified_score <= constants.AUTO_HARD_CLOSE_UNIFIED_THRESHOLD
+            and org_relevance < constants.AUTO_HARD_CLOSE_ORG_THRESHOLD
+        )
+
+        should_close = hard_close or (low_probability and fp_indicators and insufficient_context)
+        should_recheck = (not should_close) and low_probability and (fp_indicators or insufficient_context)
+
+        if should_close:
+            reason = (
+                f"auto-close FP: unified={unified_score:.2f}, "
+                f"org={org_relevance:.2f}, "
+                f"sensitive={profitability.get('sensitive_data', 0.0):.2f}, "
+                "no target company/dork context"
             )
+            return {
+                "target_result_code": constants.RESULT_CODE_LEAK_NOT_FOUND,
+                "should_close": True,
+                "should_recheck": False,
+                "is_high_priority": False,
+                "reason": reason,
+            }
 
-        return False, ""
+        if should_recheck:
+            reason = (
+                f"recheck required: unified={unified_score:.2f}, "
+                "weak context or mixed FP signals"
+            )
+            return {
+                "target_result_code": constants.RESULT_CODE_TO_DEEPSCAN,
+                "should_close": False,
+                "should_recheck": True,
+                "is_high_priority": False,
+                "reason": reason,
+            }
+
+        return {
+            "target_result_code": constants.RESULT_CODE_TO_SEND,
+            "should_close": False,
+            "should_recheck": False,
+            "is_high_priority": unified_score >= constants.UNIFIED_PROBABILITY_MEDIUM_PRIORITY_THRESHOLD,
+            "reason": f"open: unified={unified_score:.2f}",
+        }
 
     def _get_message(self, key: str, lang: str = "ru", **kwargs) -> str:
         template = constants.LEAK_OBJ_MESSAGES.get(lang, constants.LEAK_OBJ_MESSAGES["en"]).get(key, "")
@@ -1483,7 +1638,7 @@ class LeakAnalyzer:
     def get_final_assessment(self) -> str:
         """Generates a single, overall assessment for the analyst."""
         profitability = self.calculate_profitability()
-        true_positive_chance = profitability["true_positive_chance"]
+        true_positive_chance = self.calculate_unified_probability(profitability)
         lang = constants.LANGUAGE
         if true_positive_chance >= 0.8:
             return self._get_message("high_chance", lang)

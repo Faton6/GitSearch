@@ -142,8 +142,7 @@ class Checker:
             "deepsecrets": self.deepsecrets_scan,
             "detect_secrets": self.detect_secrets_scan,
             "kingfisher": self.kingfisher_scan,
-            "ai_deep_scan": self.ai_deep_scan,
-            # ,'ioc_extractor': self._ioc_extractor
+
         }
 
     def _clean_repo_dirs(self):
@@ -1259,8 +1258,8 @@ class Checker:
             result["CompanyRelevance"] = self._calculate_company_relevance(result, self.company_name)
             result["ContextualScore"] = self._calculate_contextual_score(result)
 
-            # Фильтруем только если явно не релевантно (низкий скор)
-            if result["CompanyRelevance"] > 0 or result["ContextualScore"] > 0 or verified:
+            # Фильтруем только если есть явный негативный сигнал (тестовые данные и т.п.)
+            if result["CompanyRelevance"] > 0 or result["ContextualScore"] >= 0 or verified:
                 enhanced_results.append(result)
                 
         # Сортируем по релевантности
@@ -1339,7 +1338,7 @@ class Checker:
             if indicator in raw_data.lower():
                 score -= 0.3
 
-        return max(score, 0.0)
+        return score
 
     def _evaluate_meaningfulness(self, result):
         """Оценивает осмысленность результата для совместимости с существующим кодом"""
@@ -1395,25 +1394,28 @@ class Checker:
 
         # Анализируем сам секрет
         raw_data = result.get("RawV2") or result.get("Raw", "")
-        if raw_data:
-            # Получаем название компании для универсальных проверок
-            _ = Connector.get_company_name(self.obj.company_id)  # noqa: F841  # pragma: allowlist secret
+        if not raw_data:
+            # Нет данных секрета — неосмысленный результат
+            return 0
 
-            # Проверяем специфические паттерны компании
-            if self._is_company_specific_pattern(raw_data, self.company_name):
-                return 1
+        # Получаем название компании для универсальных проверок
+        _ = Connector.get_company_name(self.obj.company_id)  # noqa: F841  # pragma: allowlist secret
 
-            # Длинные секреты более вероятно реальные
-            if len(raw_data) > 20:
-                return 1
+        # Проверяем специфические паттерны компании
+        if self._is_company_specific_pattern(raw_data, self.company_name):
+            return 1
 
-            # Секреты с хорошей энтропией
-            if utils.calculate_entropy(raw_data) > 3.0:
-                return 1
+        # Очень короткие секреты неинформативны
+        if len(raw_data) < 8:
+            return 0
 
-            # Секреты в base64/hex формате
-            if utils.looks_like_encoded_data(raw_data, min_hex_length=16, min_base64_length=20):
-                return 1
+        # Секреты с хорошей энтропией
+        if utils.calculate_entropy(raw_data) > 3.5:
+            return 1
+
+        # Секреты в base64/hex формате
+        if utils.looks_like_encoded_data(raw_data, min_hex_length=16, min_base64_length=20):
+            return 1
 
         # Проверяем контекст на наличие компанейских паттернов
         source_metadata = result.get("SourceMetadata", {})
@@ -1422,8 +1424,8 @@ class Checker:
             if self._is_company_specific_pattern(data_text, self.company_name):
                 return 1
 
-        # По умолчанию считаем осмысленным (лучше ложное срабатывание, чем пропуск)
-        return 1
+        # По умолчанию считаем неосмысленным — не прошёл ни одну проверку
+        return 0
 
     def run(self):
         """

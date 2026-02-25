@@ -48,6 +48,13 @@ def is_this_need_to_analysis(leak_obj):
     if getattr(leak_obj, "res_check", None) == constants.RESULT_CODE_LEAK_NOT_FOUND:
         return False
 
+    profitability = getattr(leak_obj, "profitability_scores", {}) or {}
+    should_close = bool(profitability.get("should_close", False))
+    target_result_code = profitability.get("target_result_code")
+    if should_close or target_result_code == constants.RESULT_CODE_LEAK_NOT_FOUND:
+        leak_obj.res_check = constants.RESULT_CODE_LEAK_NOT_FOUND
+        return False
+
     # Check scan errors
     scan_error = str(
         getattr(leak_obj, "secrets", {}).get("Scan error") or getattr(leak_obj, "secrets", {}).get("Error") or ""
@@ -64,30 +71,6 @@ def is_this_need_to_analysis(leak_obj):
                 or int(leak_obj.stats.repo_stats_leak_stats_table.get("size", 0)) == 0
             ):
                 return False
-
-    # AI confidence can override (check early)
-    if getattr(leak_obj, "ai_confidence", 0.0) >= 0.7:
-        return True
-
-    # Extract scores
-    ai_analysis = getattr(leak_obj, "ai_analysis", {}) or {}
-    company_rel = (
-        ai_analysis.get("company_relevance", {}) if isinstance(ai_analysis.get("company_relevance"), dict) else {}
-    )
-    confidence = company_rel.get("confidence", 0.0)
-
-    profitability = getattr(leak_obj, "profitability_scores", {}) or {}
-    org_rel = profitability.get("org_relevance", 0.0)
-    false_pos = profitability.get("false_positive_chance", 0.0)
-    true_pos = profitability.get("true_positive_chance", 1.0)
-
-    # Reject if all signals very negative
-    if org_rel < 0.15 and confidence < 0.15 and not company_rel.get("is_related", True):
-        return False
-    if false_pos > 0.85 and true_pos < 0.15:
-        return False
-    if false_pos == 1.0 and true_pos == 0.0:
-        return False
 
     return True
 
@@ -435,29 +418,14 @@ def update_existing_leak(leak_id: int, leak_obj):
             return
 
         current_status = existing_leak[0].get("result", "4")
-        new_status = str(leak_obj.res_check)
 
         if current_status in ["1", "2", "3"]:
             logger.warning(f"Утечка ID {leak_id} уже обработана со статусом {current_status}. Пропуск обновления.")
             return
 
-        # Если статус изменился на 0 (false positive), обновляем его в БД
-        if new_status == "0" and current_status != "0":
-            logger.info(f"Обновление статуса утечки ID {leak_id}: {current_status} -> 0 (false positive)")
-            try:
-                APIClient.upd_data("leak", {"id": leak_id, "result": "0"})
-                logger.info(f"Статус утечки ID {leak_id} успешно обновлен на 0")
-            except Exception as status_update_error:
-                logger.error(f"Ошибка обновления статуса утечки ID {leak_id}: {status_update_error}")
-
-        # Если статус изменился на 5 (need more scan), обновляем его в БД
-        if new_status == "5" and current_status != "5":
-            logger.info(f"Обновление статуса утечки ID {leak_id}: {current_status} -> 5 (need more scan)")
-            try:
-                APIClient.upd_data("leak", {"id": leak_id, "result": "5"})
-                logger.info(f"Статус утечки ID {leak_id} успешно обновлен на 5")
-            except Exception as status_update_error:
-                logger.error(f"Ошибка обновления статуса утечки ID {leak_id}: {status_update_error}")
+        # Status (result) and leak_type are updated together at the end of this
+        # function via the single APIClient.upd_data("leak", ...) call.
+        # No early/partial status writes — keeps the DB update atomic.
 
         # Сравниваем updated_at and report с улучшенной обработкой ошибок
         try:
@@ -752,7 +720,7 @@ def merge_reports(
     if not isinstance(old, type(new)):
         pass
 
-    merge_keys = {"gitsecrets", "trufflehog", "grepscan", "deepsecrets", "gitleaks"}
+    merge_keys = {"gitsecrets", "trufflehog", "grepscan", "deepsecrets", "gitleaks", "detect_secrets", "kingfisher"}
 
     for key in merge_keys:
         if key in new:

@@ -307,6 +307,23 @@ def cmd_metrics(args):
         return 1
 
 
+def cmd_recheck(args):
+    """Full rescan of all unchecked incidents (result=4): clone + scan + re-evaluate."""
+    from src.deepscan import DeepScanManager
+
+    print("\n🔄 Full rescan of unchecked incidents (result=4)")
+    print("-" * 50)
+
+    try:
+        manager = DeepScanManager()
+        manager.run(mode=1)  # mode=1 = rescan all result=4
+        print("\n✅ Rescan complete.")
+        return 0
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return 1
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -351,6 +368,9 @@ Examples:
     metrics_parser = subparsers.add_parser("metrics", help="Show metrics")
     metrics_parser.add_argument("-f", "--format", choices=["json", "prometheus"], default="json", help="Output format")
 
+    # Recheck command
+    _ = subparsers.add_parser("recheck", help="Full rescan of unchecked incidents (result=4)")  # noqa: F841
+
     args = parser.parse_args()
 
     if not args.command:
@@ -366,6 +386,7 @@ Examples:
         "scan": cmd_scan,
         "status": cmd_status,
         "metrics": cmd_metrics,
+        "recheck": cmd_recheck,
     }
 
     handler = commands.get(args.command)

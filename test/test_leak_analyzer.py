@@ -894,3 +894,39 @@ class TestRepoCredibilityScore:
         score_no_fork = analyzer_no_fork._calculate_repo_credibility_score()
 
         assert score < score_no_fork, "Forked repo should have lower credibility"
+
+
+class TestUnifiedVerdict:
+    def test_high_confidence_false_positive_auto_close(self):
+        stats = DummyStats(desc="random repo", stars=0, commiters=0, contributors_count=1, size=10)
+        leak = DummyLeakObj("acme", "unrelated-repo", "author", stats)
+        analyzer = LeakAnalyzer(leak)
+
+        profitability = {
+            "org_relevance": 0.02,
+            "sensitive_data": 0.05,
+            "true_positive_chance": 0.08,
+            "false_positive_chance": 0.92,
+        }
+
+        verdict = analyzer.evaluate_incident_verdict(unified_score=0.08, profitability=profitability)
+        assert verdict["should_close"] is True
+        assert verdict["target_result_code"] == constants.RESULT_CODE_LEAK_NOT_FOUND
+
+    def test_target_company_committer_never_auto_closed(self):
+        committers = [{"commiter_name": "Dev", "commiter_email": "dev@acme.com"}]
+        stats = DummyStats(desc="unrelated", stars=0, commiters=1, committers_list=committers)
+        leak = DummyLeakObj("acme", "repo", "author", stats)
+        analyzer = LeakAnalyzer(leak)
+
+        profitability = {
+            "org_relevance": 0.01,
+            "sensitive_data": 0.01,
+            "true_positive_chance": 0.05,
+            "false_positive_chance": 0.95,
+        }
+
+        verdict = analyzer.evaluate_incident_verdict(unified_score=0.05, profitability=profitability)
+        assert verdict["should_close"] is False
+        assert verdict["target_result_code"] == constants.RESULT_CODE_TO_SEND
+        assert verdict["is_high_priority"] is True

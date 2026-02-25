@@ -29,7 +29,7 @@ The module is divided into several sections:
 # Application Metadata
 # =============================================================================
 
-RUN_TESTS: bool = False  # DISABLED - Enable manually for testing
+RUN_TESTS: bool = True  # DISABLED - Enable manually for testing
 __VERSION__ = "1.0.0"
 # =============================================================================
 # File System Paths
@@ -37,9 +37,7 @@ __VERSION__ = "1.0.0"
 
 MAIN_FOLDER_PATH = Path(Path(__file__).parent).parent  # Project root directory
 SEARCH_FOLDER_PATH = f"{str(MAIN_FOLDER_PATH)}/src/searcher"  # Scanner modules
-COMMAND_FILE = str(SEARCH_FOLDER_PATH) + "/command_file"  # Command file for scanners
 LOGS_PATH = str(MAIN_FOLDER_PATH) + "/logs"  # Application logs
-LIBS_PATH = str(MAIN_FOLDER_PATH) + "/lib"  # External libraries
 TEMP_FOLDER = str(MAIN_FOLDER_PATH) + "/temp"  # Temporary files (cloned repos, etc.)
 RESULTS = str(MAIN_FOLDER_PATH) + "/results"  # Scan results output
 
@@ -65,9 +63,6 @@ MAX_TIME_TO_SEARCH_GITHUB_REQUEST = 500
 # Timeout for git clone operations
 MAX_TIME_TO_CLONE = 500
 
-# Fallback to git clone if PyGithub fails
-CLONE_FALLBACK_TO_GIT = True
-
 # =============================================================================
 # GitHub API Configuration
 # =============================================================================
@@ -84,9 +79,6 @@ GITHUB_REQUEST_REPO_PER_PAGE: int = 100
 # =============================================================================
 # Database Result Codes
 # =============================================================================
-
-# Status codes for confirmed leaks (used in queries)
-RESULT_CODES = ["1", "2", "3"]
 
 # Individual result code definitions:
 RESULT_CODE_LEAK_NOT_FOUND = 0  # No leak found, added to exclude list
@@ -115,23 +107,41 @@ REPO_MAX_SIZE = 300000  # Maximum repo size in KB (300MB)
 MAX_UTIL_RES_LINES = 200  # Max lines from each scanner in report
 MAX_LINE_LEAK_LEN = 100  # Max length of leak line in characters
 MAX_TRY_TO_CLONE = 3  # Number of retry attempts for git clone
-GREP_SCAN_WAIT_TIMEOUT = 20  # Timeout for grep scan operations
 MAX_COMMITERS_DISPLAY = 5  # Max committers to show in report
 MAX_DESCRIPTION_LEN = 50  # Max description length in report
+
+# Scanner names used across analyzers/reports
+SCANNER_TYPES = (
+    "gitsecrets",
+    "trufflehog",
+    "grepscan",
+    "deepsecrets",
+    "gitleaks",
+    "kingfisher",
+    "detect_secrets",
+)
 
 # =============================================================================
 # Leak Severity Thresholds
 # =============================================================================
-
-LOW_LVL_THRESHOLD = 5  # Low severity: 0 to 4
-MEDIUM_LOW_THRESHOLD = 15  # Medium severity: 5 to 14
-# High severity: 15+
 
 AUTO_FALSE_POSITIVE_TRUE_POS_THRESHOLD = 0.2
 AUTO_FALSE_POSITIVE_FALSE_POS_THRESHOLD = 0.8
 AUTO_FALSE_POSITIVE_SENSITIVE_THRESHOLD = 0.2
 AUTO_FALSE_POSITIVE_ORG_THRESHOLD = 0.25
 AUTO_FALSE_POSITIVE_AI_NEGATIVE_CONFIDENCE = 0.6
+
+# Hard auto-close: obvious FP with near-zero scores (bypasses 3-condition gate)
+AUTO_HARD_CLOSE_UNIFIED_THRESHOLD = 0.1
+AUTO_HARD_CLOSE_ORG_THRESHOLD = 0.1
+
+LOW_CREDIBILITY_SCORE_THRESHOLD = 0.35
+VERY_LOW_CREDIBILITY_SCORE_THRESHOLD = 0.3
+LOW_CREDIBILITY_SCORE_PENALTY_FACTOR = 0.85
+UNIFIED_PROBABILITY_MEDIUM_PRIORITY_THRESHOLD = 0.5
+
+INSUFFICIENT_CONTEXT_MIN_SIGNALS = 1
+COMMITTER_DOMAIN_MATCH_THRESHOLD = 0.7
 # =============================================================================
 # Internationalization
 # =============================================================================
@@ -153,7 +163,6 @@ AI_PROVIDER_CHECK_INTERVAL = 5  # Check provider availability every N requests
 # AI Worker Pool Configuration (async analysis)
 AI_WORKER_POOL_SIZE = 2  # Number of parallel AI analysis workers
 AI_WORKER_QUEUE_SIZE = 100  # Maximum pending AI analysis tasks
-AI_ASYNC_ANALYSIS = True  # Enable async AI analysis (non-blocking)
 
 # =============================================================================
 # Country Profiling Configuration
@@ -163,6 +172,7 @@ COUNTRY_PROFILING: bool = True  # Enable geographic profiling
 COMPANY_COUNTRY_MAP_DEFAULT: str = "ru"  # Default country for unmapped companies
 COMPANY_COUNTRY_MAP: dict[str, str] = {
     # Russian companies
+    "WILDBERRIES": "ru",
     "VTB": "ru",
     "INNO": "ru",
     "T1": "ru",
@@ -171,7 +181,6 @@ COMPANY_COUNTRY_MAP: dict[str, str] = {
     "YANDEX": "ru",
     "MAILRU": "ru",
     "OZON": "ru",
-    "WILDBERRIES": "ru",
     "KASPERSKY": "ru",
     # International companies
     "GOOGLE": "en",
@@ -429,41 +438,6 @@ TEXT_FILE_EXTS = {
     ".dat",
     ".data",
 }
-
-CONTEXT_WORDS = [
-    "password",
-    "key",
-    "secret",
-    "token",
-    "api",
-    "config",
-    "database",
-    "auth",
-    "username",
-    "user",
-    "login",
-    "email",
-    "mail",
-    "account",
-    "admin",
-    "server",
-    "host",
-    "url",
-    "endpoint",
-    "connection",
-    "credential",
-    "company",
-    "corp",
-    "organization",
-    "org",
-    "team",
-    "group",
-    "app",
-    "application",
-    "service",
-    "client",
-    "customer",
-]
 
 LEAK_OBJ_MESSAGES = {
     "en": {
@@ -914,21 +888,6 @@ BINARY_FILE_EXTENSIONS: frozenset = frozenset(
     ]
 )
 
-# Расширения файлов с данными, где секреты маловероятны
-DATA_FILE_EXTENSIONS: frozenset = frozenset(
-    [
-        ".csv",
-        ".tsv",
-        ".json",
-        ".xml",
-        ".html",
-        ".htm",
-        ".lock",
-        ".sum",
-        ".mod",
-    ]
-)
-
 # =============================================================================
 # Known False Positive Secrets (exact values commonly found in documentation)
 # =============================================================================
@@ -1091,9 +1050,6 @@ MOCK_DATA_PATH_PATTERNS: frozenset = frozenset(
         "vcr_cassettes",
     ]
 )
-
-# Возраст коммита в днях, после которого секрет считается менее критичным
-SECRET_AGE_THRESHOLD_DAYS: int = 365  # 1 год
 
 # Пороговые значения статистики репозитория для FP анализа
 REPO_SIZE_TINY_KB: int = 10  # Очень маленький репозиторий (KB)

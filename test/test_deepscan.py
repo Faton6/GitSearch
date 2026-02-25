@@ -25,9 +25,11 @@ class TestDeepScanManager(unittest.TestCase):
         """Set up test fixtures before each test method."""
         self.manager = DeepScanManager()
 
+    @patch("src.deepscan.Connector.dump_from_DB")
     @patch("src.deepscan.constants")
-    def test_get_urls_for_deep_scan_empty(self, mock_constants):
+    def test_get_urls_for_deep_scan_empty(self, mock_constants, mock_dump):
         """Test getting URLs when no URLs are marked for deep scanning."""
+        mock_dump.return_value = {}
         mock_constants.dork_dict_from_DB = {}
         mock_constants.RESULT_CODE_TO_DEEPSCAN = 5
         mock_constants.AutoVivification.return_value = {}

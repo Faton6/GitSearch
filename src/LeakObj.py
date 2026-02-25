@@ -157,24 +157,28 @@ class LeakObj(ABC):
         self._check_stats()
         lang = constants.LANGUAGE  # Assuming LANGUAGE is defined in constants.py
 
-        # Submit AI analysis asynchronously (non-blocking)
-        # Analysis will complete in background while other scans continue
+        # Submit AI analysis and wait for result before scoring
         if constants.AI_ANALYSIS_ENABLED and not self.ai_analysis:
             try:
                 from src.AIObj import submit_ai_analysis, AITask
+                import threading
 
                 # Determine priority based on early signals
                 priority = AITask.NORMAL
                 # High priority if corporate committer found
-                if hasattr(self, "stats") and hasattr(self.stats, "committers"):
-                    for committer in self.stats.committers or []:
+                if hasattr(self, "stats") and hasattr(self.stats, "commits_stats_commiters_table"):
+                    for committer in self.stats.commits_stats_commiters_table or []:
                         if committer.get("matches_company"):
                             priority = AITask.HIGH
                             break
 
-                # Submit for async analysis
-                submit_ai_analysis(self, priority=priority)
+                # Submit for async analysis and wait with timeout
+                ai_done = threading.Event()
+                submit_ai_analysis(self, callback=lambda *_: ai_done.set(), priority=priority)
                 logger.debug(f"Submitted {self.repo_name} for async AI analysis")
+                ai_timeout = getattr(constants, "AI_ANALYSIS_TIMEOUT", 60)
+                if not ai_done.wait(timeout=ai_timeout):
+                    logger.warning(f"AI analysis timed out for {self.repo_name}")
             except ImportError:
                 # Fallback to sync if ai_worker not available
                 self.run_ai_analysis_sync()
@@ -350,6 +354,25 @@ class LeakObj(ABC):
         # Unified probability: single source of truth combining all signals
         true_positive_chance = leak_analyzer.calculate_unified_probability(self.profitability_scores)
 
+        if isinstance(self.profitability_scores, dict):
+            self.profitability_scores["unified_probability"] = true_positive_chance
+
+        verdict = leak_analyzer.evaluate_incident_verdict(
+            unified_score=true_positive_chance,
+            profitability=self.profitability_scores,
+        )
+
+        if isinstance(self.profitability_scores, dict):
+            self.profitability_scores.update(
+                {
+                    "target_result_code": verdict.get("target_result_code", constants.RESULT_CODE_TO_SEND),
+                    "should_close": bool(verdict.get("should_close")),
+                    "should_recheck": bool(verdict.get("should_recheck")),
+                    "is_high_priority": bool(verdict.get("is_high_priority", False)),
+                    "verdict_reason": verdict.get("reason", ""),
+                }
+            )
+
         if self.profitability_scores:
             self.status.append(
                 self._get_message(
@@ -362,11 +385,13 @@ class LeakObj(ABC):
                 )
             )
 
-        # Decisive auto-close via unified threshold
-        close, reason = leak_analyzer.should_auto_close(true_positive_chance)
-        if close:
-            self.res_check = constants.RESULT_CODE_LEAK_NOT_FOUND
-            self.status.append(reason)
+        # Decisive auto-close / recheck based on unified verdict
+        target_result_code = verdict.get("target_result_code")
+        if isinstance(target_result_code, int):
+            self.res_check = target_result_code
+
+        if verdict.get("should_close"):
+            self._append_auto_close_to_brief_description(verdict.get("reason", ""))
 
         if true_positive_chance < 0.2:
             self.lvl = 0  # 'Low'
@@ -382,6 +407,21 @@ class LeakObj(ABC):
 
         self.status = "\n- ".join(self.status)
         self.ready_to_send = True
+
+    def _append_auto_close_to_brief_description(self, reason: str):
+        """Append auto-close reason to brief description line only."""
+        reason_text = (reason or "").strip()
+        if not reason_text:
+            return
+
+        description_prefixes = ("Brief description:", "Краткое описание:")
+        for idx, line in enumerate(self.status):
+            if isinstance(line, str) and line.startswith(description_prefixes):
+                self.status[idx] = f"{line} | {reason_text}"
+                return
+
+        fallback = self._get_message("short_description", constants.LANGUAGE, description=f"- | {reason_text}")
+        self.status.append(fallback)
 
     def _get_unified_results_block(self):
         """Add a block with unique results from all scanners combined."""
