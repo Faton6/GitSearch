@@ -1,5 +1,6 @@
 import re
 import functools
+from datetime import datetime
 from typing import Dict, Tuple, List, Set
 from src.logger import logger
 from src import constants
@@ -211,7 +212,7 @@ class LeakAnalyzer:
         """Extract file paths from found secrets across all scanners."""
         file_paths = []
 
-        for scanner_type in ["gitleaks", "gitsecrets", "trufflehog", "deepsecrets", "grepscan", "ioc_finder"]:
+        for scanner_type in constants.SCANNER_TYPES:
             if scanner_type in self.leak_obj.secrets and isinstance(
                 self.leak_obj.secrets[scanner_type], constants.AutoVivification
             ):
@@ -385,6 +386,51 @@ class LeakAnalyzer:
     def _is_very_popular_repository(self) -> bool:
         return self._repo_stats.get("stargazers_count", 0) >= REPO_STARS_VERY_HIGH
 
+    @functools.cached_property
+    def _repo_age_days(self) -> int:
+        """Repository age in days (0 if date unavailable)."""
+        created_at = getattr(self.leak_obj.stats, "created_at", None)
+        if not created_at:
+            return 0
+        try:
+            created = datetime.strptime(str(created_at)[:19], "%Y-%m-%d %H:%M:%S")
+            return max(0, (datetime.now() - created).days)
+        except (ValueError, TypeError):
+            return 0
+
+    def _is_very_old_repository(self) -> bool:
+        """Repository created more than REPO_AGE_VERY_OLD_YEARS ago — likely stale."""
+        return self._repo_age_days > constants.REPO_AGE_VERY_OLD_YEARS * 365
+
+    def _all_committers_are_foreign(self) -> bool:
+        """For RU-country targets: True if NONE of the committers look Russian.
+
+        Checks Cyrillic chars in names and .ru TLD in emails.
+        Always returns False when country profiling is off or target is not \"ru\".
+        """
+        if not constants.COUNTRY_PROFILING:
+            return False
+        company_country = constants.COMPANY_COUNTRY_MAP.get(
+            self.leak_obj.company_id, constants.COMPANY_COUNTRY_MAP_DEFAULT
+        )
+        if company_country != "ru":
+            return False
+
+        committers = self.leak_obj.stats.commits_stats_commiters_table or []
+        if not committers:
+            return False
+
+        for committer in committers:
+            name = committer.get("commiter_name", "") or ""
+            email = (committer.get("commiter_email", "") or "").lower()
+            # Cyrillic in name → not foreign
+            if re.search(r"[\u0400-\u04FF]", name):
+                return False
+            # .ru domain → not foreign
+            if email.endswith(".ru"):
+                return False
+        return True
+
     def get_committers_analysis(self) -> dict:
         """
         Analyze all committers in single pass for efficiency.
@@ -408,7 +454,7 @@ class LeakAnalyzer:
             email = committer.get("commiter_email", "")
             if email:
                 domain = utils.extract_domain_from_email(email)
-                if domain and domain not in constants.PUBLIC_EMAIL_DOMAINS:
+                if domain and not utils.is_noreply_or_bot_domain(domain):
                     # Check if domain matches company
                     matches_company = any(token in domain for token in company_tokens) if company_tokens else False
 
@@ -480,6 +526,14 @@ class LeakAnalyzer:
 
         # Fork penalty
         score -= self._calculate_fork_penalty()
+
+        # Very old repository — secrets likely stale / irrelevant
+        if self._is_very_old_repository():
+            score -= 0.10
+
+        # All-foreign committers for domestic company target
+        if self._all_committers_are_foreign():
+            score -= 0.10
 
         return max(0.0, min(1.0, score))
 
@@ -561,6 +615,9 @@ class LeakAnalyzer:
                         score += add_signal("ru_email", 0.05)
                     if re.search(r"@.+\.(com|org|net|io)$", committer.get("commiter_email", "").lower()):
                         score -= add_signal("non_ru_email_penalty", 0.02)
+                # Aggregate: ALL committers look foreign for a RU target
+                if self._all_committers_are_foreign():
+                    score -= add_signal("all_foreign_committers", 0.10)
             elif company_country == "en":
                 if re.fullmatch(r"[A-Za-z ._-]+", self.leak_obj.author_name or ""):
                     score += add_signal("en_author", 0.03)
@@ -574,15 +631,21 @@ class LeakAnalyzer:
 
         # Factor 5: Enhanced popularity penalty with fork analysis
         stars = stats_table.get("stargazers_count", 0)
-        commiters = stats_table.get("commiters_count", 0)
-        if stars > 100:
+        commiters = stats_table.get("commiters_count", 0) or stats_table.get("contributors_count", 0)
+        if stars > REPO_STARS_HIGH:
             score -= add_signal("popularity_penalty_medium", 0.1)
-        if stars > 1000:
-            score -= add_signal("popularity_penalty_high", 0.15)
+        if stars > REPO_STARS_VERY_HIGH:
+            score -= add_signal("popularity_penalty_very_high", 0.3)
+        if commiters > 20:
+            score -= add_signal("contributors_penalty_low", 0.03)
         if commiters > 50:
             score -= add_signal("contributors_penalty", 0.05)
         if commiters > 200:
             score -= add_signal("contributors_penalty_high", 0.15)
+
+        # Very old repository penalty
+        if self._is_very_old_repository():
+            score -= add_signal("very_old_repo_penalty", 0.1)
 
         fork_penalty = self._calculate_fork_penalty()
         if fork_penalty:
@@ -1052,6 +1115,7 @@ class LeakAnalyzer:
             "trufflehog": 0.9,  # Highest confidence
             "gitleaks": 0.8,  # High confidence
             "deepsecrets": 0.75,  # High confidence
+            "kingfisher": 0.7,  # High confidence
             "gitsecrets": 0.6,  # Medium confidence
             "ioc_finder": 0.5,  # Medium confidence for IOCs
             "grepscan": 0.3,  # Lower confidence, depends on dork
@@ -1064,6 +1128,12 @@ class LeakAnalyzer:
                 scanner_secrets = self.leak_obj.secrets[scanner_type]
 
                 for leak_id, leak_data in scanner_secrets.items():
+                    if not isinstance(leak_data, dict):
+                        continue
+                    # Skip non-meaningful results (consistent with calculate_profitability)
+                    if leak_data.get("meaningfull", 1) == 0:
+                        continue
+
                     total_leaks += 1
 
                     # Classify secret type and get its weight
@@ -1223,7 +1293,7 @@ class LeakAnalyzer:
             "placeholder_count": 0,
         }
 
-        for scanner_type in ["gitleaks", "gitsecrets", "trufflehog", "deepsecrets", "grepscan", "ioc_finder"]:
+        for scanner_type in constants.SCANNER_TYPES:
             if scanner_type in self.leak_obj.secrets and isinstance(
                 self.leak_obj.secrets[scanner_type], constants.AutoVivification
             ):
@@ -1232,6 +1302,8 @@ class LeakAnalyzer:
                 secret_stats["total_secrets"] += len(scanner_secrets)
 
                 for leak_id, leak_data in scanner_secrets.items():
+                    if not isinstance(leak_data, dict):
+                        continue
                     secret_type, _ = self._classify_secret_type(leak_data)
                     secret_stats["by_type"][secret_type] = secret_stats["by_type"].get(secret_type, 0) + 1
 
@@ -1289,36 +1361,45 @@ class LeakAnalyzer:
         org_relevance = self.calculate_organization_relevance_score()
         sensitive_data = self.calculate_sensitive_data_score()
 
-        # Count actual secrets found by scanners
+        # Count actual secrets found by scanners (only meaningful ones)
         secrets_count = 0
-        scanners = ["gitleaks", "gitsecrets", "trufflehog", "grepscan", "deepsecrets"]
-        for scanner in scanners:
+        for scanner in constants.SCANNER_TYPES:
             if scanner in self.leak_obj.secrets and isinstance(
                 self.leak_obj.secrets[scanner], constants.AutoVivification
             ):
-                secrets_count += len(self.leak_obj.secrets[scanner])
+                for key, val in self.leak_obj.secrets[scanner].items():
+                    if not isinstance(val, dict):
+                        continue
+                    if val.get("meaningfull", 1) == 0:
+                        continue
+                    secrets_count += 1
 
         # Combine scores to get overall true positive chance
         # Base formula: weighted average of org_relevance and sensitive_data
         true_positive_chance = (org_relevance * 0.5) + (sensitive_data * 0.5)
 
         # CRITICAL: If secrets were actually found, ensure minimum score
-        # This prevents real leaks from being marked as false positives
+        # Scale floors by org_relevance so irrelevant repos don't inflate TP
         if secrets_count > 0:
-            # Minimum 0.35 if any secrets found
-            true_positive_chance = max(true_positive_chance, 0.35)
-
-            # Bonus based on number of secrets (diminishing returns)
-            if secrets_count >= 5:
-                true_positive_chance = max(true_positive_chance, 0.5)
-            if secrets_count >= 10:
-                true_positive_chance = max(true_positive_chance, 0.6)
+            if org_relevance >= 0.15:
+                # Some relevance + secrets = reasonable floor
+                true_positive_chance = max(true_positive_chance, 0.35)
+                if secrets_count >= 1:
+                    true_positive_chance = max(true_positive_chance, 0.5)
+                if secrets_count >= 5:
+                    true_positive_chance = max(true_positive_chance, 0.6)
+            else:
+                # Zero / near-zero org_relevance → secrets are likely just
+                # accidental keyword matches in an unrelated repo
+                true_positive_chance = max(true_positive_chance, 0.15)
+                if secrets_count >= 10:
+                    true_positive_chance = max(true_positive_chance, 0.25)
 
         # If sensitive_data score is high, it should pull up the total
-        # Even without org_relevance, high-confidence secrets matter
-        if sensitive_data >= 0.7:
+        # But only when there is *some* organisation relevance
+        if sensitive_data >= 0.7 and org_relevance >= 0.10:
             true_positive_chance = max(true_positive_chance, 0.55)
-        elif sensitive_data >= 0.5:
+        elif sensitive_data >= 0.5 and org_relevance >= 0.10:
             true_positive_chance = max(true_positive_chance, 0.4)
 
         # Corporate committer guarantees high score
@@ -1338,6 +1419,59 @@ class LeakAnalyzer:
             "true_positive_chance": true_positive_chance,
             "false_positive_chance": false_positive_chance,
         }
+
+    def calculate_unified_probability(self, profitability: dict = None) -> float:
+        """
+        Single source of truth for incident probability.
+        Consolidates profitability, AI analysis, repo credibility, and
+        corporate committer signals into one definitive score (0.0-1.0).
+        """
+        if profitability is None:
+            profitability = self.calculate_profitability()
+        score = profitability["true_positive_chance"]
+
+        # Incorporate AI analysis
+        ai_analysis = getattr(self.leak_obj, "ai_analysis", None) or {}
+        if isinstance(ai_analysis, dict) and ai_analysis != {"Thinks": "Not state"}:
+            classification = ai_analysis.get("classification", {})
+            if isinstance(classification, dict):
+                ai_tp = classification.get("true_positive_probability", 0.0)
+                if ai_tp > 0:
+                    score = score * 0.6 + ai_tp * 0.4
+
+            # Strong AI negative signal
+            company_rel = ai_analysis.get("company_relevance", {})
+            if isinstance(company_rel, dict) and not company_rel.get("is_related", True):
+                confidence = company_rel.get("confidence", 0.0)
+                if confidence >= constants.AI_NEGATIVE_CONFIDENCE_THRESHOLD:
+                    score *= max(0.3, 1.0 - confidence * 0.5)
+
+        # Low-credibility non-corporate repos get slight penalty
+        if not self.has_target_company_committer() and not self._has_corporate_committer():
+            if self._calculate_repo_credibility_score() < 0.35:
+                score *= 0.85
+
+        return round(max(0.0, min(1.0, score)), 2)
+
+    def should_auto_close(self, unified_score: float = None) -> tuple:
+        """
+        Decisive auto-close check using single unified threshold.
+        Returns (should_close: bool, reason: str).
+        """
+        if unified_score is None:
+            unified_score = self.calculate_unified_probability()
+
+        # Never auto-close if corporate committer found
+        if self.has_target_company_committer() or self._has_corporate_committer():
+            return False, ""
+
+        if unified_score < constants.AUTO_CLOSE_THRESHOLD:
+            return True, (
+                f"Automatically closed: unified probability "
+                f"{unified_score:.2f} < {constants.AUTO_CLOSE_THRESHOLD}"
+            )
+
+        return False, ""
 
     def _get_message(self, key: str, lang: str = "ru", **kwargs) -> str:
         template = constants.LEAK_OBJ_MESSAGES.get(lang, constants.LEAK_OBJ_MESSAGES["en"]).get(key, "")

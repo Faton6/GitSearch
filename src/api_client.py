@@ -23,7 +23,6 @@ import time
 from typing import Dict, List, Any, Optional
 from src import constants
 from src.logger import logger
-from src.exceptions import DatabaseConnectionError
 
 
 class GitSearchAPIClient:
@@ -144,12 +143,8 @@ class GitSearchAPIClient:
                 return None
 
         logger.error("Database operation failed after %d attempts: %s", self.MAX_RETRIES, last_error)
-        raise DatabaseConnectionError(
-            f"Failed to execute database operation after {self.MAX_RETRIES} attempts",
-            host=self.db_config.get("host", ""),
-            port=self.db_config.get("port", 3306),
-            retry_count=self.MAX_RETRIES,
-            max_retries=self.MAX_RETRIES,
+        raise ConnectionError(
+            f"Failed to execute database operation after {self.MAX_RETRIES} attempts"
         )
 
     def _execute_read_query(

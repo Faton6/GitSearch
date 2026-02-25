@@ -25,22 +25,10 @@ class GitHubGraphQLClient:
     _tokens_without_graphql = set()
     _tokens_with_graphql = set()
 
-    # Optimized search query with REQUIRED fields
-    # Uses smaller batch size (10-15) to stay within complexity limits
-    SEARCH_REPOS_WITH_STATS = """
-    query SearchReposWithStats($query: String!, $first: Int!, $after: String) {
-      search(query: $query, type: REPOSITORY, first: $first, after: $after) {
-        repositoryCount
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
-        nodes {
-          ... on Repository {
+    # Base repository fields (shared between full and limited queries)
+    _REPO_BASE_FIELDS = """
             name
-            owner {
-              login
-            }
+            owner { login }
             url
             isPrivate
             createdAt
@@ -49,128 +37,40 @@ class GitHubGraphQLClient:
             description
             stargazerCount
             forkCount
-            watchers {
-              totalCount
-            }
-            issues(states: OPEN) {
-              totalCount
-            }
+            watchers { totalCount }
+            issues(states: OPEN) { totalCount }
             hasIssuesEnabled
             hasProjectsEnabled
             hasWikiEnabled
             diskUsage
-            primaryLanguage {
-              name
-            }
-            languages(first: 5) {
-              edges {
-                size
-                node {
-                  name
-                }
-              }
-            }
-            repositoryTopics(first: 5) {
-              nodes {
-                topic {
-                  name
-                }
-              }
-            }
-            defaultBranchRef {
-              target {
-                ... on Commit {
-                  history(first: 1) {
-                    totalCount
-                  }
-                }
-              }
-            }
-            collaborators {
-              totalCount
-            }
-          }
-        }
-      }
-      rateLimit {
-        limit
-        remaining
-        resetAt
-        cost
-      }
-    }
+            primaryLanguage { name }
+            languages(first: 5) { edges { size node { name } } }
+            repositoryTopics(first: 5) { nodes { topic { name } } }
+            defaultBranchRef { target { ... on Commit { history(first: 1) { totalCount } } } }
     """
 
-    # Limited version without collaborators (doesn't require push access)
-    SEARCH_REPOS_WITH_STATS_LIMITED = """
-    query SearchReposWithStats($query: String!, $first: Int!, $after: String) {
-      search(query: $query, type: REPOSITORY, first: $first, after: $after) {
+    # Full query with collaborators (requires push access)
+    SEARCH_REPOS_WITH_STATS = f"""
+    query SearchReposWithStats($query: String!, $first: Int!, $after: String) {{
+      search(query: $query, type: REPOSITORY, first: $first, after: $after) {{
         repositoryCount
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
-        nodes {
-          ... on Repository {
-            name
-            owner {
-              login
-            }
-            url
-            isPrivate
-            createdAt
-            updatedAt
-            pushedAt
-            description
-            stargazerCount
-            forkCount
-            watchers {
-              totalCount
-            }
-            issues(states: OPEN) {
-              totalCount
-            }
-            hasIssuesEnabled
-            hasProjectsEnabled
-            hasWikiEnabled
-            diskUsage
-            primaryLanguage {
-              name
-            }
-            languages(first: 5) {
-              edges {
-                size
-                node {
-                  name
-                }
-              }
-            }
-            repositoryTopics(first: 5) {
-              nodes {
-                topic {
-                  name
-                }
-              }
-            }
-            defaultBranchRef {
-              target {
-                ... on Commit {
-                  history(first: 1) {
-                    totalCount
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-      rateLimit {
-        limit
-        remaining
-        resetAt
-        cost
-      }
-    }
+        pageInfo {{ hasNextPage endCursor }}
+        nodes {{ ... on Repository {{ {_REPO_BASE_FIELDS} collaborators {{ totalCount }} }} }}
+      }}
+      rateLimit {{ limit remaining resetAt cost }}
+    }}
+    """
+
+    # Limited query without collaborators
+    SEARCH_REPOS_WITH_STATS_LIMITED = f"""
+    query SearchReposWithStats($query: String!, $first: Int!, $after: String) {{
+      search(query: $query, type: REPOSITORY, first: $first, after: $after) {{
+        repositoryCount
+        pageInfo {{ hasNextPage endCursor }}
+        nodes {{ ... on Repository {{ {_REPO_BASE_FIELDS} }} }}
+      }}
+      rateLimit {{ limit remaining resetAt cost }}
+    }}
     """
 
     # Search code with context
@@ -178,17 +78,12 @@ class GitHubGraphQLClient:
     query SearchCodeWithContext($query: String!, $first: Int!, $after: String) {
       search(query: $query, type: CODE, first: $first, after: $after) {
         codeCount
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
+        pageInfo { hasNextPage endCursor }
         nodes {
           ... on Blob {
             repository {
               name
-              owner {
-                login
-              }
+              owner { login }
               url
               isPrivate
               createdAt
@@ -203,12 +98,7 @@ class GitHubGraphQLClient:
           }
         }
       }
-      rateLimit {
-        limit
-        remaining
-        resetAt
-        cost
-      }
+      rateLimit { limit remaining resetAt cost }
     }
     """
 
@@ -426,6 +316,69 @@ class GitHubGraphQLClient:
             logger.error(f"GraphQL request error: {e}")
             return None
 
+    def _convert_repo_node(self, node: Dict) -> Optional[Dict]:
+        """Convert GraphQL repository node to REST-like format."""
+        if not node:
+            return None
+        try:
+            return {
+                "name": node.get("name"),
+                "full_name": f"{node['owner']['login']}/{node['name']}",
+                "owner": {"login": node["owner"]["login"]},
+                "html_url": node.get("url"),
+                "private": node.get("isPrivate", False),
+                "created_at": node.get("createdAt"),
+                "updated_at": node.get("updatedAt"),
+                "pushed_at": node.get("pushedAt"),
+                "description": node.get("description"),
+                "stargazers_count": node.get("stargazerCount", 0),
+                "forks_count": node.get("forkCount", 0),
+                "watchers_count": node.get("watchers", {}).get("totalCount", 0),
+                "open_issues_count": node.get("issues", {}).get("totalCount", 0),
+                "has_issues": node.get("hasIssuesEnabled", False),
+                "has_projects": node.get("hasProjectsEnabled", False),
+                "has_wiki": node.get("hasWikiEnabled", False),
+                "has_downloads": False,
+                "size": node.get("diskUsage", 0),
+                "language": node.get("primaryLanguage", {}).get("name") if node.get("primaryLanguage") else None,
+                "topics": [t["topic"]["name"] for t in node.get("repositoryTopics", {}).get("nodes", []) if t and t.get("topic")],
+                "languages": {e["node"]["name"]: e["size"] for e in node.get("languages", {}).get("edges", []) if e and e.get("node")},
+                "collaborators_count": node.get("collaborators", {}).get("totalCount", 0),
+                "commit_count": node.get("defaultBranchRef", {}).get("target", {}).get("history", {}).get("totalCount", 0) if node.get("defaultBranchRef") else 0,
+            }
+        except (KeyError, TypeError) as e:
+            logger.debug(f"Error converting repo node: {e}")
+            return None
+
+    def _convert_code_node(self, node: Dict) -> Optional[Dict]:
+        """Convert GraphQL code node to REST-like format."""
+        if not node or not node.get("repository"):
+            return None
+        try:
+            repo = node["repository"]
+            return {
+                "name": node.get("path", "").split("/")[-1],
+                "path": node.get("path"),
+                "html_url": f"{repo.get('url')}/blob/master/{node.get('path')}",
+                "repository": {
+                    "name": repo.get("name"),
+                    "full_name": f"{repo['owner']['login']}/{repo['name']}",
+                    "owner": {"login": repo["owner"]["login"]},
+                    "html_url": repo.get("url"),
+                    "private": repo.get("isPrivate", False),
+                    "created_at": repo.get("createdAt"),
+                    "updated_at": repo.get("updatedAt"),
+                    "description": repo.get("description"),
+                    "stargazers_count": repo.get("stargazerCount", 0),
+                    "forks_count": repo.get("forkCount", 0),
+                    "size": repo.get("diskUsage", 0),
+                },
+                "text_matches": [{"fragment": node.get("text", "")}] if node.get("text") else [],
+            }
+        except (KeyError, TypeError) as e:
+            logger.debug(f"Error converting code node: {e}")
+            return None
+
     def search_repositories_with_stats(self, query: str, max_results: int = 100) -> List[Dict]:
         """
         Search repositories and get stats in one query.
@@ -472,51 +425,10 @@ class GitHubGraphQLClient:
 
             search_data = data["data"]["search"]
 
-            # Convert GraphQL format to REST-like format for compatibility
+            # Convert nodes using helper method
             for node in search_data.get("nodes", []):
-                if node:  # Skip null nodes
-                    # Transform to REST API format
-                    repo_data = {
-                        "name": node.get("name"),
-                        "full_name": f"{node['owner']['login']}/{node['name']}",
-                        "owner": {"login": node["owner"]["login"]},
-                        "html_url": node.get("url"),
-                        "private": node.get("isPrivate", False),
-                        "created_at": node.get("createdAt"),
-                        "updated_at": node.get("updatedAt"),
-                        "pushed_at": node.get("pushedAt"),
-                        "description": node.get("description"),
-                        "stargazers_count": node.get("stargazerCount", 0),
-                        "forks_count": node.get("forkCount", 0),
-                        "watchers_count": node.get("watchers", {}).get("totalCount", 0),
-                        "open_issues_count": node.get("issues", {}).get("totalCount", 0),
-                        "has_issues": node.get("hasIssuesEnabled", False),
-                        "has_projects": node.get("hasProjectsEnabled", False),
-                        "has_wiki": node.get("hasWikiEnabled", False),
-                        "has_downloads": False,  # Deprecated field
-                        "size": node.get("diskUsage", 0),
-                        "language": node.get("primaryLanguage", {}).get("name")
-                        if node.get("primaryLanguage")
-                        else None,
-                        # Extended stats from GraphQL
-                        "topics": [
-                            t["topic"]["name"]
-                            for t in node.get("repositoryTopics", {}).get("nodes", [])
-                            if t and t.get("topic")
-                        ],
-                        "languages": {
-                            edge["node"]["name"]: edge["size"]
-                            for edge in node.get("languages", {}).get("edges", [])
-                            if edge and edge.get("node")
-                        },
-                        "collaborators_count": node.get("collaborators", {}).get("totalCount", 0),
-                        "commit_count": node.get("defaultBranchRef", {})
-                        .get("target", {})
-                        .get("history", {})
-                        .get("totalCount", 0)
-                        if node.get("defaultBranchRef")
-                        else 0,
-                    }
+                repo_data = self._convert_repo_node(node)
+                if repo_data:
                     results.append(repo_data)
 
             page_info = search_data.get("pageInfo", {})
@@ -542,8 +454,6 @@ class GitHubGraphQLClient:
         results = []
         has_next_page = True
         cursor = None
-
-        # Use small batch size for code search (text content is expensive)
         BATCH_SIZE = 10
 
         while has_next_page and len(results) < max_results:
@@ -555,28 +465,10 @@ class GitHubGraphQLClient:
 
             search_data = data["data"]["search"]
 
+            # Convert nodes using helper method
             for node in search_data.get("nodes", []):
-                if node and node.get("repository"):
-                    repo = node["repository"]
-                    code_result = {
-                        "name": node.get("path", "").split("/")[-1],
-                        "path": node.get("path"),
-                        "html_url": f"{repo.get('url')}/blob/master/{node.get('path')}",
-                        "repository": {
-                            "name": repo.get("name"),
-                            "full_name": f"{repo['owner']['login']}/{repo['name']}",
-                            "owner": {"login": repo["owner"]["login"]},
-                            "html_url": repo.get("url"),
-                            "private": repo.get("isPrivate", False),
-                            "created_at": repo.get("createdAt"),
-                            "updated_at": repo.get("updatedAt"),
-                            "description": repo.get("description"),
-                            "stargazers_count": repo.get("stargazerCount", 0),
-                            "forks_count": repo.get("forkCount", 0),
-                            "size": repo.get("diskUsage", 0),
-                        },
-                        "text_matches": [{"fragment": node.get("text", "")}] if node.get("text") else [],
-                    }
+                code_result = self._convert_code_node(node)
+                if code_result:
                     results.append(code_result)
 
             page_info = search_data.get("pageInfo", {})
@@ -586,6 +478,165 @@ class GitHubGraphQLClient:
             logger.info(f"Retrieved {len(results)} code results via GraphQL")
 
         return results
+
+    # Query for fetching complete repository stats (repo info + contributors + commits) in ONE request
+    GET_REPO_FULL_STATS = """
+    query GetRepoFullStats($owner: String!, $name: String!) {
+      repository(owner: $owner, name: $name) {
+        createdAt
+        updatedAt
+        pushedAt
+        description
+        stargazerCount
+        forkCount
+        watchers { totalCount }
+        issues(states: OPEN) { totalCount }
+        hasIssuesEnabled
+        hasProjectsEnabled
+        hasWikiEnabled
+        diskUsage
+        repositoryTopics(first: 10) { nodes { topic { name } } }
+        defaultBranchRef {
+          name
+          target {
+            ... on Commit {
+              history(first: 30) {
+                totalCount
+                nodes {
+                  author {
+                    name
+                    email
+                    user { login }
+                  }
+                }
+              }
+            }
+          }
+        }
+        mentionableUsers(first: 30) {
+          totalCount
+          nodes { login }
+        }
+      }
+      rateLimit { limit remaining resetAt cost }
+    }
+    """
+
+    def get_repository_full_stats(self, owner: str, name: str) -> Optional[Dict]:
+        """
+        Fetch complete repository statistics in a single GraphQL query.
+        
+        Returns repo info, contributors, and commit authors all at once,
+        saving 2 API calls compared to REST API approach.
+        
+        Args:
+            owner: Repository owner (username or org)
+            name: Repository name
+            
+        Returns:
+            Dict with parsed stats or None if failed/not found
+        """
+        if self._graphql_disabled:
+            return None
+
+        variables = {"owner": owner, "name": name}
+        data = self.execute_query(self.GET_REPO_FULL_STATS, variables)
+
+        if not data or "data" not in data or not data["data"]:
+            return None
+
+        repo = data["data"].get("repository")
+        
+        # Repository not found (deleted/private)
+        if repo is None:
+            return {"error": "not_found", "message": "Repository not found (deleted or private)"}
+
+        try:
+            # Parse timestamps
+            created_at = repo.get("createdAt", "")
+            updated_at = repo.get("updatedAt", "")
+            
+            # Extract topics
+            topics = []
+            repo_topics = repo.get("repositoryTopics", {})
+            if isinstance(repo_topics, dict):
+                for t in repo_topics.get("nodes", []):
+                    if isinstance(t, dict) and "topic" in t and isinstance(t["topic"], dict):
+                        topic_name = t["topic"].get("name")
+                        if topic_name:
+                            topics.append(topic_name)
+
+            # Extract contributors from mentionableUsers
+            contributors = []
+            mentionable = repo.get("mentionableUsers", {})
+            if isinstance(mentionable, dict):
+                contributors_count = mentionable.get("totalCount", 0)
+                for user in mentionable.get("nodes", []):
+                    if isinstance(user, dict) and "login" in user:
+                        contributors.append({"login": user["login"]})
+            else:
+                contributors_count = 0
+
+            # Extract commits and authors
+            commits_count = 0
+            commit_authors = []
+            seen_emails = set()
+            
+            default_branch = repo.get("defaultBranchRef")
+            if isinstance(default_branch, dict):
+                target = default_branch.get("target", {})
+                if isinstance(target, dict):
+                    history = target.get("history", {})
+                    if isinstance(history, dict):
+                        commits_count = history.get("totalCount", 0)
+                        for commit in history.get("nodes", []):
+                            if not isinstance(commit, dict):
+                                continue
+                            author = commit.get("author", {})
+                            if not isinstance(author, dict):
+                                continue
+                            email = author.get("email", "")
+                            name = author.get("name", "")
+                            if email and email not in seen_emails:
+                                seen_emails.add(email)
+                                commit_authors.append({
+                                    "name": name,
+                                    "email": email,
+                                    "login": author.get("user", {}).get("login") if author.get("user") else None
+                                })
+
+            # Safe extraction helpers
+            def safe_count(obj, key, default=0):
+                if isinstance(obj, dict):
+                    nested = obj.get(key, {})
+                    if isinstance(nested, dict):
+                        return nested.get("totalCount", default)
+                return default
+
+            return {
+                "found": True,
+                "created_at": created_at,
+                "updated_at": updated_at,
+                "pushed_at": repo.get("pushedAt", ""),
+                "description": repo.get("description") or "",
+                "size": repo.get("diskUsage", 0),
+                "stargazers_count": repo.get("stargazerCount", 0),
+                "forks_count": repo.get("forkCount", 0),
+                "watchers_count": safe_count(repo, "watchers"),
+                "open_issues_count": safe_count(repo, "issues"),
+                "has_issues": repo.get("hasIssuesEnabled", False),
+                "has_projects": repo.get("hasProjectsEnabled", False),
+                "has_wiki": repo.get("hasWikiEnabled", False),
+                "topics": topics,
+                "contributors_count": contributors_count,
+                "contributors": contributors,
+                "commits_count": commits_count,
+                "commit_authors": commit_authors,
+            }
+
+        except Exception as e:
+            logger.debug(f"Error parsing repo stats: {e}")
+            return None
 
 
 # Global GraphQL client instance

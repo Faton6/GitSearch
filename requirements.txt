@@ -1,7 +1,6 @@
 pymysql
 requests
 gitpython
-PyGithub
 beautifulsoup4
 openai
 tiktoken

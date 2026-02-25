@@ -26,7 +26,6 @@ class LeakObj(ABC):
 
         self.found_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
 
-        # ???????????????????? ???????????? ?????? ?????????????????? ?????????????????????? ????????????????
         from src.searcher.GitStats import GitParserStats
 
         self.stats = GitParserStats(self.repo_url)
@@ -93,8 +92,6 @@ class LeakObj(ABC):
             logger.info(f"Starting AI analysis for {self.repo_name}")
 
             self._create_ai_obj()
-
-            # ?????????????????? ?????????????????????? ????????????
             self.ai_analysis = self.ai_obj.analyze_leak_comprehensive()
 
         except Exception as e:
@@ -139,9 +136,11 @@ class LeakObj(ABC):
         if hasattr(self.stats, "is_inaccessible") and self.stats.is_inaccessible:
             self.lvl = 0
             self.res_check = constants.RESULT_CODE_LEAK_NOT_FOUND
-            reason = getattr(self.stats, "inaccessibility_reason", "?????????????????????? ????????????????????")
-            self.status = [f"?????? {reason}. ???????????? ???? ????????????????????."]
-            logger.info(f"Repository marked as inaccessible: {self.repo_name} - {reason}")
+            reason = getattr(self.stats, "inaccessibility_reason", "Unknown reason")
+            self.status = [f"Not accessible: {reason}. Further analysis skipped."]
+            if not getattr(self, '_inaccessible_logged', False):
+                logger.info(f"Repository marked as inaccessible: {self.repo_name} - {reason}")
+                self._inaccessible_logged = True
             return
 
         scan_error = self.secrets.get("Scan error")
@@ -162,7 +161,7 @@ class LeakObj(ABC):
         # Analysis will complete in background while other scans continue
         if constants.AI_ANALYSIS_ENABLED and not self.ai_analysis:
             try:
-                from src.ai_worker import submit_ai_analysis, AITask
+                from src.AIObj import submit_ai_analysis, AITask
 
                 # Determine priority based on early signals
                 priority = AITask.NORMAL
@@ -245,6 +244,10 @@ class LeakObj(ABC):
             self.status.append(self._get_message("repo_is_personal", lang))
         if leak_analyzer._is_very_popular_repository():
             self.status.append(self._get_message("repo_is_popular_oss", lang))
+        if leak_analyzer._is_very_old_repository():
+            self.status.append(
+                self._get_message("repo_is_very_old", lang, years=constants.REPO_AGE_VERY_OLD_YEARS)
+            )
 
         self.status.append(self._get_message("leak_found_in_section", lang, obj_type=self.obj_type, dork=self.dork))
 
@@ -303,7 +306,7 @@ class LeakObj(ABC):
         else:
             self.status.append(self._get_message("committers_all", lang, committers=", ".join(founded_commiters)))
 
-        scaners = ["gitleaks", "gitsecrets", "trufflehog", "grepscan", "deepsecrets"]
+        scaners = list(constants.SCANNER_TYPES)
         if (
             "grepscan" in self.secrets
             and isinstance(self.secrets["grepscan"], constants.AutoVivification)
@@ -337,8 +340,15 @@ class LeakObj(ABC):
             self._get_message("full_report_length", lang, length=utils.count_nested_dict_len(self.secrets))
         )
 
-        # ???????????????????????????? ?????????? ?????????????????? leak_analyzer ?????? ?????????????? profitability
+        # Calculate profitability scores (base: org_relevance + sensitive_data)
         self.profitability_scores = leak_analyzer.calculate_profitability()
+
+        # Add AI analysis to status
+        if constants.AI_ANALYSIS_ENABLED and self.ai_analysis != {"Thinks": "Not state"}:
+            self._add_ai_analysis_to_status()
+
+        # Unified probability: single source of truth combining all signals
+        true_positive_chance = leak_analyzer.calculate_unified_probability(self.profitability_scores)
 
         if self.profitability_scores:
             self.status.append(
@@ -347,29 +357,18 @@ class LeakObj(ABC):
                     lang,
                     org_rel=self.profitability_scores["org_relevance"],
                     sens_data=self.profitability_scores["sensitive_data"],
-                    tp=self.profitability_scores["true_positive_chance"],
-                    fp=self.profitability_scores["false_positive_chance"],
+                    tp=true_positive_chance,
+                    fp=round(1.0 - true_positive_chance, 2),
                 )
             )
 
-            true_positive_chance = self.profitability_scores["true_positive_chance"]
-        else:
-            true_positive_chance = len(self.status) / 15.0 if len(self.status) > 0 else 0.0
+        # Decisive auto-close via unified threshold
+        close, reason = leak_analyzer.should_auto_close(true_positive_chance)
+        if close:
+            self.res_check = constants.RESULT_CODE_LEAK_NOT_FOUND
+            self.status.append(reason)
 
-        # Add AI analysis to status (moved here to ensure it's after the final assessment is added)
-        if constants.AI_ANALYSIS_ENABLED and self.ai_analysis != {"Thinks": "Not state"}:
-            self._add_ai_analysis_to_status()
-
-            # Update true_positive_chance based on AI analysis
-            if self.ai_analysis:
-                classification = self.ai_analysis.get("classification", {})
-                if isinstance(classification, dict):
-                    ai_tp_prob = classification.get("true_positive_probability", 0.0)
-                    if ai_tp_prob > 0:
-                        # Combine traditional scoring with AI assessment
-                        true_positive_chance = (true_positive_chance + ai_tp_prob) / 2.0
-
-        if true_positive_chance < 0.2:  # Example thresholds, can be adjusted
+        if true_positive_chance < 0.2:
             self.lvl = 0  # 'Low'
         elif 0.2 <= true_positive_chance < 0.5:
             self.lvl = 1  # 'Medium'
@@ -386,7 +385,7 @@ class LeakObj(ABC):
 
     def _get_unified_results_block(self):
         """Add a block with unique results from all scanners combined."""
-        scanners = ["gitleaks", "gitsecrets", "trufflehog", "grepscan", "deepsecrets", "ioc_finder", "kingfisher"]
+        scanners = list(constants.SCANNER_TYPES)
         all_unique_results = {}  # key -> result mapping
 
         try:
@@ -424,6 +423,7 @@ class LeakObj(ABC):
 
         except Exception as e:
             logger.warning(f"Error building unified results block: {e}")
+            return {}
 
     def write_obj(self):  # for write to DB
         # Human chech:
@@ -472,6 +472,7 @@ class LeakObj(ABC):
 
         if "trufflehog" in self.secrets and len(self.secrets["trufflehog"]):
             commiter = {}
+            missing_email_count = 0
             for leak in self.secrets["trufflehog"]:
                 try:
                     if (
@@ -482,7 +483,9 @@ class LeakObj(ABC):
                             self.secrets["trufflehog"][leak]["SourceMetadata"]["Data"]["Git"]["email"].split("<")[0]
                         ] = self.secrets["trufflehog"][leak]["SourceMetadata"]["Data"]["Git"]["email"].split("<")[1]
                 except Exception:
-                    logger.error("Not found acc_name/email in trufflehog scan in %s repository", self.repo_name)
+                    missing_email_count += 1
+            if missing_email_count > 0:
+                logger.warning("Not found acc_name/email in %d trufflehog results in %s repository", missing_email_count, self.repo_name)
             founded_commiters = [comm["commiter_name"] for comm in self.stats.commits_stats_commiters_table]
             for comm in commiter.keys():
                 if comm not in founded_commiters:

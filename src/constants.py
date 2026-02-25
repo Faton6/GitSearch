@@ -30,9 +30,7 @@ The module is divided into several sections:
 # =============================================================================
 
 RUN_TESTS: bool = False  # DISABLED - Enable manually for testing
-__NAME__ = "GitSearch"
 __VERSION__ = "1.0.0"
-DEFAULT_CONFIG_FILE = f".{__NAME__}.yml"
 # =============================================================================
 # File System Paths
 # =============================================================================
@@ -67,15 +65,6 @@ MAX_TIME_TO_SEARCH_GITHUB_REQUEST = 500
 # Timeout for git clone operations
 MAX_TIME_TO_CLONE = 500
 
-# =============================================================================
-# GitHub Clone Configuration
-# =============================================================================
-
-# Clone method: 'pygithub' (API-based) or 'git' (subprocess-based)
-# Clone method configuration
-# - 'git': Traditional git clone (RECOMMENDED - no rate limit on cloning)
-# - 'pygithub': Uses GitHub REST API to download files (has rate limit!)
-CLONE_METHOD = "git"
 # Fallback to git clone if PyGithub fails
 CLONE_FALLBACK_TO_GIT = True
 
@@ -138,6 +127,11 @@ LOW_LVL_THRESHOLD = 5  # Low severity: 0 to 4
 MEDIUM_LOW_THRESHOLD = 15  # Medium severity: 5 to 14
 # High severity: 15+
 
+AUTO_FALSE_POSITIVE_TRUE_POS_THRESHOLD = 0.2
+AUTO_FALSE_POSITIVE_FALSE_POS_THRESHOLD = 0.8
+AUTO_FALSE_POSITIVE_SENSITIVE_THRESHOLD = 0.2
+AUTO_FALSE_POSITIVE_ORG_THRESHOLD = 0.25
+AUTO_FALSE_POSITIVE_AI_NEGATIVE_CONFIDENCE = 0.6
 # =============================================================================
 # Internationalization
 # =============================================================================
@@ -207,7 +201,19 @@ PUBLIC_EMAIL_DOMAINS = {
     "protonmail.com",
     "tutanota.com",
     "temp-mail.org",
+        # GitHub / GitLab noreply addresses — NOT corporate!
+    "users.noreply.github.com",
+    "noreply.github.com",
+    "users.noreply.gitlab.com",
+    "noreply.gitlab.com",
+    # Common bot / CI domains
+    "github.com",          # username@github.com in old commits
+    "gitlab.com",
+    "users.sourceforge.net",
 }
+
+# Substrings in email domain that indicate it is NOT corporate
+NOREPLY_DOMAIN_KEYWORDS: tuple[str, ...] = ("noreply", "no-reply", "no_reply", "mailer-daemon", "donotreply")
 
 # Patterns that might indicate dangerous content in repositories
 DANGEROUS_PATTERNS = {
@@ -483,6 +489,7 @@ LEAK_OBJ_MESSAGES = {
         "ai_analysis_high_severity": "🤖 AI Analysis: High severity leak detected (score: {score:.2f})",
         "ai_analysis_error": "🤖 AI Analysis: Error occurred during analysis",
         "ai_analysis_summary": "🤖 AI Summary: {summary}",
+        "auto_false_positive": "✅ Auto-closed as false positive (very low leak likelihood)",
         "high_chance": "High chance of leak",
         "medium_chance": "Medium chance of leak",
         "low_chance": "Low chance of leak",
@@ -524,6 +531,7 @@ LEAK_OBJ_MESSAGES = {
         "ai_analysis_high_severity": "🤖 ИИ Анализ: Обнаружена утечка высокой степени серьезности (оценка: {score:.2f})",
         "ai_analysis_error": "🤖 ИИ Анализ: Произошла ошибка во время анализа",
         "ai_analysis_summary": "🤖 ИИ Резюме: {summary}",
+        "auto_false_positive": "✅ Автоматически закрыто как false positive (очень низкая вероятность утечки)",
         "high_chance": "Высокая вероятность утечки",
         "medium_chance": "Средняя вероятность утечки",
         "low_chance": "Низкая вероятность утечки",
@@ -1090,10 +1098,8 @@ SECRET_AGE_THRESHOLD_DAYS: int = 365  # 1 год
 # Пороговые значения статистики репозитория для FP анализа
 REPO_SIZE_TINY_KB: int = 10  # Очень маленький репозиторий (KB)
 REPO_SIZE_SMALL_KB: int = 100  # Маленький репозиторий (KB)
-REPO_AGE_NEW_DAYS: int = 7  # Новый репозиторий (дней)
-REPO_AGE_ABANDONED_DAYS: int = 365 * 4  # Заброшенный репозиторий (2 года)
-REPO_MIN_COMMITS_FOR_REAL: int = 10  # Минимум коммитов для "реального" проекта
-REPO_MAX_STARS_FOR_PERSONAL: int = 10  # Максимум звёзд для личного проекта
+REPO_AGE_VERY_OLD_YEARS: int = 8  # Очень старый репозиторий (лет) — вероятно неактуальный
+REPO_MAX_STARS_FOR_PERSONAL: int = 50  # Максимум звёзд для личного проекта
 
 # Пороговые значения популярности (high = likely FP from popular OSS)
 REPO_STARS_HIGH: int = 500  # Высокая популярность

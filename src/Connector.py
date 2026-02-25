@@ -45,6 +45,9 @@ def is_this_need_to_analysis(leak_obj):
     if not getattr(leak_obj, "ready_to_send", False) and hasattr(leak_obj, "_check_status"):
         leak_obj._check_status()
 
+    if getattr(leak_obj, "res_check", None) == constants.RESULT_CODE_LEAK_NOT_FOUND:
+        return False
+
     # Check scan errors
     scan_error = str(
         getattr(leak_obj, "secrets", {}).get("Scan error") or getattr(leak_obj, "secrets", {}).get("Error") or ""

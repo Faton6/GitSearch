@@ -16,7 +16,15 @@ class GitParserStats:
     cooldown: float = 60.0
     rate_limit: float = 10.0
 
-    def __init__(self, html_url: str):
+    def __init__(self, html_url: str, prefetched_data: dict = None):
+        """
+        Initialize GitParserStats.
+        
+        Args:
+            html_url: GitHub repository URL
+            prefetched_data: Optional dict with pre-fetched repo data from GraphQL search
+                            (avoids duplicate API calls if data was already fetched)
+        """
         self.login_repo = html_url.split("github.com/")[1]
         self.login_repo = self.login_repo.split("/")[0] + "/" + self.login_repo.split("/")[1]
         if "gist.github.com" in html_url:
@@ -67,12 +75,55 @@ class GitParserStats:
         if self.login_repo is None:
             raise ValueError("Attribute url is not overloaded!")
 
+        # Initialize from prefetched data if provided (saves API calls)
+        if prefetched_data:
+            self._init_from_prefetched(prefetched_data)
+
+    def _init_from_prefetched(self, data: dict):
+        """Initialize stats from prefetched GraphQL search data to avoid duplicate API calls."""
+        try:
+            # Parse timestamps if available
+            if data.get("created_at"):
+                self.created_at = data["created_at"][:19].replace("T", " ") if "T" in str(data.get("created_at", "")) else data["created_at"]
+            if data.get("updated_at"):
+                self.updated_at = data["updated_at"][:19].replace("T", " ") if "T" in str(data.get("updated_at", "")) else data["updated_at"]
+
+            # Extract topics
+            topics = data.get("topics", [])
+            topics_str = ",".join(topics) if isinstance(topics, list) and topics else "_"
+
+            self.repo_stats_leak_stats_table = {
+                "size": data.get("size", 0),
+                "stargazers_count": data.get("stargazers_count", 0),
+                "has_issues": 1 if data.get("has_issues") else 0,
+                "has_projects": 1 if data.get("has_projects") else 0,
+                "has_downloads": 1 if data.get("has_downloads") else 0,
+                "has_wiki": 1 if data.get("has_wiki") else 0,
+                "has_pages": 0,
+                "forks_count": data.get("forks_count", 0),
+                "open_issues_count": data.get("open_issues_count", 0),
+                "subscribers_count": data.get("watchers_count", 0),
+                "topics": topics_str,
+                "contributors_count": data.get("collaborators_count", 0),
+                "commits_count": data.get("commit_count", 0),
+                "commiters_count": 0,
+                "ai_result": -1,
+                "description": data.get("description", "_") or "_",
+            }
+
+            self.repo_stats_getted = True
+            logger.debug(f"Initialized stats from prefetched data for {self.login_repo} (saved 1 API call)")
+
+        except Exception as e:
+            logger.debug(f"Failed to init from prefetched data: {e}")
+            self.repo_stats_getted = False
+
     def _is_corporate_domain(self, email: str) -> bool:
-        """Check if email domain is corporate (not a public provider)."""
-        from src.utils import extract_domain_from_email
+        """Check if email domain is corporate (not a public provider or noreply)."""
+        from src.utils import extract_domain_from_email, is_noreply_or_bot_domain
 
         domain = extract_domain_from_email(email)
-        return domain and domain not in constants.PUBLIC_EMAIL_DOMAINS
+        return domain and not is_noreply_or_bot_domain(domain)
 
     # Pre-compiled dangerous patterns (class-level)
     _dangerous_patterns_compiled = None
@@ -135,140 +186,118 @@ class GitParserStats:
             return True
 
     def _fetch_stats_via_graphql(self) -> bool:
+        """Fetch all repository stats using centralized GraphQL client method."""
         try:
             from src.searcher.graphql_client import get_graphql_client
 
             graphql_client = get_graphql_client()
-
-            query = """
-            query GetRepoStats($owner: String!, $name: String!) {
-              repository(owner: $owner, name: $name) {
-                createdAt
-                updatedAt
-                pushedAt
-                description
-                stargazerCount
-                forkCount
-                watchers { totalCount }
-                issues(states: OPEN) { totalCount }
-                hasIssuesEnabled
-                hasProjectsEnabled
-                hasWikiEnabled
-                diskUsage
-                repositoryTopics(first: 10) {
-                  nodes { topic { name } }
-                }
-                defaultBranchRef {
-                  target {
-                    ... on Commit {
-                      history { totalCount }
-                    }
-                  }
-                }
-              }
-            }
-            """
+            
+            if graphql_client._graphql_disabled:
+                return False
 
             owner, name = self.login_repo.split("/")
-            variables = {"owner": owner, "name": name}
+            stats = graphql_client.get_repository_full_stats(owner, name)
 
-            data = graphql_client.execute_query(query, variables)
+            if not stats:
+                return False
 
-            if data and "data" in data and data["data"] and "repository" in data["data"]:
-                repo = data["data"]["repository"]
-
-                # Check if repository is null (not found/deleted/private)
-                if repo is None:
-                    logger.info(f"Repository not found via GraphQL: {self.login_repo}")
-                    self.is_inaccessible = True
-                    self.inaccessibility_reason = "Репозиторий не найден (удален или приватный)"
-                    self.repo_stats_getted = True
-                    return True
-
-                # Parse timestamps
-                self.created_at = time.strftime(
-                    "%Y-%m-%d %H:%M:%S", time.strptime(repo["createdAt"], "%Y-%m-%dT%H:%M:%SZ")
-                )
-                self.updated_at = time.strftime(
-                    "%Y-%m-%d %H:%M:%S", time.strptime(repo["updatedAt"], "%Y-%m-%dT%H:%M:%SZ")
-                )
-
-                # Import safe helpers from utils
-                from src.utils import safe_get_count, safe_get_nested
-
-                # Безопасное извлечение topics
-                topics_value = "_"
-                repo_topics = repo.get("repositoryTopics")
-                if isinstance(repo_topics, dict):
-                    nodes = repo_topics.get("nodes", [])
-                    if isinstance(nodes, list):
-                        topics_value = (
-                            ",".join(
-                                [
-                                    t["topic"]["name"]
-                                    for t in nodes
-                                    if isinstance(t, dict) and "topic" in t and "name" in t.get("topic", {})
-                                ]
-                            )
-                            or "_"
-                        )
-
-                self.repo_stats_leak_stats_table = {
-                    "size": repo.get("diskUsage", 0),
-                    "stargazers_count": repo.get("stargazerCount", 0),
-                    "has_issues": 1 if repo.get("hasIssuesEnabled") else 0,
-                    "has_projects": 1 if repo.get("hasProjectsEnabled") else 0,
-                    "has_downloads": 0,
-                    "has_wiki": 1 if repo.get("hasWikiEnabled") else 0,
-                    "has_pages": 0,
-                    "forks_count": repo.get("forkCount", 0),
-                    "open_issues_count": safe_get_count(repo, "issues", 0),
-                    "subscribers_count": safe_get_count(repo, "watchers", 0),
-                    "topics": topics_value,
-                    "contributors_count": 0,
-                    "commits_count": safe_get_nested(
-                        repo, "defaultBranchRef", "target", "history", "totalCount", default=0
-                    ),
-                    "commiters_count": 0,
-                    "ai_result": -1,
-                    "description": repo.get("description", "_") or "_",
-                }
-
+            # Handle not found case
+            if stats.get("error") == "not_found":
+                logger.info(f"Repository not found via GraphQL: {self.login_repo}")
+                self.is_inaccessible = True
+                self.inaccessibility_reason = "Репозиторий не найден (удален или приватный)"
                 self.repo_stats_getted = True
-
-                # Check if repository is empty (diskUsage=0) - mark as inaccessible
-                if self.repo_stats_leak_stats_table.get("size", 0) == 0:
-                    logger.info(f"Repository has zero size (GraphQL), marking as inaccessible: {self.login_repo}")
-                    self.is_inaccessible = True
-                    self.inaccessibility_reason = "Репозиторий пустой (размер 0 байт)"
-                    self.coll_stats_getted = True  # Skip contributors
-                    self.comm_stats_getted = True  # Skip commits
-
-                logger.debug(f"Fetched stats via GraphQL for {self.login_repo}")
+                self.coll_stats_getted = True
+                self.comm_stats_getted = True
                 return True
-            elif data and "errors" in data:
-                logger.debug(f'GraphQL query returned errors: {data["errors"]}')
+
+            # Parse timestamps
+            if stats.get("created_at"):
+                try:
+                    self.created_at = time.strftime(
+                        "%Y-%m-%d %H:%M:%S", time.strptime(stats["created_at"], "%Y-%m-%dT%H:%M:%SZ")
+                    )
+                except ValueError:
+                    pass
+            if stats.get("updated_at"):
+                try:
+                    self.updated_at = time.strftime(
+                        "%Y-%m-%d %H:%M:%S", time.strptime(stats["updated_at"], "%Y-%m-%dT%H:%M:%SZ")
+                    )
+                except ValueError:
+                    pass
+
+            # Extract topics
+            topics = stats.get("topics", [])
+            topics_value = ",".join(topics) if topics else "_"
+
+            # Set contributors from GraphQL response
+            self.contributors_stats_accounts_table = [
+                {"account": user["login"], "need_monitor": 0}
+                for user in stats.get("contributors", [])
+            ]
+            self.coll_stats_getted = True
+
+            # Set commit authors with monitoring score calculation
+            for author in stats.get("commit_authors", []):
+                email = author.get("email", "")
+                name = author.get("name", "")
+                if email:
+                    monitoring_score = self._calculate_monitoring_score(email, self.login_repo, name)
+                    self.commits_stats_commiters_table.append({
+                        "commiter_name": name,
+                        "commiter_email": email,
+                        "need_monitor": monitoring_score,
+                        "related_account_id": 0,
+                    })
+            self.comm_stats_getted = True
+
+            # Build stats table
+            self.repo_stats_leak_stats_table = {
+                "size": stats.get("size", 0),
+                "stargazers_count": stats.get("stargazers_count", 0),
+                "has_issues": 1 if stats.get("has_issues") else 0,
+                "has_projects": 1 if stats.get("has_projects") else 0,
+                "has_downloads": 0,
+                "has_wiki": 1 if stats.get("has_wiki") else 0,
+                "has_pages": 0,
+                "forks_count": stats.get("forks_count", 0),
+                "open_issues_count": stats.get("open_issues_count", 0),
+                "subscribers_count": stats.get("watchers_count", 0),
+                "topics": topics_value,
+                "contributors_count": stats.get("contributors_count", 0),
+                "commits_count": stats.get("commits_count", 0),
+                "commiters_count": len(self.commits_stats_commiters_table),
+                "ai_result": -1,
+                "description": stats.get("description", "_") or "_",
+            }
+
+            self.repo_stats_getted = True
+
+            # Check if repository is empty
+            if self.repo_stats_leak_stats_table.get("size", 0) == 0:
+                logger.info(f"Repository has zero size (GraphQL), marking as inaccessible: {self.login_repo}")
+                self.is_inaccessible = True
+                self.inaccessibility_reason = "Репозиторий пустой (размер 0 байт)"
+
+            logger.debug(f"Fetched ALL stats via single GraphQL query for {self.login_repo}")
+            return True
+
         except Exception as e:
             logger.debug(f"GraphQL stats fetch failed: {e}")
-
-        return False
+            return False
 
     # check repository stats:
     def fetch_repository_stats(self):  # Renamed from get_repo_stats for better clarity
         if self.type == "Repository" and not self.repo_stats_getted:
-            try:
-                from src.searcher.graphql_client import get_graphql_client
+            # Try GraphQL first (gets all stats in one request)
+            if self._fetch_stats_via_graphql():
+                return
+            # Don't fallback to REST if marked as inaccessible by GraphQL
+            if self.is_inaccessible:
+                return
 
-                graphql_client = get_graphql_client()
-                if not graphql_client._graphql_disabled:
-                    if self._fetch_stats_via_graphql():
-                        return
-                    # Don't fallback to REST if GraphQL marked as inaccessible
-                    if self.is_inaccessible:
-                        return
-            except (ImportError, RuntimeError, Exception) as e:
-                logger.debug(f"GraphQL client initialization failed: {e}")
-
+        # Fallback to REST API
         try:
             response_obj = self.request_page(self.repo_url, wait_if_no_tokens=False)
 

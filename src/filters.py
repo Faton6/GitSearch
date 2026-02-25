@@ -19,7 +19,6 @@ from github import Github, GithubException, RateLimitExceededException
 from src import Connector, constants
 from src.logger import logger, CLR
 from src import utils
-from src.exceptions import ScanError, TimeoutScanError, RepositoryNotFoundError, RepositoryAccessDeniedError, CloneError
 
 exclusions: tuple[str]
 with open(constants.MAIN_FOLDER_PATH / "src" / "exclude_list.txt", "r") as fd:
@@ -27,7 +26,7 @@ with open(constants.MAIN_FOLDER_PATH / "src" / "exclude_list.txt", "r") as fd:
 
 
 def _exc_catcher(func):
-    """Decorator for catching exceptions in scan methods with typed exceptions."""
+    """Decorator for catching exceptions in scan methods."""
 
     def wrapper(*args, **kwargs):
         try:
@@ -36,27 +35,13 @@ def _exc_catcher(func):
         except subprocess.TimeoutExpired as e:
             scanner_name = func.__name__.replace("_scan", "").replace("_", "-")
             url = args[0].url if args and hasattr(args[0], "url") else ""
-            logger.error("TimeoutExpired exception in %s", func.__name__)
-            raise TimeoutScanError(scanner_name, url, timeout_seconds=getattr(e, "timeout", 0))
-        except RepositoryNotFoundError:
-            raise  # Re-raise typed exceptions
-        except RepositoryAccessDeniedError:
-            raise
-        except CloneError:
-            raise
-        except ScanError:
+            logger.error("TimeoutExpired in %s for %s", scanner_name, url)
             raise
         except Exception as exc:
             logger.error("Exception in %s: %s", func.__name__, exc)
             return 2
 
     return wrapper
-
-
-class CheckerException(ScanError):
-    """Legacy exception for backward compatibility."""
-
-    pass
 
 
 INITED = 0x0001
@@ -225,224 +210,6 @@ class Checker:
 
             self._cleaned = True
 
-    # Removed: _pywhat_analyze_names - use utils.pywhat_analyze directly
-
-    def _clone_with_pygithub(self) -> bool:
-        """
-        Clone repository using PyGithub API instead of git subprocess.
-
-        Benefits:
-        - No filesystem complexity or directory management issues
-        - Direct API access through existing rate limiter
-        - Downloads only needed files
-        - Reduced disk space usage
-
-        Returns:
-            bool: True if cloning was successful, False otherwise
-        """
-        try:
-            # Extract owner and repo name from URL
-            # URL format: https://github.com/owner/repo
-            parts = self.url.rstrip("/").split("/")
-            if len(parts) < 2:
-                logger.error(f"Invalid GitHub URL format: {self.url}")
-                return False
-
-            owner, repo_name = parts[-2], parts[-1]
-            logger.info(f"Cloning {owner}/{repo_name} using PyGithub API")
-
-            # Use rate limiter to get best available token for core API
-            from src.github_rate_limiter import get_rate_limiter, is_initialized
-
-            if is_initialized():
-                rate_limiter = get_rate_limiter()
-                # Get token for core API (not search!)
-                token = rate_limiter.get_best_token(resource="core")
-                if not token:
-                    logger.error("No GitHub tokens available for PyGithub clone")
-                    return False
-
-                # Check if token has enough core quota (need at least 50 for typical repo)
-                token_quota = rate_limiter.tokens.get(token)
-                if token_quota:
-                    core_quota = token_quota.get_resource_quota("core")
-                    if core_quota.remaining < 50:
-                        wait_time = core_quota.seconds_until_reset
-                        if wait_time > 0 and wait_time < 120:  # Wait max 2 minutes
-                            logger.info(
-                                f"Core API quota low ({core_quota.remaining}), waiting {wait_time:.0f}s for reset..."
-                            )
-                            time.sleep(wait_time + 1)
-                        elif wait_time >= 120:
-                            logger.warning(
-                                f"Core API quota low ({core_quota.remaining}), reset in {wait_time:.0f}s - falling back to git clone"
-                            )
-                            return False
-            else:
-                token = constants.GITHUB_CLONE_TOKEN
-                if not token:
-                    logger.error("No GitHub token configured for PyGithub clone")
-                    return False
-
-            # Initialize GitHub client with best available token
-            # Disable retry (retry=None with Retry object) to handle rate limits ourselves
-            # Set timeout to prevent long waits
-            g = Github(token, retry=None, timeout=30)
-
-            try:
-                # Get repository
-                repo = g.get_repo(f"{owner}/{repo_name}")
-
-                # Create repos directory
-                os.makedirs(self.repos_dir, exist_ok=True)
-
-                # Track API calls for rate limiting
-                api_calls = [0]  # Use list to allow modification in nested function
-                max_api_calls = 500  # Safety limit
-
-                # Download all contents recursively
-                def download_contents(contents, path=""):
-                    """Recursively download repository contents"""
-                    for content_file in contents:
-                        # Check API call limit
-                        api_calls[0] += 1
-                        if api_calls[0] > max_api_calls:
-                            logger.warning(f"API call limit reached ({max_api_calls}), stopping download")
-                            return
-
-                        file_path = os.path.join(self.repos_dir, path, content_file.name)
-
-                        if content_file.type == "dir":
-                            # Create directory and recurse
-                            os.makedirs(file_path, exist_ok=True)
-                            try:
-                                download_contents(
-                                    repo.get_contents(content_file.path), os.path.join(path, content_file.name)
-                                )
-                            except RateLimitExceededException:
-                                logger.warning(f"Rate limit hit while accessing directory {content_file.path}")
-                                raise  # Re-raise to stop clone
-                            except GithubException as e:
-                                if e.status == 403:
-                                    logger.warning(
-                                        f"Access forbidden for directory {content_file.path}: rate limit likely"
-                                    )
-                                    raise  # Re-raise to stop clone and trigger fallback
-                                logger.warning(f"Cannot access directory {content_file.path}: {e}")
-                        else:
-                            # Download file
-                            try:
-                                # Check if file should be excluded
-                                skip_file = False
-                                for ext in self.file_ignore:
-                                    if content_file.name.endswith(ext):
-                                        skip_file = True
-                                        break
-
-                                if not skip_file:
-                                    # Skip symlinks and special files
-                                    if content_file.type not in ["file", "blob"]:
-                                        logger.debug(
-                                            f"Skipping non-file content: {content_file.path} (type: {content_file.type})"
-                                        )
-                                        continue
-
-                                    # Try decoded_content first, fall back to raw content for binary/unknown encoding files
-                                    file_content = None
-                                    try:
-                                        file_content = content_file.decoded_content
-                                    except RateLimitExceededException:
-                                        raise  # Re-raise to stop clone
-                                    except GithubException as e:
-                                        if e.status == 403:
-                                            raise  # Re-raise 403 to stop clone
-                                        # For files with unsupported encoding (binary files, etc.)
-                                        try:
-                                            file_content = content_file.content
-                                        except Exception:
-                                            logger.debug(f"Cannot get content for {content_file.path}, skipping")
-                                            continue
-                                    except Exception:
-                                        # For files with unsupported encoding (binary files, etc.)
-                                        try:
-                                            file_content = content_file.content
-                                        except Exception:
-                                            logger.debug(f"Cannot get content for {content_file.path}, skipping")
-                                            continue
-
-                                    # Verify we have valid bytes content
-                                    if file_content is None:
-                                        logger.debug(f"File content is None for {content_file.path}, skipping")
-                                        continue
-
-                                    # Convert to bytes if needed
-                                    if isinstance(file_content, str):
-                                        file_content = file_content.encode("utf-8")
-
-                                    if not isinstance(file_content, bytes):
-                                        logger.warning(
-                                            f"Invalid content type for {content_file.path}: {type(file_content)}, skipping"
-                                        )
-                                        continue
-
-                                    with open(file_path, "wb") as f:
-                                        f.write(file_content)
-                            except Exception as e:
-                                logger.warning(f"Cannot download file {content_file.path}: {e}")
-
-                # Start downloading from root
-                root_contents = repo.get_contents("")
-                download_contents(root_contents)
-
-                logger.info(f"Successfully cloned {owner}/{repo_name} via API")
-
-                # Create report directory
-                os.makedirs(self.report_dir, exist_ok=True)
-
-                # Note: We don't initialize git.Repo here since we didn't use git clone
-                # If git operations are needed later, we can initialize it separately
-                self.repo = None
-
-                return True
-
-            except RateLimitExceededException as e:
-                logger.warning(f"Rate limit exceeded during PyGithub clone for {self.url}")
-                # Update rate limiter about this error (core API)
-                if is_initialized():
-                    rate_limiter = get_rate_limiter()
-                    retry_after = getattr(e, "headers", {}).get("Retry-After")
-                    rate_limiter.handle_rate_limit_error(
-                        token, int(retry_after) if retry_after else None, resource="core"
-                    )
-                self.secrets = {"Scan_error": f"Rate limit exceeded: {self.url}"}
-                return False
-
-            except GithubException as e:
-                if e.status == 404:
-                    logger.warning(f"Repository not found: {self.url}")
-                    self.secrets = {"Scan_error": f"Repository not found: {self.url}"}
-                elif e.status == 403:
-                    logger.warning(
-                        f'Access forbidden (likely rate limit) for {self.url}: {e.data.get("message", str(e)) if hasattr(e, "data") else str(e)}'
-                    )
-                    # Update rate limiter about this error (core API)
-                    if is_initialized():
-                        rate_limiter = get_rate_limiter()
-                        retry_after = getattr(e, "headers", {}).get("Retry-After")
-                        rate_limiter.handle_rate_limit_error(
-                            token, int(retry_after) if retry_after else 60, resource="core"
-                        )
-                    self.secrets = {"Scan_error": f"Access forbidden (rate limit): {self.url}"}
-                else:
-                    logger.error(f"GitHub API error for {self.url}: {e}")
-                    self.secrets = {"Scan_error": f"GitHub API error: {str(e)}"}
-                return False
-
-        except Exception as exc:
-            logger.error(f"PyGithub clone failed for {self.url}: {exc}")
-            self.secrets = {"Scan_error": f"PyGithub clone failed: {str(exc)}"}
-            return False
-
     def clone(self):
         """Clone repository with proper error handling and cleanup"""
 
@@ -475,38 +242,7 @@ class Checker:
 
             clone_success = False
 
-            # Try PyGithub first if configured
-            if constants.CLONE_METHOD == "pygithub":
-                logger.info("Attempting clone via PyGithub API for %s", self.url)
-
-                # Clean before attempt
-                self._clean_repo_dirs()
-
-                # Reset cleanup flag to allow directory creation
-                with self._cleanup_lock:
-                    self._cleaned = False
-
-                clone_success = self._clone_with_pygithub()
-
-                if clone_success:
-                    # Get contributor stats if needed
-                    try:
-                        self.obj.stats.fetch_contributors_stats()
-                    except Exception as e:
-                        logger.warning(f"Cannot fetch contributor stats via API: {e}")
-
-                    logger.info(f"Successfully cloned {self.url} via PyGithub")
-                    self.status |= CLONED
-                    return
-                elif not constants.CLONE_FALLBACK_TO_GIT:
-                    # PyGithub failed and no fallback
-                    logger.error(f"PyGithub clone failed for {self.url}, no fallback enabled")
-                    self._clean_repo_dirs()
-                    self.status |= NOT_CLONED
-                    return
-                else:
-                    logger.warning(f"PyGithub clone failed for {self.url}, falling back to git clone")
-
+            
             # Use traditional git clone (either as primary method or fallback)
             for try_clone in range(constants.MAX_TRY_TO_CLONE):
                 try:
@@ -1526,12 +1262,7 @@ class Checker:
             # Фильтруем только если явно не релевантно (низкий скор)
             if result["CompanyRelevance"] > 0 or result["ContextualScore"] > 0 or verified:
                 enhanced_results.append(result)
-                logger.debug(f"TruffleHog: KEPT result - {detector_name} (verified={verified})")
-            else:
-                logger.info(f"TruffleHog: FILTERED OUT - {detector_name} (verified={verified})")
-
-        logger.info(f"TruffleHog: After relevance filter: {len(enhanced_results)}/{len(results)} results kept")
-
+                
         # Сортируем по релевантности
         enhanced_results.sort(
             key=lambda x: (x.get("Verified", False), x.get("CompanyRelevance", 0), x.get("ContextualScore", 0)),
@@ -1706,7 +1437,7 @@ class Checker:
         if self.status & NOT_CLONED:
             self.status |= SCANNED
         elif self.status & CLONED == 0:
-            raise CheckerException("You forgot call checker.clone() before scan()!")
+            logger.error("You forgot call checker.clone() before scan()!")
         else:
             # self._pydriller_scan() TODO repair dependities
             self.scan()

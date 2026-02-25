@@ -10,7 +10,7 @@ Usage:
     python cli.py search --query "api_key" --language python --days 7
     python cli.py scan --repo "owner/repo" --scanners gitleaks trufflehog
     python cli.py status
-    python cli.py config --show
+    python cli.py metrics
 
 For full usage: python cli.py --help
 """
@@ -18,7 +18,6 @@ For full usage: python cli.py --help
 import argparse
 import sys
 import os
-import json
 from datetime import datetime
 
 
@@ -212,9 +211,7 @@ def cmd_status(args):
         ("src.ai_analyzer", "AI Analyzer"),
         ("src.github_rate_limiter", "Rate Limiter"),
         ("src.metrics", "Metrics"),
-        ("src.health_check", "Health Check"),
         ("src.temp_manager", "Temp Manager"),
-        ("src.config_validator", "Config Validator"),
     ]
 
     for module_name, display_name in modules:
@@ -292,92 +289,6 @@ def cmd_status(args):
     return 0
 
 
-def cmd_config(args):
-    """Show or validate configuration."""
-    print("\n⚙️  GitSearch Configuration")
-    print("=" * 50)
-
-    if args.validate:
-        # Validate config
-        try:
-            from src.config_validator import validate_config, load_config_from_env
-
-            config = load_config_from_env()
-            errors = validate_config(config)
-
-            if errors:
-                print("\n❌ Configuration errors:")
-                for error in errors:
-                    print(f"   • {error}")
-                return 1
-            else:
-                print("\n✅ Configuration is valid")
-                return 0
-
-        except Exception as e:
-            print(f"\n❌ Validation failed: {e}")
-            return 1
-
-    if args.show:
-        # Show current config (mask sensitive values)
-        sensitive_keys = ["GH_TOKENS", "DB_PASSWORD", "API_KEY", "SECRET"]
-
-        print("\n📋 Environment Variables:")
-
-        # GitSearch-specific vars
-        gitsearch_vars = [
-            "GH_TOKENS",
-            "DB_HOST",
-            "DB_PORT",
-            "DB_NAME",
-            "DB_USER",
-            "DB_PASSWORD",
-            "TEMP_FOLDER",
-            "REPORTS_FOLDER",
-            "LOGS_FOLDER",
-            "SEARCH_QUERY",
-            "SEARCH_LANGUAGE",
-            "SEARCH_DAYS",
-            "AI_ANALYSIS_ENABLED",
-            "AI_PROVIDER",
-            "AI_MODEL",
-            "SCANNERS",
-            "CLONE_METHOD",
-            "SCAN_DEEPSCAN",
-            "LOG_LEVEL",
-            "LOG_JSON_FORMAT",
-            "TOGETHER_API_KEY",
-            "OPENROUTER_API_KEY",
-            "FIREWORKS_API_KEY",
-        ]
-
-        for var in sorted(gitsearch_vars):
-            value = os.environ.get(var, "")
-            if value:
-                # Mask sensitive values
-                is_sensitive = any(s in var.upper() for s in sensitive_keys)
-                if is_sensitive and len(value) > 8:
-                    display = value[:4] + "*" * 8 + value[-4:] if len(value) > 16 else "*" * len(value)
-                else:
-                    display = value
-                print(f"   {var}={display}")
-            else:
-                print(f"   {var}=(not set)")
-
-    if args.json_file:
-        # Load from JSON file
-        try:
-            with open(args.json_file, "r") as f:
-                config = json.load(f)
-            print(f"\n📄 Loaded config from: {args.json_file}")
-            print(json.dumps(config, indent=2))
-        except Exception as e:
-            print(f"\n❌ Failed to load config: {e}")
-            return 1
-
-    return 0
-
-
 def cmd_metrics(args):
     """Show metrics."""
     try:
@@ -396,53 +307,6 @@ def cmd_metrics(args):
         return 1
 
 
-def cmd_health(args):
-    """Run health check."""
-    try:
-        from src.health_check import get_health_checker
-
-        checker = get_health_checker()
-
-        if args.ready:
-            result = checker.check_readiness()
-            status_ok = result.get("ready", False)
-        else:
-            result = checker.check_health()
-            status_ok = result.get("status") == "healthy"
-
-        print(json.dumps(result, indent=2, default=str))
-
-        return 0 if status_ok else 1
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        return 1
-
-
-def cmd_serve(args):
-    """Start health check HTTP server."""
-    try:
-        from src.health_check import get_health_checker
-
-        print(f"\n🌐 Starting health check server on port {args.port}")
-        print("   Endpoints:")
-        print(f"   • http://0.0.0.0:{args.port}/health")
-        print(f"   • http://0.0.0.0:{args.port}/ready")
-        print(f"   • http://0.0.0.0:{args.port}/metrics")
-        print(f"   • http://0.0.0.0:{args.port}/status")
-        print("\nPress Ctrl+C to stop\n")
-
-        checker = get_health_checker()
-        checker.start_server(port=args.port, background=False)
-
-        return 0
-    except KeyboardInterrupt:
-        print("\n👋 Server stopped")
-        return 0
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        return 1
-
-
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -454,8 +318,7 @@ Examples:
   %(prog)s search -q "api_key" -l python -d 7
   %(prog)s scan -r "owner/repo" -s gitleaks trufflehog
   %(prog)s status
-  %(prog)s config --validate
-  %(prog)s serve --port 8080
+  %(prog)s metrics
         """,
     )
 
@@ -484,23 +347,9 @@ Examples:
     # Status command
     _ = subparsers.add_parser("status", help="Show system status")  # noqa: F841
 
-    # Config command
-    config_parser = subparsers.add_parser("config", help="Configuration management")
-    config_parser.add_argument("--show", action="store_true", help="Show current configuration")
-    config_parser.add_argument("--validate", action="store_true", help="Validate configuration")
-    config_parser.add_argument("--json-file", help="Load config from JSON file")
-
     # Metrics command
     metrics_parser = subparsers.add_parser("metrics", help="Show metrics")
     metrics_parser.add_argument("-f", "--format", choices=["json", "prometheus"], default="json", help="Output format")
-
-    # Health command
-    health_parser = subparsers.add_parser("health", help="Run health check")
-    health_parser.add_argument("--ready", action="store_true", help="Check readiness instead of health")
-
-    # Serve command
-    serve_parser = subparsers.add_parser("serve", help="Start health check HTTP server")
-    serve_parser.add_argument("-p", "--port", type=int, default=8080, help="Port (default: 8080)")
 
     args = parser.parse_args()
 
@@ -516,10 +365,7 @@ Examples:
         "search": cmd_search,
         "scan": cmd_scan,
         "status": cmd_status,
-        "config": cmd_config,
         "metrics": cmd_metrics,
-        "health": cmd_health,
-        "serve": cmd_serve,
     }
 
     handler = commands.get(args.command)

@@ -39,77 +39,9 @@ class UniversalGitHubSearch:
             SearchType.ISSUES: f"{base_url}/issues",
         }.get(self.search_type)
 
-        self.graphql_queries = {
-            SearchType.REPOSITORIES: """
-                query SearchRepos($query: String!, $first: Int!, $after: String) {
-                  search(query: $query, type: REPOSITORY, first: $first, after: $after) {
-                    repositoryCount
-                    pageInfo { hasNextPage endCursor }
-                    nodes {
-                      ... on Repository {
-                        name
-                        owner { login }
-                        url
-                        isPrivate
-                        createdAt
-                        updatedAt
-                        pushedAt
-                        description
-                        stargazerCount
-                        forkCount
-                        watchers { totalCount }
-                        issues(states: OPEN) { totalCount }
-                        hasIssuesEnabled
-                        hasProjectsEnabled
-                        hasWikiEnabled
-                        diskUsage
-                        primaryLanguage { name }
-                        repositoryTopics(first: 10) {
-                          nodes { topic { name } }
-                        }
-                        defaultBranchRef {
-                          target {
-                            ... on Commit {
-                              history { totalCount }
-                              author { name email user { login } }
-                            }
-                          }
-                        }
-                        collaborators { totalCount }
-                      }
-                    }
-                  }
-                  rateLimit { limit remaining resetAt cost }
-                }
-            """,
-            SearchType.CODE: """
-                query SearchCode($query: String!, $first: Int!, $after: String) {
-                  search(query: $query, type: CODE, first: $first, after: $after) {
-                    codeCount
-                    pageInfo { hasNextPage endCursor }
-                    nodes {
-                      ... on Blob {
-                        repository {
-                          name
-                          owner { login }
-                          url
-                          isPrivate
-                          createdAt
-                          updatedAt
-                          stargazerCount
-                          forkCount
-                          diskUsage
-                          description
-                        }
-                        path
-                        text
-                      }
-                    }
-                  }
-                  rateLimit { limit remaining resetAt cost }
-                }
-            """,
-        }
+        # GraphQL queries are now handled by graphql_client.py
+        # This list defines which search types support GraphQL
+        self.graphql_supported_types = {SearchType.REPOSITORIES, SearchType.CODE}
 
     def _get_token(self) -> Optional[str]:
         # Determine resource type based on search type
@@ -174,7 +106,8 @@ class UniversalGitHubSearch:
             time.sleep(retry_after)
 
     def _search_graphql(self, query: str, max_results: int = 100) -> List[Dict]:
-        if self.search_type not in self.graphql_queries:
+        """Execute GraphQL search using optimized methods from graphql_client."""
+        if self.search_type not in self.graphql_supported_types:
             return []
 
         try:
@@ -182,95 +115,21 @@ class UniversalGitHubSearch:
 
             graphql_client = get_graphql_client()
 
-            results = []
-            has_next_page = True
-            cursor = None
+            # Use optimized methods from graphql_client that handle pagination,
+            # rate limiting, and data conversion internally
+            if self.search_type == SearchType.REPOSITORIES:
+                results = graphql_client.search_repositories_with_stats(query, max_results)
+            elif self.search_type == SearchType.CODE:
+                results = graphql_client.search_code_with_context(query, max_results)
+            else:
+                return []
 
-            graphql_query = self.graphql_queries[self.search_type]
-
-            while has_next_page and len(results) < max_results:
-                variables = {"query": query, "first": min(100, max_results - len(results)), "after": cursor}
-
-                data = graphql_client.execute_query(graphql_query, variables)
-
-                if not data or "data" not in data or not data["data"]:
-                    break
-
-                search_data = data["data"].get("search", {})
-                nodes = search_data.get("nodes", [])
-
-                # Convert to unified format
-                for node in nodes:
-                    if node:
-                        converted = self._convert_graphql_to_rest(node)
-                        if converted:
-                            results.append(converted)
-
-                page_info = search_data.get("pageInfo", {})
-                has_next_page = page_info.get("hasNextPage", False)
-                cursor = page_info.get("endCursor")
-
-                logger.debug(f"GraphQL retrieved {len(results)} results")
-
+            logger.debug(f"GraphQL retrieved {len(results)} results")
             return results
 
         except Exception as e:
             logger.warning(f"GraphQL search failed: {e}")
             return []
-
-    def _convert_graphql_to_rest(self, node: Dict) -> Optional[Dict]:
-        try:
-            if self.search_type == SearchType.REPOSITORIES:
-                return {
-                    "name": node.get("name"),
-                    "full_name": f"{node['owner']['login']}/{node['name']}",
-                    "owner": {"login": node["owner"]["login"]},
-                    "html_url": node.get("url"),
-                    "private": node.get("isPrivate", False),
-                    "created_at": node.get("createdAt"),
-                    "updated_at": node.get("updatedAt"),
-                    "pushed_at": node.get("pushedAt"),
-                    "description": node.get("description"),
-                    "stargazers_count": node.get("stargazerCount", 0),
-                    "forks_count": node.get("forkCount", 0),
-                    "watchers_count": node.get("watchers", {}).get("totalCount", 0),
-                    "open_issues_count": node.get("issues", {}).get("totalCount", 0),
-                    "has_issues": node.get("hasIssuesEnabled", False),
-                    "has_projects": node.get("hasProjectsEnabled", False),
-                    "has_wiki": node.get("hasWikiEnabled", False),
-                    "has_downloads": False,
-                    "size": node.get("diskUsage", 0),
-                    "language": node.get("primaryLanguage", {}).get("name") if node.get("primaryLanguage") else None,
-                    "topics": [t["topic"]["name"] for t in node.get("repositoryTopics", {}).get("nodes", [])],
-                    "collaborators_count": node.get("collaborators", {}).get("totalCount", 0),
-                    "commit_count": node.get("defaultBranchRef", {})
-                    .get("target", {})
-                    .get("history", {})
-                    .get("totalCount", 0),
-                }
-
-            elif self.search_type == SearchType.CODE:
-                repo = node.get("repository", {})
-                return {
-                    "name": node.get("path", "").split("/")[-1],
-                    "path": node.get("path"),
-                    "html_url": f"{repo.get('url')}/blob/master/{node.get('path')}",
-                    "repository": {
-                        "name": repo.get("name"),
-                        "full_name": f"{repo['owner']['login']}/{repo['name']}",
-                        "owner": {"login": repo["owner"]["login"]},
-                        "html_url": repo.get("url"),
-                        "private": repo.get("isPrivate", False),
-                        "description": repo.get("description"),
-                        "size": repo.get("diskUsage", 0),
-                    },
-                }
-
-            return None
-
-        except Exception as e:
-            logger.error(f"Error converting GraphQL result: {e}")
-            return None
 
     def _search_rest(
         self, query: str, max_results: int = 100, per_page: int = 100
@@ -360,7 +219,7 @@ class UniversalGitHubSearch:
             return
 
         graphql_available = False
-        if self.use_graphql and self.search_type in self.graphql_queries:
+        if self.use_graphql and self.search_type in self.graphql_supported_types:
             try:
                 from src.searcher.graphql_client import get_graphql_client
 

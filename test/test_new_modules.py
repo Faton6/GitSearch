@@ -2,11 +2,9 @@
 """
 Tests for new GitSearch modules:
 - github_rate_limiter
-- ai_worker
+- ai_worker (now in AIObj)
 - temp_manager
-- config_validator
 - metrics
-- health_check
 
 Run with: pytest test_new_modules.py -v
 """
@@ -249,53 +247,6 @@ class TestTempFolderManager:
 
 
 # ====================
-# Config Validator Tests
-# ====================
-
-
-class TestConfigValidator:
-    """Tests for config validation."""
-
-    def test_pydantic_availability_flag(self):
-        """Test PYDANTIC_AVAILABLE flag exists."""
-        from src.config_validator import PYDANTIC_AVAILABLE
-
-        # Should be a boolean
-        assert isinstance(PYDANTIC_AVAILABLE, bool)
-
-    def test_dataclass_configs_exist(self):
-        """Test dataclass config classes are available."""
-        from src.config_validator import (
-            AIConfigData,
-            ScanConfigData,
-        )
-
-        # Should be able to instantiate with defaults
-        ai_config = AIConfigData()
-        assert ai_config.enabled is True
-        assert ai_config.timeout == 30
-
-        scan_config = ScanConfigData()
-        assert scan_config.clone_method == "git"
-
-    def test_validate_runtime_config(self):
-        """Test validate_runtime_config function."""
-        from src.config_validator import validate_runtime_config
-
-        warnings = validate_runtime_config()
-
-        # Should return a list
-        assert isinstance(warnings, list)
-
-    def test_load_and_validate_config_exists(self):
-        """Test load_and_validate_config function exists."""
-        from src.config_validator import load_and_validate_config
-
-        # Should be callable
-        assert callable(load_and_validate_config)
-
-
-# ====================
 # Metrics Tests
 # ====================
 
@@ -384,91 +335,6 @@ class TestMetricsCollector:
 
 
 # ====================
-# Health Check Tests
-# ====================
-
-
-class TestHealthChecker:
-    """Tests for HealthChecker class."""
-
-    def test_health_checker_creation(self):
-        """Test HealthChecker creation."""
-        from src.health_check import HealthChecker
-
-        checker = HealthChecker()
-
-        assert checker is not None
-
-    def test_register_custom_check(self):
-        """Test registering custom health check."""
-        from src.health_check import HealthChecker
-
-        checker = HealthChecker()
-        checker.register_check("custom", lambda: (True, "All good"))
-
-        health = checker.check_health()
-
-        assert "custom" in health["checks"]
-        assert health["checks"]["custom"]["healthy"] is True
-        assert health["checks"]["custom"]["message"] == "All good"
-
-    def test_check_health_returns_status(self):
-        """Test check_health returns proper structure."""
-        from src.health_check import HealthChecker, HealthStatus
-
-        checker = HealthChecker()
-        # Override checks to avoid real dependencies
-        checker._checks = {"test": lambda: (True, "OK")}
-
-        health = checker.check_health()
-
-        assert "status" in health
-        assert "timestamp" in health
-        assert "checks" in health
-        assert health["status"] == HealthStatus.HEALTHY
-
-    def test_check_health_unhealthy_on_failure(self):
-        """Test check_health returns unhealthy when check fails."""
-        from src.health_check import HealthChecker, HealthStatus
-
-        checker = HealthChecker()
-        checker._checks = {"failing_check": lambda: (False, "Something wrong")}
-
-        health = checker.check_health()
-
-        assert health["status"] == HealthStatus.UNHEALTHY
-        assert health["checks"]["failing_check"]["healthy"] is False
-
-    def test_check_readiness(self):
-        """Test readiness check."""
-        from src.health_check import HealthChecker
-
-        checker = HealthChecker()
-        # Mock database check
-        checker._check_database = lambda: (True, "Connected")
-        checker._check_github_api = lambda: (True, "Available")
-
-        ready = checker.check_readiness()
-
-        assert "ready" in ready
-        assert "timestamp" in ready
-
-    def test_get_detailed_status(self):
-        """Test detailed status."""
-        from src.health_check import HealthChecker
-
-        checker = HealthChecker()
-        checker._checks = {"test": lambda: (True, "OK")}
-
-        status = checker.get_detailed_status()
-
-        assert "service" in status
-        assert status["service"] == "gitsearch"
-        assert "uptime_seconds" in status
-        assert "health" in status
-
-
-# ====================
 # AI Worker Tests
 # ====================
 
@@ -479,7 +345,7 @@ class TestAIWorkerPool:
     @pytest.mark.slow
     def test_worker_pool_creation(self):
         """Test AIWorkerPool creation."""
-        from src.ai_worker import AIWorkerPool
+        from src.AIObj import AIWorkerPool
 
         pool = AIWorkerPool(max_workers=2, queue_size=10)
 
@@ -491,7 +357,7 @@ class TestAIWorkerPool:
 
     def test_task_creation(self):
         """Test AITask creation."""
-        from src.ai_worker import AITask
+        from src.AIObj import AITask
 
         task = AITask(priority=1, leak_obj={"file": "test.py", "secret": "xxx"}, callback=None)
 
@@ -500,7 +366,7 @@ class TestAIWorkerPool:
 
     def test_task_priority_ordering(self):
         """Test AITask priority comparison."""
-        from src.ai_worker import AITask
+        from src.AIObj import AITask
 
         task_high = AITask(priority=0, leak_obj={})  # HIGH priority
         task_normal = AITask(priority=1, leak_obj={})  # NORMAL priority
@@ -511,7 +377,7 @@ class TestAIWorkerPool:
 
     def test_task_priority_constants(self):
         """Test AITask has priority constants."""
-        from src.ai_worker import AITask
+        from src.AIObj import AITask
 
         assert AITask.HIGH == 0
         assert AITask.NORMAL == 1
@@ -525,22 +391,6 @@ class TestAIWorkerPool:
 
 class TestModulesIntegration:
     """Integration tests between modules."""
-
-    def test_metrics_with_health_check(self):
-        """Test metrics integration with health check."""
-        from src.health_check import HealthChecker
-        from src.metrics import MetricsCollector
-
-        metrics = MetricsCollector()
-        metrics.increment("health_checks_total")
-
-        checker = HealthChecker()
-        checker._checks = {"test": lambda: (True, "OK")}
-
-        status = checker.get_detailed_status()
-
-        # Should complete without errors
-        assert status is not None
 
     def test_rate_limiter_with_metrics(self):
         """Test rate limiter with metrics."""

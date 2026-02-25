@@ -19,7 +19,7 @@ def cleanup_on_exit():
     try:
         # Shutdown AI worker pool gracefully
         try:
-            from src.ai_worker import shutdown_ai_worker_pool
+            from src.AIObj import shutdown_ai_worker_pool
 
             shutdown_ai_worker_pool(wait=True)
             logger.info("AI worker pool shutdown complete")

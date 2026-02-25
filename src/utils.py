@@ -41,7 +41,7 @@ def check_temp_folder_size():
     Returns:
         Tuple of (repos_removed, bytes_freed) or None on error
     """
-    logger.info("Checking TEMP_FOLDER directory")
+    logger.debug("Checking TEMP_FOLDER directory")
 
     if not os.path.exists(constants.TEMP_FOLDER):
         logger.warning(f"TEMP_FOLDER does not exist: {constants.TEMP_FOLDER}")
@@ -54,7 +54,7 @@ def check_temp_folder_size():
         manager = get_temp_manager()
         stats = manager.get_stats()
 
-        logger.info(
+        logger.debug(
             f'Temp folder stats: size={stats["total_size_gb"]:.2f}GB/{stats["max_size_gb"]:.1f}GB '
             f'({stats["usage_percent"]:.1f}%), repos={stats["repo_count"]}/{stats["max_repos"]}, '
             f'cache_hit_rate={stats["cache_hit_rate"]:.1f}%'
@@ -616,6 +616,21 @@ def extract_domain_from_email(email: str) -> str:
         return email.split("@")[-1].lower().strip()
     except Exception:
         return ""
+
+
+def is_noreply_or_bot_domain(domain: str) -> bool:
+    """Return True if an email domain is a noreply / bot / CI address.
+
+    Checks explicit ``PUBLIC_EMAIL_DOMAINS`` set first, then falls back to
+    substring matching against ``NOREPLY_DOMAIN_KEYWORDS``  so that novel
+    noreply variants (e.g. ``noreply.bitbucket.org``) are also caught.
+    """
+    if not domain:
+        return False
+    domain = domain.lower().strip()
+    if domain in constants.PUBLIC_EMAIL_DOMAINS:
+        return True
+    return any(kw in domain for kw in constants.NOREPLY_DOMAIN_KEYWORDS)
 
 
 # =============================================================================
