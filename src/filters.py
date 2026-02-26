@@ -12,9 +12,6 @@ import git
 import threading
 from typing import Dict, FrozenSet, List
 
-# Third-party imports
-from github import Github, GithubException, RateLimitExceededException
-
 # Project lib's import
 from src import Connector, constants
 from src.logger import logger, CLR

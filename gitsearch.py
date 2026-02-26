@@ -8,6 +8,7 @@ import atexit
 # Project library imports
 from src import constants
 from src import Connector
+from src.glist.glist_scan import GlistScan
 from src.logger import logger
 from src.searcher.scanner import Scanner
 from src import deepscan
@@ -141,7 +142,7 @@ if __name__ == "__main__":
 
         # Github Gist scan
         logger.info("Start Gist scan")
-        # GlistScan.run(filter_='updated', quantity=30)
+        GlistScan.run(filter_='updated', quantity=30)
         utils.dumping_data()
 
         # Github scan

@@ -318,7 +318,7 @@ class GitSearchAPIClient:
                         params.append(value)
                     query += " WHERE " + " AND ".join(where_clauses)
 
-                query += f" LIMIT {limit} OFFSET {offset}"
+                query += f" ORDER BY id LIMIT {limit} OFFSET {offset}"
 
                 cursor.execute(query, params)
                 results = cursor.fetchall()

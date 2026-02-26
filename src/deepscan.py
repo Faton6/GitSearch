@@ -20,6 +20,7 @@ DEEP_SCAN_CONFIG = {
     "max_workers": 3,  # Number of parallel workers for deep scan
     "enable_ai_analysis": True,
     "required_scanners": ["gitleaks", "gitsecrets", "grepscan", "deepsecrets", "detect_secrets"],
+    "max_urls_per_run": 0,  # 0 = no limit, process all URLs from DB
 }
 
 LIST_SCAN_CONFIG = {
@@ -112,23 +113,14 @@ class DeepScanManager:
             Словарь {url: [leak_id, leak_obj]} для сканирования
         """
         urls_to_scan = constants.AutoVivification()
-        url_dump = Connector.dump_from_DB(mode=1)
+        url_dump = Connector.dump_from_DB_by_result(constants.RESULT_CODE_TO_DEEPSCAN)
 
         skipped_count = 0
-        for url_from_db in url_dump.keys():
-            # Проверка валидности URL перед добавлением
+        for url_from_db, url_data in url_dump.items():
             if not self._is_valid_github_url(url_from_db):
                 skipped_count += 1
                 continue
-
-            url_data = url_dump[url_from_db]
-            # Simplified type check - convert to int regardless of original type
-            try:
-                result_code = int(url_data[0])
-            except (ValueError, TypeError):
-                continue
-            if result_code == constants.RESULT_CODE_TO_DEEPSCAN:
-                urls_to_scan[url_from_db] = [url_data[1], None]
+            urls_to_scan[url_from_db] = [url_data[1], None]
 
         if skipped_count > 0:
             logger.info(f"Skipped {skipped_count} non-GitHub URLs")
@@ -144,23 +136,14 @@ class DeepScanManager:
             Словарь {url: [leak_id, leak_obj]} для повторного сканирования
         """
         urls_to_scan = constants.AutoVivification()
-        url_dump = Connector.dump_from_DB(mode=1)
+        url_dump = Connector.dump_from_DB_by_result(constants.RESULT_CODE_TO_SEND)
 
         skipped_count = 0
-        for url_from_db in url_dump.keys():
-            # Проверка валидности URL перед добавлением
+        for url_from_db, url_data in url_dump.items():
             if not self._is_valid_github_url(url_from_db):
                 skipped_count += 1
                 continue
-
-            url_data = url_dump[url_from_db]
-            # Simplified type check - convert to int regardless of original type
-            try:
-                result_code = int(url_data[0])
-            except (ValueError, TypeError):
-                continue
-            if result_code == constants.RESULT_CODE_TO_SEND:
-                urls_to_scan[url_from_db] = [url_data[1], None]
+            urls_to_scan[url_from_db] = [url_data[1], None]
 
         if skipped_count > 0:
             logger.info(f"Skipped {skipped_count} non-GitHub URLs during rescan")
@@ -241,14 +224,21 @@ class DeepScanManager:
         url_list = list(self.urls_to_scan.keys())
         batch_size = DEEP_SCAN_CONFIG["batch_size"]
         counter = 0
-        if len(url_list) > 500:
-            url_list = url_list[:500]
+        max_urls = DEEP_SCAN_CONFIG.get("max_urls_per_run", 0)
+        if max_urls > 0 and len(url_list) > max_urls:
+            url_list = url_list[:max_urls]
+        logger.info("Processing %d URLs (total in DB: %d)", len(url_list), len(self.urls_to_scan))
         for i in range(0, len(url_list), batch_size):
             batch_urls = url_list[i : i + batch_size]
             logger.info(f"Processing batch {i//batch_size + 1}: {len(batch_urls)} URLs. I={i}")
             counter += self._process_batch(batch_urls)
             self.send_objs()
         self.send_objs()
+        failed_count = len(url_list) - counter
+        logger.info(
+            "Deep scan run completed: %d/%d URLs processed successfully, %d failed",
+            counter, len(url_list), failed_count,
+        )
 
     def send_objs(self):
         """

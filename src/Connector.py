@@ -40,6 +40,17 @@ requests.urllib3.disable_warnings()
 APIClient = api_client.GitSearchAPIClient()
 
 
+def get_leak_id_by_url(url: str):
+    """Get leak_id for a specific URL via targeted DB query.
+
+    Returns (result, leak_id) tuple or None if not found.
+    Much cheaper than dump_from_DB which pages through the entire table.
+    """
+    results = APIClient.get_data("leak", {"url": url}, limit=1)
+    if results:
+        return [results[0].get("result"), results[0].get("id")]
+    return None
+
 def is_this_need_to_analysis(leak_obj):
     """Determine if leak needs analysis (False = clearly not a leak)."""
     if not getattr(leak_obj, "ready_to_send", False) and hasattr(leak_obj, "_check_status"):
@@ -80,20 +91,42 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
     counter = 1
     dumped_repo_list = []
     if mode == 0:
-        existing_urls = dump_from_DB(mode=1)
+        # Use in-memory cache instead of full DB dump.
+        # constants.url_from_DB is kept in sync by dumping_data() and updated
+        # below after each successful insert.  When it is not available ("-")
+        # we fall back to a targeted per-URL query.
+        use_cache = isinstance(constants.url_from_DB, dict)
+
         for scan_key in constants.RESULT_MASS.keys():
             for scanObj in constants.RESULT_MASS[scan_key].keys():
                 leak_obj = constants.RESULT_MASS[scan_key][scanObj]
-                leak_id_existing = existing_urls.get(leak_obj.repo_url)
 
                 if not is_this_need_to_analysis(leak_obj):
                     leak_obj.res_check = constants.RESULT_CODE_LEAK_NOT_FOUND
 
-                if leak_id_existing and leak_id_existing != 0:
+                # --- Check if URL already in DB (cheap) ---
+                url_exists = False
+                leak_id_existing = None
+
+                if use_cache and leak_obj.repo_url in constants.url_from_DB:
+                    url_exists = True
+                    # Cache hit — do a single targeted query for the ID
+                    id_result = get_leak_id_by_url(leak_obj.repo_url)
+                    if id_result:
+                        leak_id_existing = id_result[1]
+                elif not use_cache:
+                    id_result = get_leak_id_by_url(leak_obj.repo_url)
+                    if id_result:
+                        url_exists = True
+                        leak_id_existing = id_result[1]
+
+                if url_exists and leak_id_existing:
                     logger.info(
-                        "Updating existing leak for URL: {leak_obj.repo_url} (Leak ID: %s)", leak_id_existing[1]
+                        "Updating existing leak for URL: %s (Leak ID: %s)",
+                        leak_obj.repo_url,
+                        leak_id_existing,
                     )
-                    update_existing_leak(leak_id_existing[1], leak_obj)
+                    update_existing_leak(leak_id_existing, leak_obj)
                     continue
 
                 leak_write_data = leak_obj.write_obj()
@@ -101,7 +134,7 @@ def dump_to_DB(mode=0, result_deepscan=None):  # mode=0 - add obj to DB, mode=1 
                 if leak_write_data["leak_type"] == "None" or leak_obj.repo_url in dumped_repo_list:
                     continue
 
-                _ = leak_write_data.get("result", 4)  # noqa: F841
+                _ = leak_write_data.get("result", 4)
 
                 data_leak = {"tname": "leak", "dname": "GitSearch", "action": "add", "content": leak_write_data}
                 data_raw_report = {
@@ -210,7 +243,7 @@ def dump_from_DB(mode=0):
     checked_repos = {}
     logger.info("Dumping data from DB...")
 
-    limit, offset, total = 500, 0, 0
+    limit, offset, total = 2000, 0, 0
 
     while True:
         data = APIClient.get_data("leak", {}, limit=limit, offset=offset)
@@ -229,6 +262,32 @@ def dump_from_DB(mode=0):
     return checked_repos
 
 
+def dump_from_DB_by_result(result_code: int) -> dict:
+    """Fetch leaks with a specific result code.  Returns {url: [result, id]}.
+
+    Much lighter than dump_from_DB when only a subset of results is needed
+    (e.g. result=5 for deepscan, result=4 for rescan).
+    """
+    checked_repos = {}
+    limit, offset, total = 500, 0, 0
+
+    while True:
+        data = APIClient.get_data("leak", {"result": result_code}, limit=limit, offset=offset)
+        if not data:
+            break
+
+        for item in data:
+            checked_repos[item["url"]] = [item["result"], item["id"]]
+
+        total += len(data)
+        if len(data) < limit:
+            break
+        offset += limit
+
+    logger.info("Fetched %d leaks with result=%d from DB", total, result_code)
+    return checked_repos
+
+
 def dump_to_DB_req(filename, mode=0):
     with open(filename, "r") as file:
         backup_rep = json.load(file)
@@ -239,15 +298,34 @@ def dump_to_DB_req(filename, mode=0):
             leak_response = APIClient._make_request(backup_rep["scan"][i][0])
 
             # Проверка и извлечение ID утечки
-            if (
-                not leak_response.get("auth")
-                or not leak_response.get("content")
-                or "id" not in leak_response["content"]
-            ):
-                logger.error("Invalid leak response: %s", leak_response)
-                continue
+            content = leak_response.get("content")
+            if isinstance(content, dict) and "id" in content:
+                actual_leak_id = int(content["id"])
+            else:
+                # INSERT failed (likely duplicate key).  Try to find existing
+                # leak by URL and continue with updating linked tables.
+                url = backup_rep["scan"][i][0].get("content", {}).get("url", "")
+                if url:
+                    existing = APIClient.get_data("leak", {"url": url}, limit=1)
+                    if existing:
+                        actual_leak_id = int(existing[0]["id"])
+                        logger.info(
+                            "Duplicate URL %s already in DB (ID %d), continuing with linked data",
+                            url,
+                            actual_leak_id,
+                        )
+                    else:
+                        logger.error("Leak INSERT failed and URL not in DB: %s | response: %s", url, leak_response)
+                        continue
+                else:
+                    logger.error("Invalid leak response (no URL to recover): %s", leak_response)
+                    continue
 
-            actual_leak_id = int(leak_response["content"]["id"])
+            # Update in-memory cache so subsequent calls won't re-insert
+            url = backup_rep["scan"][i][0].get("content", {}).get("url", "")
+            if url and isinstance(constants.url_from_DB, dict):
+                result_code = backup_rep["scan"][i][0].get("content", {}).get("result", constants.RESULT_CODE_TO_SEND)
+                constants.url_from_DB[url] = str(result_code)
 
             # 2. Обработка raw_report
             data_raw_report = backup_rep["scan"][i][1]

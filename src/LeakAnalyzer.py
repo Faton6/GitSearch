@@ -19,7 +19,13 @@ from src.constants import (
     REPO_STARS_VERY_HIGH,
     REPO_FORKS_HIGH,
     REPO_CONTRIBUTORS_HIGH,
+    FORK_ACTIVE_COMMITS_MIN,
+    FORK_LOW_FORKS_MAX,
 )
+
+
+# Strict Base64 regex: only [A-Za-z0-9+/] with optional = padding, length >= 20
+_BASE64_STRICT_RE = re.compile(r"^[A-Za-z0-9+/]{20,}={0,2}$")
 
 
 class LeakAnalyzer:
@@ -99,6 +105,25 @@ class LeakAnalyzer:
                 del negative_keywords[kw]
 
     # Note: All validation helpers use utils module directly - no wrappers needed
+
+    @staticmethod
+    def _is_pure_base64_secret(value: str) -> bool:
+        """Return True when *value* looks like a raw base64-encoded blob.
+
+        Specifically excludes JWT tokens (start with ``eyJ``) and known
+        API-key prefixes (``ghp_``, ``gho_``, ``AKIA``, etc.) which happen
+        to use a base64-like alphabet but are real secrets.
+        """
+        if not value or len(value) < 20:
+            return False
+        stripped = value.strip()
+        # Exclude known structured tokens that look like base64
+        lower = stripped.lower()
+        if lower.startswith("eyj"):  # JWT
+            return False
+        if any(lower.startswith(p) for p in ("ghp_", "gho_", "ghu_", "ghs_", "akia")):
+            return False
+        return bool(_BASE64_STRICT_RE.match(stripped))
 
     def _is_false_positive_path(self, file_path: str) -> bool:
         """Check if file path indicates likely false positive (delegates to utils)."""
@@ -334,10 +359,10 @@ class LeakAnalyzer:
         forks_count = self.leak_obj.stats.repo_stats_leak_stats_table.get("forks_count", 0)
 
         # If fork has many commits relative to popularity, it might have original content
-        if commits_count > 100 and forks_count < 10:
-            return 0.1  # Small penalty for active forks
+        if commits_count > FORK_ACTIVE_COMMITS_MIN and forks_count < FORK_LOW_FORKS_MAX:
+            return 0.2  # Small penalty for active forks
         else:
-            return 0.3  # Larger penalty for typical forks
+            return 0.4  # Larger penalty for typical forks
 
     @functools.cached_property
     def _repo_stats(self) -> dict:
@@ -402,7 +427,7 @@ class LeakAnalyzer:
         company_country = constants.COMPANY_COUNTRY_MAP.get(
             self.leak_obj.company_id, constants.COMPANY_COUNTRY_MAP_DEFAULT
         )
-        if company_country != "ru":
+        if company_country != constants.COMPANY_COUNTRY_MAP_DEFAULT:
             return False
 
         committers = self.leak_obj.stats.commits_stats_commiters_table or []
@@ -416,7 +441,7 @@ class LeakAnalyzer:
             if re.search(r"[\u0400-\u04FF]", name):
                 return False
             # .ru domain → not foreign
-            if email.endswith(".ru"):
+            if email.endswith(constants.COMPANY_COUNTRY_MAP_DEFAULT):
                 return False
         return True
 
@@ -498,7 +523,7 @@ class LeakAnalyzer:
         if committer_analysis["has_company_match"]:
             score += 0.5  # Strong boost
         elif committer_analysis["has_corporate"]:
-            score += 0.35  # Medium-high boost for generic corporate email
+            score += 0.1   # Minor boost — generic corporate doesn't imply target relevance
         elif committer_analysis["all_use_public"]:
             score -= 0.1  # Slight penalty for all public emails
 
@@ -510,9 +535,8 @@ class LeakAnalyzer:
                 score -= 0.05
 
             if self._is_likely_personal_project():
-                score -= 0.15
+                score -= 0.05
 
-        # Very popular = likely OSS with examples (slight penalty)
         if self._is_very_popular_repository():
             score -= 0.1
         elif self._is_highly_popular_repository():
@@ -602,21 +626,42 @@ class LeakAnalyzer:
                 self.leak_obj.company_id, constants.COMPANY_COUNTRY_MAP_DEFAULT
             )
 
+            # Penalty for descriptions in CJK / Arabic / other scripts clearly
+            # irrelevant to RU or EN targets.  Applied before country-specific
+            # bonuses so that a Chinese-described repo cannot accumulate enough
+            # positive signals to offset the penalty.
+            _FOREIGN_SCRIPT_RE = re.compile(
+                r"[\u4E00-\u9FFF"        # CJK Unified Ideographs (Chinese)
+                r"\u3040-\u309F"          # Hiragana (Japanese)
+                r"\u30A0-\u30FF"          # Katakana (Japanese)
+                r"\uAC00-\uD7AF"          # Hangul Syllables (Korean)
+                r"\u0600-\u06FF"          # Arabic
+                r"\u0E00-\u0E7F"          # Thai
+                r"\u0900-\u097F"          # Devanagari (Hindi)
+                r"]"
+            )
+            if description and _FOREIGN_SCRIPT_RE.search(description):
+                # Count density: if >20% of chars are foreign-script, heavy penalty
+                foreign_chars = len(_FOREIGN_SCRIPT_RE.findall(description))
+                ratio = foreign_chars / max(len(description), 1)
+                if ratio > 0.2:
+                    score -= add_signal("foreign_language_penalty", 0.4)
+                elif ratio > 0.05:
+                    score -= add_signal("foreign_language_penalty", 0.3)
+
             if company_country == "ru":
                 if re.search(r"[\u0400-\u04FF]", self.leak_obj.author_name or ""):
-                    score += add_signal("ru_author", 0.05)
+                    score += add_signal("ru_author", 0.2)
                 if re.search(r"[\u0400-\u04FF]", description):
-                    score += add_signal("ru_description", 0.05)
+                    score += add_signal("ru_description", 0.2)
                 for committer in committer_list:
                     if re.search(r"[\u0400-\u04FF]", committer.get("commiter_name", "")):
-                        score += add_signal("ru_committer_name", 0.05)
+                        score += add_signal("ru_committer_name", 0.2)
                     if committer.get("commiter_email", "").lower().endswith(".ru"):
-                        score += add_signal("ru_email", 0.05)
+                        score += add_signal("ru_email", 0.2)
                     if re.search(r"@.+\.(com|org|net|io)$", committer.get("commiter_email", "").lower()):
-                        score -= add_signal("non_ru_email_penalty", 0.02)
-                # Aggregate: ALL committers look foreign for a RU target
-                if self._all_committers_are_foreign():
-                    score -= add_signal("all_foreign_committers", 0.10)
+                        score -= add_signal("non_ru_email_penalty", 0.1)
+                # NOTE: all_foreign_committers penalty is in _calculate_repo_credibility_score
             elif company_country == "en":
                 if re.fullmatch(r"[A-Za-z ._-]+", self.leak_obj.author_name or ""):
                     score += add_signal("en_author", 0.03)
@@ -629,26 +674,10 @@ class LeakAnalyzer:
                         score += add_signal("en_email", 0.02)
 
         # Factor 5: Enhanced popularity penalty with fork analysis
-        stars = stats_table.get("stargazers_count", 0)
-        commiters = stats_table.get("commiters_count", 0) or stats_table.get("contributors_count", 0)
-        if stars > REPO_STARS_HIGH:
-            score -= add_signal("popularity_penalty_medium", 0.1)
-        if stars > REPO_STARS_VERY_HIGH:
-            score -= add_signal("popularity_penalty_very_high", 0.3)
-        if commiters > 20:
-            score -= add_signal("contributors_penalty_low", 0.03)
-        if commiters > 50:
-            score -= add_signal("contributors_penalty", 0.05)
-        if commiters > 200:
-            score -= add_signal("contributors_penalty_high", 0.15)
-
-        # Very old repository penalty
-        if self._is_very_old_repository():
-            score -= add_signal("very_old_repo_penalty", 0.1)
-
-        fork_penalty = self._calculate_fork_penalty()
-        if fork_penalty:
-            score -= add_signal("fork_penalty", fork_penalty)
+        # NOTE: popularity, fork, age and foreign-committer penalties are
+        # already applied in _calculate_repo_credibility_score() which is
+        # blended into this score at the end.  They are NOT duplicated here
+        # to avoid double-counting.
 
         # Factor 6: AI assessment (if available and positive)
         ai_analysis = getattr(self.leak_obj, "ai_analysis", None)
@@ -657,7 +686,7 @@ class LeakAnalyzer:
             score += add_signal("ai_positive", ai_confidence * 0.5 + 0.1)
         elif ai_analysis and not ai_analysis.get("company_relevance", {}).get("is_related"):
             ai_confidence = ai_analysis.get("company_relevance", {}).get("confidence", 0.0)
-            score -= add_signal("ai_negative", ai_confidence * 0.3 + 0.05)
+            score -= add_signal("ai_negative", ai_confidence * 0.3 + 0.1)
 
         # CRITICAL: Check for corporate committer with company domain match
         # This is the STRONGEST signal - should NOT be penalized by credibility
@@ -770,6 +799,13 @@ class LeakAnalyzer:
                     final_weight = min(final_weight, 0.1)
 
                 return secret_type, final_weight
+
+        # Pure base64 blob with no rule match → very likely a false positive
+        raw_match = str(
+            secret_data.get("Match", "") or secret_data.get("match", "") or secret_data.get("Secret", "") or ""
+        )
+        if self._is_pure_base64_secret(raw_match):
+            return "base64_blob", 0.1 * weight_multiplier
 
         return "unknown", 0.3 * weight_multiplier
 
@@ -1108,6 +1144,7 @@ class LeakAnalyzer:
         # Track secret types and values for aggregate analysis
         secret_values_seen: Set[str] = set()
         secret_types_found: Dict[str, int] = {}
+        base64_only_count = 0  # count secrets that are pure base64 blobs
 
         # Enhanced scanner confidence weights
         scanner_base_weights = {
@@ -1192,6 +1229,10 @@ class LeakAnalyzer:
                     secret_score += context_score * 0.3
                     secret_score = max(0.0, secret_score)
 
+                    # Track pure base64 blobs
+                    if self._is_pure_base64_secret(secret_value):
+                        base64_only_count += 1
+
                     # Track high confidence secrets
                     if secret_score > 0.5:
                         high_confidence_secrets += 1
@@ -1208,9 +1249,23 @@ class LeakAnalyzer:
             elif fp_ratio > 0.5:
                 total_score *= 0.6
 
-        low_value_types = {"test_password", "dev_password", "dummy_password"}
+        low_value_types = {"test_password", "dev_password", "dummy_password", "base64_blob"}
         if secret_types_found and all(t in low_value_types for t in secret_types_found):
             total_score *= 0.2
+
+        # If ALL detected secrets are pure base64 blobs, heavily penalise.
+        # Base64 strings by themselves are almost never real leaked secrets —
+        # they are usually encoded config, serialised data, or binary chunks.
+        if actual_secrets > 0 and base64_only_count >= actual_secrets:
+            total_score *= 0.15
+            logger.debug("All %d secrets are base64 blobs — applying 0.15 penalty", actual_secrets)
+        elif actual_secrets > 0 and base64_only_count > 0:
+            # Partial base64 — reduce proportionally
+            b64_ratio = base64_only_count / actual_secrets
+            if b64_ratio >= 0.7:
+                total_score *= 0.4
+            elif b64_ratio >= 0.4:
+                total_score *= 0.7
 
         # Normalize score
 
@@ -1262,14 +1317,11 @@ class LeakAnalyzer:
         if ai_analysis and ai_analysis.get("severity_assessment", {}).get("score", 0.0) > 0.5:
             normalized_score += ai_analysis.get("severity_assessment", {}).get("score", 0.0) * 0.1
 
-        # CRITICAL: Corporate committer boost for sensitive data score
-        # If we have corporate committers, secrets are more likely real
+        # Only boost sensitive data score for TARGET company committers.
+        # Generic corporate committers are irrelevant to the target.
         if self.has_target_company_committer():
-            normalized_score = max(normalized_score, 0.5)  # Minimum 0.5 for target company
+            normalized_score = max(normalized_score, 0.5)
             normalized_score += 0.15
-        elif self._has_corporate_committer():
-            normalized_score = max(normalized_score, 0.35)  # Minimum 0.35 for any corporate
-            normalized_score += 0.1
 
         return min(round(normalized_score, 2), 1.0)
 
@@ -1333,7 +1385,8 @@ class LeakAnalyzer:
                 "dork_relevance": self.leak_obj.dork.lower() in self.leak_obj.repo_name.lower(),
                 "corporate_email_found": bool(corporate_committers),
                 "target_company_email_found": bool(target_company_committers),
-                "high_popularity": self.leak_obj.stats.repo_stats_leak_stats_table.get("stargazers_count", 0) > 100,
+                "high_popularity": self.leak_obj.stats.repo_stats_leak_stats_table.get("stargazers_count", 0)
+                > REPO_STARS_HIGH,
             },
             # HIGHLIGHT FOR ANALYST: Corporate committers indicate high relevance!
             "corporate_committers": corporate_committers,
@@ -1397,11 +1450,11 @@ class LeakAnalyzer:
         elif sensitive_data >= 0.5 and org_relevance >= 0.10:
             true_positive_chance = max(true_positive_chance, 0.4)
 
-        # Corporate committer guarantees high score
+        # Only TARGET company committer guarantees high score.
+        # Generic corporate committers (e.g. mozilla.com in a VTB search) are
+        # irrelevant and must NOT inflate the score.
         if self.has_target_company_committer():
             true_positive_chance = max(true_positive_chance, 0.8)
-        elif self._has_corporate_committer():
-            true_positive_chance = max(true_positive_chance, 0.6)
 
         true_positive_chance = round(min(true_positive_chance, 1.0), 2)
 
@@ -1458,7 +1511,9 @@ class LeakAnalyzer:
         if profitability is None:
             profitability = self.calculate_profitability()
 
-        if self.has_target_company_committer() or self._has_corporate_committer():
+        # Only TARGET company committers should block auto-close.
+        # Generic corporate emails (mozilla.com in a VTB search) are irrelevant.
+        if self.has_target_company_committer():
             return False
 
         false_positive_chance = profitability.get("false_positive_chance", 0.0)
@@ -1476,8 +1531,13 @@ class LeakAnalyzer:
             credibility < constants.VERY_LOW_CREDIBILITY_SCORE_THRESHOLD
             and org_relevance < constants.AUTO_FALSE_POSITIVE_ORG_THRESHOLD
         )
+        # Zero org relevance + no real secrets = almost certainly FP
+        no_relevance_no_secrets = (
+            org_relevance < 0.05
+            and sensitive_data <= constants.AUTO_FALSE_POSITIVE_SENSITIVE_THRESHOLD
+        )
 
-        return strong_fp_by_scores or weak_repo_and_context
+        return strong_fp_by_scores or weak_repo_and_context or no_relevance_no_secrets
 
     def has_insufficient_context(self, profitability: dict = None) -> bool:
         """Return True when target company or dork context is too weak for confident triage."""
