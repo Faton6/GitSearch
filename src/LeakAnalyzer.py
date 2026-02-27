@@ -125,10 +125,6 @@ class LeakAnalyzer:
             return False
         return bool(_BASE64_STRICT_RE.match(stripped))
 
-    def _is_false_positive_path(self, file_path: str) -> bool:
-        """Check if file path indicates likely false positive (delegates to utils)."""
-        return utils.is_false_positive_path(file_path)
-
     def _calculate_secret_entropy_score(self, secret_value: str, secret_type: str) -> float:
         """
         Calculate score based on entropy analysis.
@@ -258,7 +254,7 @@ class LeakAnalyzer:
 
         for file_path in file_paths:
             # Check for false positive paths first
-            if self._is_false_positive_path(file_path):
+            if utils.is_false_positive_path(file_path):
                 fp_path_count += 1
                 score -= 0.1  # Penalty for secrets in test/example paths
                 continue
@@ -492,10 +488,6 @@ class LeakAnalyzer:
             "has_company_match": has_company_match,
         }
 
-    def get_committers_analysis(self) -> dict:
-        """Public accessor (delegates to cached property)."""
-        return self._committers_analysis
-
     def _all_committers_use_public_email(self) -> bool:
         """Check if all committers use public email domains."""
         return self._committers_analysis["all_use_public"]
@@ -517,7 +509,7 @@ class LeakAnalyzer:
         score = 0.5  # Start neutral
 
         # Single analysis pass for all committer checks
-        committer_analysis = self.get_committers_analysis()
+        committer_analysis = self._committers_analysis
 
         # Target company email - strongest signal
         if committer_analysis["has_company_match"]:
@@ -844,7 +836,7 @@ class LeakAnalyzer:
                 context_score += weight  # weight is negative
 
         # ENHANCED: File path analysis for false positives
-        if self._is_false_positive_path(file_path):
+        if utils.is_false_positive_path(file_path):
             context_score -= 0.4  # Strong penalty for test/example paths
 
         # File path analysis - positive signals
@@ -878,8 +870,6 @@ class LeakAnalyzer:
         Returns:
             float: Validation score from 0.0 (fake) to 1.0 (likely real)
         """
-        if not isinstance(secret_data, dict):
-            return 0.3
 
         match_text = str(
             secret_data.get("Match", "") or secret_data.get("match", "") or secret_data.get("Secret", "") or ""
@@ -907,15 +897,15 @@ class LeakAnalyzer:
 
         # Mock/fixture data path
         if utils.is_mock_data_path(file_path):
-            total_penalty += 0.25
+            total_penalty += 0.15
 
         # Local host check
         if utils.contains_local_host(match_text):
-            total_penalty += 0.2
+            total_penalty += 0.1
 
         # Random string with keyword
         if utils.is_random_string_with_keyword(match_text, self.company_tokens):
-            total_penalty += 0.5
+            total_penalty += 0.2
 
         # Encoded data check
         if not utils.has_meaningful_structure(match_text) and utils.looks_like_encoded_data(match_text):
@@ -932,7 +922,7 @@ class LeakAnalyzer:
         type_validation_score = self._validate_by_secret_type(match_text, secret_type)
 
         # File path context
-        if self._is_false_positive_path(file_path):
+        if utils.is_false_positive_path(file_path):
             total_penalty += 0.2
 
         # Meaningful structure bonus
@@ -1089,7 +1079,7 @@ class LeakAnalyzer:
                 "master",
             }
             if match_lower in fake_passwords:
-                score = 0.05
+                score = 0.25
             elif len(match_text) < 6:
                 score = 0.15
             elif (
@@ -1149,7 +1139,7 @@ class LeakAnalyzer:
         # Enhanced scanner confidence weights
         scanner_base_weights = {
             "trufflehog": 0.9,  # Highest confidence
-            "gitleaks": 0.8,  # High confidence
+            "gitleaks": 0.7,  # High confidence
             "deepsecrets": 0.75,  # High confidence
             "kingfisher": 0.7,  # High confidence
             "detect_secrets": 0.65,  # Medium-high confidence
@@ -1695,16 +1685,54 @@ class LeakAnalyzer:
         except Exception:
             return template
 
-    def get_final_assessment(self) -> str:
-        """Generates a single, overall assessment for the analyst."""
+    @staticmethod
+    def _resolve_leak_level(unified_probability: float) -> tuple:
+        """Determine (lvl, message_key) from unified_probability using constants.LEAK_LEVEL_THRESHOLDS."""
+        for min_prob, lvl, msg_key in constants.LEAK_LEVEL_THRESHOLDS:
+            if unified_probability >= min_prob:
+                return lvl, msg_key
+        # Fallback (should not happen if thresholds include 0.0)
+        return 0, "no_chance"
+
+    def compute_full_analysis(self) -> dict:
+        """Single entry point for all scoring: profitability, unified probability,
+        verdict, credibility, level, assessment, and repo characteristics.
+
+        Replaces individual calls to get_final_assessment(),
+        calculate_profitability(), calculate_unified_probability(),
+        evaluate_incident_verdict(), _calculate_repo_credibility_score(),
+        and repo characteristic checks which previously duplicated work.
+        """
         profitability = self.calculate_profitability()
-        true_positive_chance = self.calculate_unified_probability(profitability)
-        lang = constants.LANGUAGE
-        if true_positive_chance >= 0.8:
-            return self._get_message("high_chance", lang)
-        elif true_positive_chance >= 0.5:
-            return self._get_message("medium_chance", lang)
-        elif true_positive_chance >= 0.2:
-            return self._get_message("low_chance", lang)
-        else:
-            return self._get_message("no_chance", lang)
+        unified_probability = self.calculate_unified_probability(profitability)
+        verdict = self.evaluate_incident_verdict(
+            unified_score=unified_probability,
+            profitability=profitability,
+        )
+
+        # Merge verdict fields into profitability for downstream consumers
+        profitability["unified_probability"] = unified_probability
+        profitability.update({
+            "target_result_code": verdict.get("target_result_code", constants.RESULT_CODE_TO_SEND),
+            "should_close": bool(verdict.get("should_close")),
+            "should_recheck": bool(verdict.get("should_recheck")),
+            "is_high_priority": bool(verdict.get("is_high_priority", False)),
+            "verdict_reason": verdict.get("reason", ""),
+        })
+
+        # Level + assessment from the same thresholds
+        lvl, msg_key = self._resolve_leak_level(unified_probability)
+        assessment = self._get_message(msg_key, constants.LANGUAGE)
+
+        return {
+            "profitability": profitability,
+            "unified_probability": unified_probability,
+            "verdict": verdict,
+            "lvl": lvl,
+            "assessment": assessment,
+            "credibility_score": self._calculate_repo_credibility_score(),
+            "is_tiny": self._is_tiny_repository(),
+            "is_personal": self._is_likely_personal_project(),
+            "is_popular_oss": self._is_very_popular_repository(),
+            "is_very_old": self._is_very_old_repository(),
+        }

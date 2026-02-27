@@ -679,26 +679,6 @@ class Checker:
 
         return matches
 
-    def _find_term_in_line(self, line, term):
-        """Проверяет наличие термина в строке с учетом границ слов (оптимизировано)."""
-        # Используем кешированный паттерн для точного совпадения
-        word_boundary_pattern = rf"\b{re.escape(term)}\b"
-        if self._get_compiled_regex(word_boundary_pattern, re.IGNORECASE).search(line):
-            return True
-
-        # Термин как часть слова (для названий компаний)
-        if len(term) > 2 and self._get_compiled_regex(re.escape(term), re.IGNORECASE).search(line):
-            # Проверяем, что это не длинная случайная строка
-            # Исключаем только очевидные хеши/случайные строки
-            hash_pattern = r"[a-f0-9]{30,}|[A-Za-z0-9+/]{25,}={0,2}"
-            if self._get_compiled_regex(hash_pattern).search(line):
-                return False
-
-            # Проверяем, что строка содержит осмысленные символы
-            return bool(self._get_compiled_regex(r"[a-zA-Z]{2,}").search(line))
-
-        return False
-
     #    @_exc_catcher
     def gitleaks_scan(self):
         scan_type = "gitleaks"
@@ -1133,16 +1113,6 @@ class Checker:
             return 2
 
     @_exc_catcher
-    def ai_deep_scan(self):
-        """AI глубокое сканирование"""
-        scan_type = "ai_deep_scan"
-        # Заглушка для AI сканирования - можно реализовать позже
-        self.secrets[scan_type] = constants.AutoVivification()
-        self.secrets[scan_type]["Info"] = "AI deep scan not implemented"
-        logger.info(f"\t- {scan_type} scan %s %s %s success (not implemented)", self.log_color, self.url, CLR["RESET"])
-        return 0
-
-    @_exc_catcher
     def trufflehog_scan(self):
         scan_type = "trufflehog"
         self.secrets[scan_type] = constants.AutoVivification()
@@ -1533,22 +1503,3 @@ class Checker:
 
         return result
 
-    def _collect_repo_text(self):
-        """Собирает текст из всех файлов репозитория"""
-        repo_text = ""
-
-        try:
-            for root, dirs, files in os.walk(self.repos_dir):
-                for file in files:
-                    _, ext = os.path.splitext(file.lower())
-                    if ext in constants.TEXT_FILE_EXTS:
-                        file_path = os.path.join(root, file)
-                        try:
-                            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                                repo_text += f.read()[:10000]  # Ограничиваем размер
-                        except Exception:
-                            continue
-        except Exception:
-            pass
-
-        return repo_text

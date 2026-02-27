@@ -132,6 +132,38 @@ class LeakObj(ABC):
             logger.error(f"Error adding AI analysis to status: {e}")
             self.status.append(self._get_message("ai_analysis_error", lang))
 
+    def _submit_ai_analysis(self):
+        """Submit AI analysis (async with fallback to sync) and wait for result."""
+        if not constants.AI_ANALYSIS_ENABLED or self.ai_analysis:
+            return
+        try:
+            from src.AIObj import submit_ai_analysis, AITask
+            import threading
+
+            priority = AITask.NORMAL
+            for committer in getattr(self.stats, "commits_stats_commiters_table", None) or []:
+                if committer.get("matches_company"):
+                    priority = AITask.HIGH
+                    break
+
+            ai_done = threading.Event()
+            submit_ai_analysis(self, callback=lambda *_: ai_done.set(), priority=priority)
+            logger.debug(f"Submitted {self.repo_name} for async AI analysis")
+            if not ai_done.wait(timeout=getattr(constants, "AI_ANALYSIS_TIMEOUT", 60)):
+                logger.warning(f"AI analysis timed out for {self.repo_name}")
+        except ImportError:
+            self.run_ai_analysis_sync()
+        except Exception as e:
+            logger.warning(f"Failed to submit async AI analysis: {e}, using sync")
+            self.run_ai_analysis_sync()
+
+    def _scanner_results(self, scanner: str):
+        """Return scanner results dict if present and valid, else None."""
+        data = self.secrets.get(scanner)
+        if isinstance(data, constants.AutoVivification) and data:
+            return data
+        return None
+
     def _check_status(self):
         if hasattr(self.stats, "is_inaccessible") and self.stats.is_inaccessible:
             self.lvl = 0
@@ -144,10 +176,9 @@ class LeakObj(ABC):
             return
 
         scan_error = self.secrets.get("Scan error")
-
         if (
             scan_error
-            and any(keyword in str(scan_error).lower() for keyword in ["failed to clone", "clone"])
+            and any(kw in str(scan_error).lower() for kw in ["failed to clone", "clone"])
             and ("gist.github.com" in self.repo_url or int(self.stats.repo_stats_leak_stats_table["size"]) == 0)
         ):
             self.lvl = 0
@@ -155,281 +186,161 @@ class LeakObj(ABC):
             return
 
         self._check_stats()
-        lang = constants.LANGUAGE  # Assuming LANGUAGE is defined in constants.py
-
-        # Submit AI analysis and wait for result before scoring
-        if constants.AI_ANALYSIS_ENABLED and not self.ai_analysis:
-            try:
-                from src.AIObj import submit_ai_analysis, AITask
-                import threading
-
-                # Determine priority based on early signals
-                priority = AITask.NORMAL
-                # High priority if corporate committer found
-                if hasattr(self, "stats") and hasattr(self.stats, "commits_stats_commiters_table"):
-                    for committer in self.stats.commits_stats_commiters_table or []:
-                        if committer.get("matches_company"):
-                            priority = AITask.HIGH
-                            break
-
-                # Submit for async analysis and wait with timeout
-                ai_done = threading.Event()
-                submit_ai_analysis(self, callback=lambda *_: ai_done.set(), priority=priority)
-                logger.debug(f"Submitted {self.repo_name} for async AI analysis")
-                ai_timeout = getattr(constants, "AI_ANALYSIS_TIMEOUT", 60)
-                if not ai_done.wait(timeout=ai_timeout):
-                    logger.warning(f"AI analysis timed out for {self.repo_name}")
-            except ImportError:
-                # Fallback to sync if ai_worker not available
-                self.run_ai_analysis_sync()
-            except Exception as e:
-                logger.warning(f"Failed to submit async AI analysis: {e}, using sync")
-                self.run_ai_analysis_sync()
-
+        self._submit_ai_analysis()
         if not self.ai_analysis:
             self.ai_analysis = {"Thinks": "Not state"}
 
-        # Используем LeakAnalyzer для анализа
-        bad_file_ext = len(self.status) > 0 and "File extension" in self.status[0]
-        leak_analyzer = LeakAnalyzer(self, bad_file_ext=bad_file_ext)
+        lang = constants.LANGUAGE
+        leak_analyzer = LeakAnalyzer(self, bad_file_ext=bool(self.status and "File extension" in self.status[0]))
+        analysis = leak_analyzer.compute_full_analysis()
 
-        # Get final assessment from LeakAnalyzer and insert as the first line
-        final_assessment = leak_analyzer.get_final_assessment()
-        self.status.insert(0, final_assessment)
+        # --- Header: assessment + corporate committers (target first) ---
+        self.status.insert(0, analysis["assessment"])
+        committers = sorted(
+            leak_analyzer.get_corporate_committers(),
+            key=lambda c: not c.get("matches_company"),
+        )
+        for i, comm in enumerate(committers):
+            is_target = comm.get("matches_company")
+            msg_key = "corporate_committer_target" if is_target else "corporate_committer_other"
+            kwargs = {"name": comm.get("commiter_name", "Unknown"), "email": comm.get("commiter_email", "")}
+            if not is_target:
+                kwargs["domain"] = comm.get("domain", "")
+            self.status.insert(1 + i, self._get_message(msg_key, lang, **kwargs))
 
-        # ===== CRITICAL: Highlight corporate committers (almost 100% relevance!) =====
-        corporate_committers = leak_analyzer.get_corporate_committers()
-
-        # Sort committers: Target company first, then others
-        target_committers = [c for c in corporate_committers if c.get("matches_company")]
-        other_committers = [c for c in corporate_committers if not c.get("matches_company")]
-
-        # Display Target Company committers (High Priority)
-        for committer in target_committers:
-            self.status.insert(
-                1,
-                self._get_message(
-                    "corporate_committer_target",
-                    lang,
-                    name=committer.get("commiter_name", "Unknown"),
-                    email=committer.get("commiter_email", ""),
-                ),
-            )
-
-        # Display Other Corporate committers (Medium Priority)
-        # Insert after target messages (which are at pos 1..N) to keep them prominent but secondary
-        insert_pos = 1 + len(target_committers)
-        for committer in other_committers:
-            self.status.insert(
-                insert_pos,
-                self._get_message(
-                    "corporate_committer_other",
-                    lang,
-                    name=committer.get("commiter_name", "Unknown"),
-                    email=committer.get("commiter_email", ""),
-                    domain=committer.get("domain", ""),
-                ),
-            )
-            insert_pos += 1
-
-        # ===== Repository credibility assessment =====
-        credibility_score = leak_analyzer._calculate_repo_credibility_score()
-        if credibility_score >= 0.7:
-            self.status.append(self._get_message("repo_credibility_high", lang, score=credibility_score))
-        elif credibility_score >= 0.4:
-            self.status.append(self._get_message("repo_credibility_medium", lang, score=credibility_score))
+        # --- Credibility + context warnings ---
+        cred = analysis["credibility_score"]
+        if cred >= 0.7:
+            cred_key = "repo_credibility_high"
+        elif cred >= 0.4:
+            cred_key = "repo_credibility_medium"
         else:
-            self.status.append(self._get_message("repo_credibility_low", lang, score=credibility_score))
+            cred_key = "repo_credibility_low"
+        self.status.append(self._get_message(cred_key, lang, score=cred))
 
-        # Add context warnings
-        if leak_analyzer._is_tiny_repository():
-            self.status.append(self._get_message("repo_is_tiny", lang))
-        if leak_analyzer._is_likely_personal_project():
-            self.status.append(self._get_message("repo_is_personal", lang))
-        if leak_analyzer._is_very_popular_repository():
-            self.status.append(self._get_message("repo_is_popular_oss", lang))
-        if leak_analyzer._is_very_old_repository():
-            self.status.append(
-                self._get_message("repo_is_very_old", lang, years=constants.REPO_AGE_VERY_OLD_YEARS)
-            )
+        for flag, msg_key in [("is_tiny", "repo_is_tiny"), ("is_personal", "repo_is_personal"), ("is_popular_oss", "repo_is_popular_oss")]:
+            if analysis[flag]:
+                self.status.append(self._get_message(msg_key, lang))
+        if analysis["is_very_old"]:
+            self.status.append(self._get_message("repo_is_very_old", lang, years=constants.REPO_AGE_VERY_OLD_YEARS))
 
         self.status.append(self._get_message("leak_found_in_section", lang, obj_type=self.obj_type, dork=self.dork))
+        self.status.extend(self.secrets.get("status", []))
 
-        if "status" in self.secrets:
-            for i in self.secrets["status"]:
-                self.status.append(i)
-
-        # Keep unified results also inside secrets for downstream consumers
+        # Unified results for downstream consumers
         if isinstance(self.secrets, (dict, constants.AutoVivification)):
-            # Always expose the key to avoid KeyError downstream
             self.secrets["unified_results"] = self._get_unified_results_block()
-        founded_commiters = [
-            f'{comm["commiter_name"]}/{comm["commiter_email"]}' for comm in self.stats.commits_stats_commiters_table
-        ]
-        for leak_type in constants.leak_check_list:
-            if leak_type in self.author_name:
-                self.status.append(
-                    self._get_message("leak_in_author_name", lang, leak_type=leak_type, author_name=self.author_name)
-                )
-            if leak_type in ", ".join(founded_commiters):
-                self.status.append(self._get_message("leak_in_committers", lang, leak_type=leak_type))
-            if leak_type in self.repo_name:
-                self.status.append(
-                    self._get_message("leak_in_repo_name", lang, leak_type=leak_type, repo_name=self.repo_name)
-                )
 
-        if isinstance(self.stats.repo_stats_leak_stats_table, dict):
-            description_value = self.stats.repo_stats_leak_stats_table.get("description")
+        # --- Leak type keyword matches ---
+        founded_commiters = [
+            f'{c["commiter_name"]}/{c["commiter_email"]}' for c in self.stats.commits_stats_commiters_table
+        ]
+        commiters_str = ", ".join(founded_commiters)
+        for leak_type in constants.leak_check_list:
+            for text, msg_key, kw in [
+                (self.author_name, "leak_in_author_name", {"author_name": self.author_name}),
+                (commiters_str, "leak_in_committers", {}),
+                (self.repo_name, "leak_in_repo_name", {"repo_name": self.repo_name}),
+            ]:
+                if leak_type in text:
+                    self.status.append(self._get_message(msg_key, lang, leak_type=leak_type, **kw))
+
+        # --- Description & topics ---
+        stats_table = self.stats.repo_stats_leak_stats_table
+        if isinstance(stats_table, dict):
+            description_value = stats_table.get("description")
         else:
-            logger.warning(f"repo_stats_leak_stats_table is not a dict: {type(self.stats.repo_stats_leak_stats_table)}")
+            logger.warning(f"repo_stats_leak_stats_table is not a dict: {type(stats_table)}")
             description_value = None
 
-        if isinstance(description_value, str) and description_value.strip() not in ["_", "", " "]:
-            description = description_value
-            if len(description) > constants.MAX_DESCRIPTION_LEN:
-                description = description[: constants.MAX_DESCRIPTION_LEN] + "..."
-            self.status.append(self._get_message("short_description", lang, description=description))
+        if isinstance(description_value, str) and description_value.strip() not in ("", " ", "_"):
+            desc = description_value[:constants.MAX_DESCRIPTION_LEN]
+            if len(description_value) > constants.MAX_DESCRIPTION_LEN:
+                desc += "..."
+            self.status.append(self._get_message("short_description", lang, description=desc))
         else:
             self.status.append(self._get_message("no_description", lang))
-        topics = self.stats.repo_stats_leak_stats_table["topics"]
-        self.status.append(
-            self._get_message(
-                "topics", lang, topics=topics if topics not in ["_", "", " "] else self._get_message("no_topics", lang)
-            )
-        )
 
+        topics = stats_table["topics"]
+        self.status.append(self._get_message(
+            "topics", lang,
+            topics=topics if topics not in ("", " ", "_") else self._get_message("no_topics", lang),
+        ))
+
+        # --- Committers display ---
         if len(founded_commiters) > constants.MAX_COMMITERS_DISPLAY:
-            self.status.append(
-                self._get_message(
-                    "committers_found",
-                    lang,
-                    committers=", ".join(founded_commiters[: constants.MAX_COMMITERS_DISPLAY]),
-                    remaining=len(founded_commiters) - constants.MAX_COMMITERS_DISPLAY,
-                )
-            )
+            self.status.append(self._get_message(
+                "committers_found", lang,
+                committers=", ".join(founded_commiters[:constants.MAX_COMMITERS_DISPLAY]),
+                remaining=len(founded_commiters) - constants.MAX_COMMITERS_DISPLAY,
+            ))
         else:
-            self.status.append(self._get_message("committers_all", lang, committers=", ".join(founded_commiters)))
+            self.status.append(self._get_message("committers_all", lang, committers=commiters_str))
 
-        scaners = list(constants.SCANNER_TYPES)
-        if (
-            "grepscan" in self.secrets
-            and isinstance(self.secrets["grepscan"], constants.AutoVivification)
-            and len(self.secrets["grepscan"])
-        ):
+        # --- Scanner results ---
+        grepscan = self._scanner_results("grepscan")
+        if grepscan:
             try:
-                grepscan_values = list(self.secrets["grepscan"].values())
-                if grepscan_values and isinstance(grepscan_values[0], dict) and "Match" in grepscan_values[0]:
-                    first_match = grepscan_values[0]["Match"]
-                    self.status.append(self._get_message("first_grepscan_line", lang, match=first_match))
-            except (IndexError, KeyError, TypeError) as e:
-                # Gracefully handle malformed grepscan results
+                first_val = next(iter(grepscan.values()))
+                if isinstance(first_val, dict) and "Match" in first_val:
+                    self.status.append(self._get_message("first_grepscan_line", lang, match=first_val["Match"]))
+            except (StopIteration, KeyError, TypeError) as e:
                 self.status.append(self._get_message("grepscan_parsing_error", lang, error=str(e)))
 
         sum_leaks_count = 0
-        for scan_type in scaners:
-            if (
-                scan_type in self.secrets
-                and isinstance(self.secrets[scan_type], constants.AutoVivification)
-                and len(self.secrets[scan_type])
-            ):
-                sum_leaks_count += len(self.secrets[scan_type])
-                self.status.append(
-                    self._get_message(
-                        "leaks_found_by_scanner", lang, count=len(self.secrets[scan_type]), scanner=scan_type
-                    )
-                )
+        for scan_type in constants.SCANNER_TYPES:
+            data = self._scanner_results(scan_type)
+            if data:
+                sum_leaks_count += len(data)
+                self.status.append(self._get_message("leaks_found_by_scanner", lang, count=len(data), scanner=scan_type))
 
         self.status.append(self._get_message("total_leaks_found", lang, total_count=sum_leaks_count))
-        self.status.append(
-            self._get_message("full_report_length", lang, length=utils.count_nested_dict_len(self.secrets))
-        )
+        self.status.append(self._get_message("full_report_length", lang, length=utils.count_nested_dict_len(self.secrets)))
 
-        # Calculate profitability scores (base: org_relevance + sensitive_data)
-        self.profitability_scores = leak_analyzer.calculate_profitability()
+        # --- Scoring & verdict ---
+        self.profitability_scores = analysis["profitability"]
+        verdict = analysis["verdict"]
+        tp = analysis["unified_probability"]
 
-        # Add AI analysis to status
         if constants.AI_ANALYSIS_ENABLED and self.ai_analysis != {"Thinks": "Not state"}:
             self._add_ai_analysis_to_status()
 
-        # Unified probability: single source of truth combining all signals
-        true_positive_chance = leak_analyzer.calculate_unified_probability(self.profitability_scores)
+        self.status.append(self._get_message(
+            "profitability_scores", lang,
+            org_rel=self.profitability_scores["org_relevance"],
+            sens_data=self.profitability_scores["sensitive_data"],
+            tp=tp, fp=round(1.0 - tp, 2),
+        ))
 
-        if isinstance(self.profitability_scores, dict):
-            self.profitability_scores["unified_probability"] = true_positive_chance
-
-        verdict = leak_analyzer.evaluate_incident_verdict(
-            unified_score=true_positive_chance,
-            profitability=self.profitability_scores,
-        )
-
-        if isinstance(self.profitability_scores, dict):
-            self.profitability_scores.update(
-                {
-                    "target_result_code": verdict.get("target_result_code", constants.RESULT_CODE_TO_SEND),
-                    "should_close": bool(verdict.get("should_close")),
-                    "should_recheck": bool(verdict.get("should_recheck")),
-                    "is_high_priority": bool(verdict.get("is_high_priority", False)),
-                    "verdict_reason": verdict.get("reason", ""),
-                }
-            )
-
-        if self.profitability_scores:
-            self.status.append(
-                self._get_message(
-                    "profitability_scores",
-                    lang,
-                    org_rel=self.profitability_scores["org_relevance"],
-                    sens_data=self.profitability_scores["sensitive_data"],
-                    tp=true_positive_chance,
-                    fp=round(1.0 - true_positive_chance, 2),
-                )
-            )
-
-        # Decisive auto-close / recheck based on unified verdict
         target_result_code = verdict.get("target_result_code")
         if isinstance(target_result_code, int):
             self.res_check = target_result_code
-
         if verdict.get("should_close"):
             self._append_auto_close_to_brief_description(verdict.get("reason", ""))
 
-        if true_positive_chance < 0.2:
-            self.lvl = 0  # 'Low'
-        elif 0.2 <= true_positive_chance < 0.5:
-            self.lvl = 1  # 'Medium'
-        else:
-            self.lvl = 2  # 'High' (0.5+)
-
-        # Remove duplicates from status while preserving order
-        self.status = list(dict.fromkeys(self.status))
-
-        # Add unified results block with all unique findings from all scanners
-
-        self.status = "\n- ".join(self.status)
+        self.lvl = analysis["lvl"]
+        self.status = "\n- ".join(dict.fromkeys(self.status))
         self.ready_to_send = True
 
     def _append_auto_close_to_brief_description(self, reason: str):
         """Append auto-close reason to brief description line only."""
-        reason_text = (reason or "").strip()
-        if not reason_text:
+        reason = (reason or "").strip()
+        if not reason:
             return
 
-        description_prefixes = ("Brief description:", "Краткое описание:")
         for idx, line in enumerate(self.status):
-            if isinstance(line, str) and line.startswith(description_prefixes):
-                self.status[idx] = f"{line} | {reason_text}"
+            if isinstance(line, str) and line.startswith(("Brief description:", "Краткое описание:")):
+                self.status[idx] = f"{line} | {reason}"
                 return
 
-        fallback = self._get_message("short_description", constants.LANGUAGE, description=f"- | {reason_text}")
-        self.status.append(fallback)
+        self.status.append(self._get_message("short_description", constants.LANGUAGE, description=f"- | {reason}"))
 
     def _get_unified_results_block(self):
-        """Add a block with unique results from all scanners combined."""
-        scanners = list(constants.SCANNER_TYPES)
-        all_unique_results = {}  # key -> result mapping
+        """Build a block with unique results from all scanners combined."""
+        all_unique_results = {}
 
         try:
-            for scanner in scanners:
+            for scanner in constants.SCANNER_TYPES:
                 if scanner in self.secrets and isinstance(self.secrets[scanner], constants.AutoVivification):
                     for key, value in self.secrets[scanner].items():
                         if key == "Info":  # Skip Info entries
@@ -466,27 +377,8 @@ class LeakObj(ABC):
             return {}
 
     def write_obj(self):  # for write to DB
-        # Human chech:
-        # 0 - not seen result of scan
-        # 1 - leaks aprove
-        # 2 - leak doesn't found
-        res_human_check = 0
-
-        # Type of leak:
-        # For example: password, API_key, source code, etc
         if not self.ready_to_send:
             self._check_status()
-        if len(self.status) > 10000:
-            founded_leak = str(self.status[:10000]) + "..."
-        else:
-            founded_leak = self.status
-        # Result:
-        # 0 - leaks doesn't found, add to exclude list
-        # 1 - leaks found, sent request to block
-        # 2 - leaks found, not yet sent request to block
-        # 3 - leaks found, blocked
-        # 4 - not set
-        # 5 - need more scan
         self.final_leak = {
             "url": self.repo_url,
             "level": self.lvl,
@@ -494,10 +386,9 @@ class LeakObj(ABC):
             "found_at": self.found_time,
             "created_at": self.stats.created_at,
             "updated_at": self.stats.updated_at,
-            "approval": res_human_check,
-            "leak_type": founded_leak,
-            "result": int(self.res_check),
-            # DB schema expects int; local config may use string IDs like "kbtest"
+            "approval": 0,  # 0=not seen, 1=approved, 2=not found
+            "leak_type": str(self.status[:10000]) + "..." if len(self.status) > 10000 else self.status,
+            "result": int(self.res_check),  # 0=not found, 1=sent, 2=pending, 3=blocked, 4=not set, 5=rescan
             "company_id": self.company_id if isinstance(self.company_id, int) else 0,
         }
         return self.final_leak

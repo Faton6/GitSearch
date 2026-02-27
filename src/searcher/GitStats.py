@@ -603,13 +603,6 @@ class GitParserStats:
 
         self.comm_stats_getted = True
 
-    def set_ai_result(self, ai_result):
-        self.repo_stats_leak_stats_table["ai_result"] = ai_result
-        self.ai_result = ai_result
-
-    def fetch_repo_stats_leak_stats_table(self):
-        return self.repo_stats_leak_stats_table
-
     # HTTP Session for connection pooling (class-level)
     _session: requests.Session = None
 
@@ -675,8 +668,3 @@ class GitParserStats:
                 pass
 
         return response
-
-    def prepare_stats(self):
-        self.fetch_contributors_stats()
-        self.fetch_commits_stats()
-        logger.info("Prepared stats of %s %s %s ", self.log_color, self.repo_url, CLR["RESET"])

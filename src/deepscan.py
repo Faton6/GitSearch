@@ -20,7 +20,7 @@ DEEP_SCAN_CONFIG = {
     "max_workers": 3,  # Number of parallel workers for deep scan
     "enable_ai_analysis": True,
     "required_scanners": ["gitleaks", "gitsecrets", "grepscan", "deepsecrets", "detect_secrets"],
-    "max_urls_per_run": 0,  # 0 = no limit, process all URLs from DB
+    "max_urls_per_run": 10000,  # 0 = no limit, process all URLs from DB
 }
 
 LIST_SCAN_CONFIG = {
@@ -193,14 +193,6 @@ class DeepScanManager:
             logger.error(f"Traceback: {traceback.format_exc()}")
             return None
 
-    def _perform_gistobj_deep_scan(self, url: str, leak_id: int, company_id: int) -> Optional[GlistObj]:
-        """Perform deep scan on a gist URL. Wrapper for backward compatibility."""
-        return self._perform_deep_scan(url, leak_id, company_id, is_gist=True)
-
-    def _perform_leakobj_deep_scan(self, url: str, leak_id: int, company_id: int) -> Optional[RepoObj]:
-        """Perform deep scan on a repository URL. Wrapper for backward compatibility."""
-        return self._perform_deep_scan(url, leak_id, company_id, is_gist=False)
-
     def run(self, mode=0) -> None:
         """Run deep scan.
 
@@ -300,10 +292,8 @@ class DeepScanManager:
                     company_id = Connector.get_company_id(leak_id)
 
                     # Perform scan based on URL type
-                    if "gist.github.com" in url:
-                        leak_obj = self._perform_gistobj_deep_scan(url, leak_id, company_id)
-                    else:
-                        leak_obj = self._perform_leakobj_deep_scan(url, leak_id, company_id)
+                    is_gist = "gist.github.com" in url
+                    leak_obj = self._perform_deep_scan(url, leak_id, company_id, is_gist=is_gist)
 
                     if leak_obj:
                         # Thread-safe update

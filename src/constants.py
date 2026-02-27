@@ -29,7 +29,7 @@ The module is divided into several sections:
 # Application Metadata
 # =============================================================================
 
-RUN_TESTS: bool = True  # DISABLED - Enable manually for testing
+RUN_TESTS: bool = False  # DISABLED - Enable manually for testing
 __VERSION__ = "1.0.0"
 # =============================================================================
 # File System Paths
@@ -139,6 +139,15 @@ LOW_CREDIBILITY_SCORE_THRESHOLD = 0.35
 VERY_LOW_CREDIBILITY_SCORE_THRESHOLD = 0.3
 LOW_CREDIBILITY_SCORE_PENALTY_FACTOR = 0.85
 UNIFIED_PROBABILITY_MEDIUM_PRIORITY_THRESHOLD = 0.5
+
+# Leak severity level thresholds (unified_probability -> lvl + assessment message)
+LEAK_LEVEL_THRESHOLDS = [
+    # (min_probability, lvl, message_key)
+    (0.7, 2, "high_chance"),     # High
+    (0.5, 1, "medium_chance"),   # Medium-High
+    (0.2, 0, "low_chance"),      # Low
+    (0.0, 0, "no_chance"),       # None
+]
 
 INSUFFICIENT_CONTEXT_MIN_SIGNALS = 1
 COMMITTER_DOMAIN_MATCH_THRESHOLD = 0.7

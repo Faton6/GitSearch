@@ -198,10 +198,6 @@ class TestFalsePositivePaths:
 
     def test_test_directories(self):
         """Test directories should be flagged."""
-        stats = DummyStats()
-        leak = DummyLeakObj("dork", "repo", "author", stats)
-        analyzer = LeakAnalyzer(leak)
-
         test_paths = [
             "/project/test/config.py",
             "/project/tests/fixtures/data.json",
@@ -209,14 +205,10 @@ class TestFalsePositivePaths:
             "/project/spec/helpers.rb",
         ]
         for path in test_paths:
-            assert analyzer._is_false_positive_path(path), f"'{path}' should be flagged as FP path"
+            assert utils.is_false_positive_path(path), f"'{path}' should be flagged as FP path"
 
     def test_example_directories(self):
         """Example directories should be flagged."""
-        stats = DummyStats()
-        leak = DummyLeakObj("dork", "repo", "author", stats)
-        analyzer = LeakAnalyzer(leak)
-
         example_paths = [
             "/project/examples/config.py",
             "/project/sample/data.json",
@@ -224,21 +216,17 @@ class TestFalsePositivePaths:
             "/project/tutorial/guide.md",
         ]
         for path in example_paths:
-            assert analyzer._is_false_positive_path(path), f"'{path}' should be flagged as FP path"
+            assert utils.is_false_positive_path(path), f"'{path}' should be flagged as FP path"
 
     def test_production_paths_not_flagged(self):
         """Production paths should not be flagged."""
-        stats = DummyStats()
-        leak = DummyLeakObj("dork", "repo", "author", stats)
-        analyzer = LeakAnalyzer(leak)
-
         prod_paths = [
             "/project/src/config.py",
             "/project/app/settings.py",
             "/project/backend/auth.js",
         ]
         for path in prod_paths:
-            assert not analyzer._is_false_positive_path(path), f"'{path}' should NOT be flagged as FP path"
+            assert not utils.is_false_positive_path(path), f"'{path}' should NOT be flagged as FP path"
 
 
 class TestSecretClassification:

@@ -60,7 +60,7 @@ class TestDeepScanManager(unittest.TestCase):
     @patch("src.deepscan.RepoObj")
     def test_perform_deep_scan_success(self, mock_repo_obj, mock_checker):
         """Test successful deep scan operation."""
-        # Тест для _perform_leakobj_deep_scan
+        # Тест для _perform_deep_scan
         mock_checker_instance = Mock()
         mock_checker.return_value = mock_checker_instance
         mock_checker_instance.run.return_value = {}
@@ -68,7 +68,7 @@ class TestDeepScanManager(unittest.TestCase):
         mock_leak_obj = Mock()
         mock_repo_obj.return_value = mock_leak_obj
 
-        _ = self.manager._perform_leakobj_deep_scan("https://github.com/user/repo", 1, 1)
+        _ = self.manager._perform_deep_scan("https://github.com/user/repo", 1, 1, is_gist=False)
 
         # Проверяем что метод выполнился без ошибок (может быть None при ошибке)
         # assert вызовется без ошибки если функция отработала
@@ -80,7 +80,7 @@ class TestDeepScanManager(unittest.TestCase):
         mock_checker.side_effect = Exception("Scan failed")
 
         # Функция возвращает None при ошибке
-        result = self.manager._perform_leakobj_deep_scan("https://github.com/user/repo", 1, 1)
+        result = self.manager._perform_deep_scan("https://github.com/user/repo", 1, 1, is_gist=False)
         self.assertIsNone(result)
 
 

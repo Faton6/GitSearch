@@ -434,21 +434,6 @@ def leak_stats_prepare(leak_stats_table: dict, actual_leak_id: int) -> dict:
     return leak_stats_table
 
 
-def dump_account_from_DB():
-    """Get all account names from DB."""
-    logger.info("Dumping accounts from DB...")
-    accounts = APIClient.get_data("accounts", {}, limit=100, offset=0)
-    return [acc["account"] for acc in accounts]
-
-
-def dump_raw_data_from_DB(leak_id):
-    """Get decoded raw report for specific leak."""
-    logger.info(f"Dumping leak {leak_id} from DB...")
-    data = APIClient.get_data("raw_report", {"leak_id": leak_id}, limit=100, offset=0)
-    raw = data.get("raw_data", "") if data else ""
-    return str(json.loads(base64.b64decode(raw))) if raw else ""
-
-
 def update_result_filed_in_DB():
     """Update result status for leaks in database based on repository availability."""
     data_from_DB = dump_from_DB(mode=1)
@@ -741,43 +726,6 @@ def _update_accounts(leak_id: int, accounts_table: list, leak_obj) -> None:
     except Exception as e:
         logger.error("Ошибка в _update_accounts: %s", e)
         return
-
-
-def update_leaks_from_report(filename: str):
-    with open(filename, "r") as file:
-        backup_rep = json.load(file)
-
-    for i in backup_rep["scan"].keys():
-        item = backup_rep["scan"][i]
-        if "DeepScan" in item[0]:
-            report_content = item[1]["content"]
-            leak_id = report_content["leak_id"]
-
-            # Обновляем leak
-            APIClient.upd_data("leak", {"id": leak_id, "result": "3"})
-
-            enc_raw = report_content["raw_data"]
-            enc_ai = report_content["ai_report"]
-
-            raw_report_data = APIClient.get_data("raw_report", {"leak_id": leak_id})
-            raw_report = raw_report_data[0] if raw_report_data else {}
-            old_raw_report_id = raw_report.get("id", "")
-            if enc_raw != raw_report.get("raw_data", ""):
-                if raw_report:
-                    APIClient.upd_data(
-                        "raw_report",
-                        {"id": old_raw_report_id, "leak_id": leak_id, "raw_data": enc_raw, "ai_report": enc_ai},
-                    )
-                else:
-                    APIClient.add_data(
-                        "raw_report",
-                        {
-                            "leak_id": leak_id,
-                            "report_name": report_content["report_name"],
-                            "raw_data": enc_raw,
-                            "ai_report": enc_ai,
-                        },
-                    )
 
 
 def merge_reports(

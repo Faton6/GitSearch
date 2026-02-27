@@ -432,46 +432,6 @@ class AIObj(ABC):
             logger.error(f"Error in AI API request: {ex}")
             self.ai_requested = True
 
-    def set_company_info(self, company_info: Dict[str, Any]):
-        """Установка информации о компании для анализа"""
-        self.company_info = company_info
-
-    def get_comprehensive_analysis(self) -> Dict[str, Any]:
-        """Получение комплексного анализа утечки"""
-        if not self.ai_analysis_completed:
-            return self.analyze_leak_comprehensive()
-        return self.ai_analysis
-
-    def is_company_related(self) -> bool:
-        """Проверка связи утечки с компанией"""
-        if self.ai_analysis:
-            return self.ai_analysis.get("company_relevance", {}).get("is_related", False)
-        return False
-
-    def get_severity_level(self) -> str:
-        """Получение уровня серьезности утечки"""
-        if self.ai_analysis:
-            return self.ai_analysis.get("severity_assessment", {}).get("level", "unknown")
-        return "unknown"
-
-    def get_true_positive_probability(self) -> float:
-        """Получение вероятности истинной утечки"""
-        if self.ai_analysis:
-            return self.ai_analysis.get("classification", {}).get("true_positive_probability", 0.0)
-        return 0.0
-
-    def get_recommendations(self) -> Dict[str, Any]:
-        """Получение рекомендаций по утечке"""
-        if self.ai_analysis:
-            return self.ai_analysis.get("recommendations", {})
-        return {}
-
-    def get_analysis_summary(self) -> str:
-        """Получение краткого описания анализа"""
-        if self.ai_analysis:
-            return self.ai_analysis.get("summary", "Анализ не выполнен")
-        return "Анализ не выполнен"
-
 
 class LLMProviderManager:
     """
@@ -903,10 +863,6 @@ class AIWorkerPool:
                 self._stats["queue_full_drops"] += 1
             return False
 
-    def submit_high_priority(self, leak_obj: Any, callback: Optional[Callable] = None) -> bool:
-        """Submit high-priority analysis (e.g., corporate email found)."""
-        return self.submit_analysis(leak_obj, callback, priority=AITask.HIGH)
-
     def get_queue_size(self) -> int:
         """Get current queue size."""
         return self._queue.qsize()
@@ -915,22 +871,6 @@ class AIWorkerPool:
         """Get worker pool statistics."""
         with self._stats_lock:
             return dict(self._stats)
-
-    def wait_completion(self, timeout: Optional[float] = None) -> bool:
-        """
-        Wait for all queued tasks to complete.
-
-        Args:
-            timeout: Maximum time to wait (None = wait forever)
-
-        Returns:
-            True if all tasks completed, False if timeout
-        """
-        try:
-            self._queue.join()
-            return True
-        except Exception:
-            return False
 
     def shutdown(self, wait: bool = True, timeout: float = 30.0):
         """

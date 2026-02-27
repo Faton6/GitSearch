@@ -313,51 +313,6 @@ class TempFolderManager:
 
         return repos_removed, bytes_freed
 
-    def cleanup_all(self) -> Tuple[int, int]:
-        """
-        Remove all repos from temp folder (except protected items).
-
-        Returns:
-            Tuple of (repos_removed, bytes_freed)
-        """
-        repos_removed = 0
-        bytes_freed = 0
-
-        with self._lock:
-            try:
-                for item in self.temp_folder.iterdir():
-                    if item.name in self.PROTECTED_ITEMS:
-                        continue
-                    if item.is_dir():
-                        try:
-                            size = self._get_dir_size(item)
-                            shutil.rmtree(item)
-                            bytes_freed += size
-                            repos_removed += 1
-                        except Exception as e:
-                            logger.warning(f"Failed to remove {item}: {e}")
-                    elif item.is_file():
-                        try:
-                            item.unlink()
-                        except Exception:
-                            pass
-
-                # Clear cache
-                self._cache.clear()
-                self._path_to_url.clear()
-                self._stats.total_size_bytes = 0
-                self._stats.repo_count = 0
-                self._stats.cleanups_performed += 1
-                self._stats.bytes_cleaned += bytes_freed
-                self._stats.last_cleanup_time = time.time()
-
-                logger.info(f"Full cleanup: removed {repos_removed} repos, " f"freed {bytes_freed / (1024**3):.2f}GB")
-
-            except Exception as e:
-                logger.error(f"Error during full cleanup: {e}")
-
-        return repos_removed, bytes_freed
-
     def get_stats(self) -> Dict:
         """Get current statistics."""
         return {
@@ -380,20 +335,6 @@ class TempFolderManager:
             ),
             "last_cleanup": self._stats.last_cleanup_time,
         }
-
-    def get_cached_repos(self) -> List[Dict]:
-        """Get list of cached repositories with metadata."""
-        with self._lock:
-            return [
-                {
-                    "url": entry.repo_url,
-                    "path": entry.path,
-                    "size_mb": entry.size_bytes / (1024**2),
-                    "last_access": entry.last_access,
-                    "clone_time": entry.clone_time,
-                }
-                for entry in sorted(self._cache.values(), key=lambda x: x.last_access, reverse=True)
-            ]
 
 
 # Global instance (lazy initialization)
